@@ -1,72 +1,305 @@
-# CFD Project
+# CFD 프로젝트
 
-Windows-based CFD trading workspace with a Python runtime, FastAPI monitoring API, Next.js dashboard, and ML utility scripts.
+이 저장소는 Windows 환경에서 운용하는 CFD 트레이딩 워크스페이스의 공개용 정리본입니다.  
+Python 기반 런타임, FastAPI 모니터링 API, Next.js 대시보드, ML 보조 스크립트, 테스트 코드와 문서 자산을 함께 포함하고 있습니다.
 
-This README intentionally keeps proprietary strategy details, production tuning logic, broker credentials, and live operating data out of scope. The goal of this repository snapshot is to share the project structure and development workflow without exposing sensitive runtime assets.
+다만 공개 저장소인 만큼 실제 운영 계정 정보, 민감한 환경 변수, 대용량 런타임 데이터, 모델 산출물, 로그, 개인 문서와 같은 항목은 제외했습니다.  
+README 역시 전체 동작 흐름과 개발 구조를 설명하는 데 초점을 두고 있으며, 세부 전략 로직이나 운영 노하우는 의도적으로 깊게 다루지 않습니다.
 
-## Stack
+## 프로젝트 개요
+
+이 프로젝트는 하나의 단일 스크립트만 실행하는 구조가 아니라, 아래 요소들이 함께 동작하는 형태입니다.
+
+- `main.py` 기반의 메인 런타임 엔진
+- `FastAPI` 기반의 상태 조회 및 운영용 API
+- `Next.js` 기반의 대시보드 UI
+- `ml/` 아래의 재학습 및 데이터 정리 스크립트
+- `tests/` 아래의 단위/통합 테스트
+- `docs/` 아래의 설계 메모, 로드맵, 검증 문서
+
+즉, 단순한 예제 프로젝트라기보다 실제 운영과 검증 흐름이 함께 들어있는 작업 저장소에 가깝습니다.
+
+## 기술 스택
 
 - Python 3.12
 - FastAPI
-- pandas-based data processing
-- Next.js 14 / React 18
+- pandas
+- Next.js 14
+- React 18
 - Node.js 20.x
-- MetaTrader 5 integration
+- MetaTrader 5 연동
 
-## Project layout
+## 저장소에 포함된 범위
 
-- `main.py`: runtime entrypoint
-- `backend/`: application, domain, FastAPI, and service modules
-- `adapters/`: broker, Telegram, MT5, and observability adapters
-- `ml/`: retraining and model utility scripts
-- `frontend/next-dashboard/`: monitoring dashboard
-- `scripts/`: operational checks and deployment helpers
-- `docs/`: design notes and roadmap documents
+공개 저장소 기준으로 현재 포함되는 것은 아래와 같습니다.
 
-## Local run flow
+- 소스 코드
+- 프론트엔드 코드
+- 운영 배치 스크립트
+- 테스트 코드
+- 문서 및 설계 메모
+- 공개 가능한 예시 환경 변수 파일
 
-### 1. Prepare environment
+반대로 아래 항목은 의도적으로 Git에서 제외합니다.
 
-- Root: copy `.env.example` to `.env` and fill in your local secrets
-- Frontend: copy `frontend/next-dashboard/.env.example` to `frontend/next-dashboard/.env.local`
-- Use Node `20.x`
-- Use your existing Python runtime environment for the project dependencies
+- 실제 `.env`
+- 로컬 전용 `.env.local`
+- `data/`, `models/`, `logs/`, `releases/`
+- `node_modules/`, `.next/`, 각종 캐시
+- DB, lock, temp, jsonl, 대용량 생성 파일
+- 실행 파일, 바로가기, 개인 PDF/JPG 등 비소스 자산
 
-### 2. Start services
+## 주요 디렉토리
 
-Windows batch flow:
+- `main.py`
+  메인 런타임 진입점입니다.
+
+- `backend/`
+  애플리케이션 계층, 도메인 모델, 서비스 로직, FastAPI 엔드포인트가 들어 있습니다.
+
+- `adapters/`
+  MT5, Telegram, 파일 관측성 등 외부 연동 어댑터 계층입니다.
+
+- `ports/`
+  어댑터와 서비스 사이의 포트 인터페이스를 정리한 영역입니다.
+
+- `ml/`
+  재학습, 데이터셋 구성, 모델 평가, 보조 배치 스크립트가 위치합니다.
+
+- `frontend/next-dashboard/`
+  모니터링 대시보드 UI입니다.
+
+- `scripts/`
+  스모크 체크, 배포 전 점검, 리포트 생성, 데이터 정리 등 운영 보조 스크립트가 있습니다.
+
+- `tests/`
+  단위 테스트와 통합 테스트가 정리되어 있습니다.
+
+- `docs/`
+  기능 설계, 단계별 구현 메모, 검증 기록, 로드맵 문서가 들어 있습니다.
+
+## 동작 구조
+
+전체 구성은 크게 아래 흐름으로 이해하면 됩니다.
+
+1. 메인 런타임이 시장 데이터와 내부 상태를 갱신합니다.
+2. FastAPI가 현재 상태, 포지션, 분석 결과, 운영 점검 정보를 제공합니다.
+3. Next.js 대시보드가 API를 주기적으로 호출해 화면에 표시합니다.
+4. ML 스크립트와 분석 스크립트는 보조적으로 재학습, 검증, 리포트 생성을 담당합니다.
+
+대시보드에서 확인하는 주요 정보는 대략 다음 범주입니다.
+
+- 헬스 체크
+- 최근 거래/상태 정보
+- 거래 분석 요약
+- 학습 개요
+- 런타임 상태
+- 포지션 확장 정보
+- 운영 준비 상태
+- 관측성 스냅샷
+
+## 실행 환경
+
+기본적으로 아래 환경을 가정합니다.
+
+- Windows
+- Python 3.12
+- Node.js 20.x
+- MetaTrader 5 설치 환경
+
+프론트엔드는 `frontend/next-dashboard/.nvmrc` 기준으로 Node `20.11.1` 계열 사용을 권장합니다.
+
+## 환경 변수 설정
+
+### 루트 환경 변수
+
+루트에는 공개용 예시 파일이 있습니다.
+
+```bat
+.env.example
+```
+
+이를 복사해서 `.env`를 만든 뒤 로컬 값으로 채워 사용하면 됩니다.
+
+예시:
+
+```bat
+copy .env.example .env
+```
+
+루트 `.env`에는 아래 종류의 값이 들어갑니다.
+
+- 계정 모드
+- MT5 접속 정보
+- Telegram 알림 정보
+- 감시 심볼
+- 일부 기본 임계값
+- 런타임 파일 경로
+
+### 프론트엔드 환경 변수
+
+프론트는 별도로 `.env.local`을 사용합니다.
+
+```bat
+copy frontend\next-dashboard\.env.example frontend\next-dashboard\.env.local
+```
+
+기본 예시 값:
+
+```env
+NEXT_PUBLIC_API_BASE=http://127.0.0.1:8010
+```
+
+## 실행 방법
+
+### 1. 일괄 실행
+
+가장 간단한 방식은 루트의 배치 스크립트를 사용하는 것입니다.
 
 ```bat
 manage_cfd.bat start
 ```
 
-Manual flow:
+이 스크립트는 상황에 따라 아래 요소를 함께 다룹니다.
+
+- 메인 런타임 실행
+- ML 재학습 루프 실행
+- FastAPI 실행
+- Next.js UI 실행
+
+### 2. 수동 실행
+
+필요하면 각각 따로 실행할 수 있습니다.
+
+#### 메인 런타임
 
 ```bat
 python main.py
+```
+
+#### API 서버
+
+```bat
 python -m uvicorn backend.fastapi.app:app --host 127.0.0.1 --port 8010 --workers 1
+```
+
+#### 프론트엔드
+
+```bat
 cd frontend\next-dashboard
 npm install
 npm run dev
 ```
 
-### 3. Open local endpoints
+## 자주 쓰는 배치 명령
 
-- API health: `http://127.0.0.1:8010/health`
-- Dashboard: `http://127.0.0.1:3010`
+`manage_cfd.bat`에는 여러 운영용 명령이 들어 있습니다.
 
-## What is excluded from Git
+- `manage_cfd.bat start`
+  메인/ML/API/UI 전체 시작
 
-To keep the repository safe and lightweight, the following are excluded by `.gitignore`:
+- `manage_cfd.bat start_core`
+  핵심 프로세스 위주 시작
 
-- `.env` and local env files
-- `data/`, `models/`, `logs/`, `releases/`
-- `node_modules/`, `.next/`, caches, temp files
-- databases, lock files, generated logs
-- personal documents and binary installers
+- `manage_cfd.bat start_ui`
+  UI만 별도 시작
 
-## Notes
+- `manage_cfd.bat stop`
+  관련 프로세스 정리
 
-- The public-facing README does not document the internal trading rules or model decision logic.
-- Runtime data and model artifacts are intentionally left out of version control.
-- If you want to make this repository reproducible for other developers, the next cleanup step would be exporting a dedicated Python dependency file.
+- `manage_cfd.bat restart`
+  전체 재시작
+
+- `manage_cfd.bat status`
+  포트와 프로세스 상태 확인
+
+- `manage_cfd.bat verify`
+  API 엔드포인트 기본 검증
+
+- `manage_cfd.bat precheck`
+  배포 전 점검
+
+- `manage_cfd.bat deploy`
+  배포 파이프라인 실행
+
+UI만 따로 띄우고 싶으면 `run_ui.bat`도 사용할 수 있습니다.
+
+## 기본 접속 주소
+
+- API 헬스 체크: `http://127.0.0.1:8010/health`
+- 대시보드: `http://127.0.0.1:3010`
+
+## 주요 API 예시
+
+현재 코드 기준으로 대시보드에서 주로 참조하는 엔드포인트는 아래와 같습니다.
+
+- `/health`
+- `/trades/latest`
+- `/trades/analytics?days=60`
+- `/ml/learning-overview?days=60`
+- `/runtime/status`
+- `/positions/enriched`
+- `/ops/readiness`
+- `/runtime/observability?last_n=50`
+
+이 목록은 전체 API 명세라기보다는, 실제 UI에서 자주 사용하는 대표 엔드포인트 요약입니다.
+
+## 테스트
+
+테스트는 `tests/` 아래에 단위 테스트와 통합 테스트가 함께 있습니다.
+
+일반적인 실행 예시는 아래와 같습니다.
+
+```bat
+pytest
+```
+
+다만 이 저장소는 운영 연동 요소가 포함되어 있어, 모든 테스트가 완전히 독립적으로 재현되려면 로컬 환경 차이를 추가로 맞춰야 할 수 있습니다.
+
+## 문서 자산
+
+`docs/` 아래에는 기능별 참고 문서와 구현 메모가 많이 포함되어 있습니다.  
+이 문서들은 단순한 README 보완 수준이 아니라, 실제 기능 분해와 검증 히스토리를 따라가는 데 도움이 되는 자료입니다.
+
+읽기 시작하기 좋은 방향은 아래와 같습니다.
+
+- 전체 구조 파악: 시스템/아키텍처 개요 문서
+- 특정 기능 파악: 관련 접두어를 가진 문서 묶음 확인
+- 검증 흐름 파악: acceptance, validation, roadmap 키워드 문서 확인
+
+## 현재 공개본의 한계
+
+이 저장소는 바로 누구나 `git clone` 후 완전 동일하게 재현되는 상태를 목표로 정리한 것은 아닙니다. 현재는 공개 안전성과 구조 공유를 우선한 상태입니다.
+
+특히 아래는 후속 정리가 더 필요할 수 있습니다.
+
+- Python 의존성 파일 정리
+- 초기 셋업 가이드 보강
+- 개발/운영 모드 분리 문서화
+- 예시 데이터 또는 mock 실행 흐름 추가
+
+## 보안 및 공개 정책
+
+공개 저장소에 올릴 때는 아래 원칙을 유지하는 것을 전제로 합니다.
+
+- 실제 계정 정보는 절대 커밋하지 않기
+- 운영 데이터와 모델 산출물은 올리지 않기
+- 개인 문서나 설치 파일은 저장소 밖에 두기
+- README에는 전체 흐름과 구조를 설명하되 민감한 전략 디테일은 과도하게 노출하지 않기
+
+## 버전
+
+- 현재 애플리케이션 버전: `0.1.0`
+
+## 앞으로 보강하면 좋은 항목
+
+- 설치 순서만 따로 뽑은 빠른 시작 문서
+- API 명세 요약
+- 프론트 대시보드 화면 설명
+- 테스트 실행 범위 안내
+- 개발용 샘플 데이터 또는 mock 모드
+
+---
+
+현재 README는 공개 가능한 범위 안에서 구조와 사용 흐름을 이해할 수 있도록 정리한 버전입니다.  
+다음 단계로는 이 문서를 더 다듬어서 `설치`, `실행`, `운영`, `문서`, `주의사항` 중심의 더 짧은 버전으로 압축하거나, 반대로 스크린샷과 예시 응답까지 포함한 상세 문서로 확장할 수 있습니다.
