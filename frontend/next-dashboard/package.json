@@ -1,0 +1,28 @@
+{
+  "name": "cfd-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "node": ">=20 <22",
+    "npm": ">=9 <11"
+  },
+  "scripts": {
+    "predev": "node scripts/ensure-next-manifest.cjs",
+    "dev": "next dev -p 3010",
+    "prestart": "node scripts/ensure-next-manifest.cjs",
+    "build": "next build",
+    "start": "next start -p 3010",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "next": "14.2.5",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "eslint": "^8.57.0",
+    "eslint-config-next": "^14.2.5",
+    "node": "^20.11.1",
+    "node-win-x64": "^20.11.1"
+  }
+}

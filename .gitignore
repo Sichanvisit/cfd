@@ -1,0 +1,90 @@
+# Secrets and local environment files
+.env
+.env.*
+!.env.example
+!frontend/next-dashboard/.env.example
+
+# Python virtual environments
+.venv/
+venv/
+env/
+ENV/
+temp_env/
+
+# Editor / OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Python cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.pytest_cache_local/
+.mypy_cache/
+.ruff_cache/
+
+# Temporary test/runtime artifacts
+.tmp_manual/
+.tmp_pytest/
+.tmp_pytest_run/
+cache_run/
+pytest-cache-files-*/
+pytest-tmp/
+pytest_cache_run/
+pytest_cache_run2/
+pytest_temp/
+pytest_temp_run/
+pytest_temp_run2/
+tmp_verify_case*/
+tests/.tmp_manual/
+tests/tmp_local/
+tests/tmp_os/
+tests/tmp_run/
+tests/tmp_work/
+tests/_tmp_pytest/
+
+# Frontend build artifacts
+.npm-cache/
+frontend/next-dashboard/node_modules/
+frontend/next-dashboard/.next/
+frontend/next-dashboard/.turbo/
+frontend/next-dashboard/.env.local
+frontend/next-dashboard/npm-debug.log*
+frontend/next-dashboard/yarn-debug.log*
+frontend/next-dashboard/yarn-error.log*
+
+# Generated runtime outputs
+logs/
+data/
+models/
+releases/
+_COLLECTED_REVIEW/
+_lab_runs/
+
+# Logs, locks, and databases
+*.log
+*.lock
+*.db
+*.sqlite
+*.sqlite3
+
+# Local temp files
+*.tmp
+*.jsonl
+*.py_failed
+.trade_history.csv*.tmp
+draw_data.csv
+trade_history.csv
+trade_closed_history.csv
+trade_shock_events.csv
+
+# Personal or binary files not meant for the repo
+*.exe
+*.lnk
+*.pdf
+*.jpg
+*.jpeg
+*.JPG
+*.png

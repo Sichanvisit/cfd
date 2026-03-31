@@ -1,0 +1,1172 @@
+# config.py
+"""
+프로젝트 전역 설정 모듈.
+
+원칙:
+- 모든 값은 .env 로 덮어쓸 수 있다.
+- 기본값은 안전한 동작을 우선한다.
+- 이 파일에는 "설정 정의"만 두고, 트레이딩 로직은 두지 않는다.
+"""
+
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+load_dotenv(PROJECT_ROOT / ".env")
+
+
+def _get_bool(name, default=False):
+    """불리언 환경변수 파서(실패 시 기본값)."""
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return str(value).strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def _get_float(name, default):
+    """실수 환경변수 파서(실패 시 기본값)."""
+    value = os.getenv(name)
+    if value is None:
+        return float(default)
+    try:
+        return float(value)
+    except ValueError:
+        return float(default)
+
+
+def _get_csv(name, default=""):
+    value = os.getenv(name)
+    raw = value if value is not None else default
+    return tuple(item.strip() for item in str(raw).split(",") if item.strip())
+
+
+class Config:
+    """정적 설정 네임스페이스. (예: Config.ENTRY_THRESHOLD)"""
+
+    # =========================================
+    # [01] MT5 연결/계정
+    # =========================================
+    # MT5 실행 파일 경로, 초기 연결 타임아웃(ms)
+    TERMINAL_PATH = os.getenv("TERMINAL_PATH", r"C:\Program Files\MetaTrader 5\terminal64.exe")
+    MT5_CONNECT_TIMEOUT_MS = int(os.getenv("MT5_CONNECT_TIMEOUT_MS", 4000))
+    MT5_CONNECT_RETRY_DELAY_SEC = int(os.getenv("MT5_CONNECT_RETRY_DELAY_SEC", 10))
+
+    # 계정 모드: DEMO / REAL
+    MODE = os.getenv("ACCOUNT_MODE", "DEMO")
+
+    # 모드에 따라 계정 인증정보 선택
+    if MODE == "REAL":
+        MT5_LOGIN = int(os.getenv("REAL_MT5_LOGIN", 0))
+        MT5_PASSWORD = os.getenv("REAL_MT5_PASSWORD", "")
+        MT5_SERVER = os.getenv("REAL_MT5_SERVER", "")
+    else:
+        MT5_LOGIN = int(os.getenv("DEMO_MT5_LOGIN", 0))
+        MT5_PASSWORD = os.getenv("DEMO_MT5_PASSWORD", "")
+        MT5_SERVER = os.getenv("DEMO_MT5_SERVER", "")
+
+    # 알림(텔레그램) 설정
+    TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    TG_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+
+    # =========================================
+    # [02] 종목/시간대 기본 설정
+    # =========================================
+    # 런타임 감시 종목 목록
+    WATCH_LIST_RAW = os.getenv("WATCH_LIST", "NAS100,XAUUSD,BTCUSD")
+    WATCH_LIST = [s.strip() for s in WATCH_LIST_RAW.split(",")]
+
+    DEFAULT_SYMBOL = os.getenv("DEFAULT_SYMBOL", "NAS100")
+    TIMEZONE = os.getenv("TIMEZONE", "Asia/Seoul")
+
+    # 브로커별 심볼명 차이를 흡수하기 위한 별칭 후보
+    SYMBOL_CANDIDATES = {
+        "NAS100": ["NAS100", "NASDAQ", "US100", "USTEC", "NAS100.cash", "US100.cash"],
+        "XAUUSD": ["XAUUSD", "GOLD", "XAU/USD", "Gold.cash", "XAUUSD.cash"],
+        "BTCUSD": ["BTCUSD", "BTC/USD", "Bitcoin", "BTCUSD.cash", "BTCUSDm"]
+    }
+
+    # =========================================
+    # [03] 진입/청산 기준 + 포지션 수
+    # =========================================
+    ENTRY_THRESHOLD = int(os.getenv("ENTRY_THRESHOLD", 300))
+    EXIT_THRESHOLD = 150
+
+    # 전체/심볼별 최대 보유 포지션 수
+    MAX_POSITIONS = 3
+    MAX_POSITIONS_BY_SYMBOL = {
+        "BTCUSD": int(os.getenv("MAX_POSITIONS_BTCUSD", MAX_POSITIONS)),
+        "NAS100": int(os.getenv("MAX_POSITIONS_NAS100", MAX_POSITIONS)),
+        "XAUUSD": int(os.getenv("MAX_POSITIONS_XAUUSD", MAX_POSITIONS)),
+        "DEFAULT": int(os.getenv("MAX_POSITIONS_DEFAULT", MAX_POSITIONS)),
+    }
+
+    # 같은 심볼 재진입 쿨다운(초)
+    ENTRY_COOLDOWN = int(os.getenv("ENTRY_COOLDOWN", 60))
+    ENTRY_MARKET_CLOSED_COOLDOWN_SEC = int(os.getenv("ENTRY_MARKET_CLOSED_COOLDOWN_SEC", 300))
+    MAGIC_NUMBER = 9592
+
+    # 심볼별 진입/청산 임계값
+    ENTRY_THRESHOLD_BY_SYMBOL = {
+        "BTCUSD": int(os.getenv("ENTRY_THRESHOLD_BTCUSD", ENTRY_THRESHOLD)),
+        "NAS100": int(os.getenv("ENTRY_THRESHOLD_NAS100", ENTRY_THRESHOLD)),
+        "XAUUSD": int(os.getenv("ENTRY_THRESHOLD_XAUUSD", ENTRY_THRESHOLD)),
+        "DEFAULT": int(os.getenv("ENTRY_THRESHOLD_DEFAULT", ENTRY_THRESHOLD)),
+    }
+    EXIT_THRESHOLD_BY_SYMBOL = {
+        "BTCUSD": int(os.getenv("EXIT_THRESHOLD_BTCUSD", EXIT_THRESHOLD)),
+        "NAS100": int(os.getenv("EXIT_THRESHOLD_NAS100", EXIT_THRESHOLD)),
+        "XAUUSD": int(os.getenv("EXIT_THRESHOLD_XAUUSD", EXIT_THRESHOLD)),
+        "DEFAULT": int(os.getenv("EXIT_THRESHOLD_DEFAULT", EXIT_THRESHOLD)),
+    }
+
+    @classmethod
+    def get_max_positions(cls, symbol: str) -> int:
+        """심볼별 최대 포지션 수 조회(없으면 DEFAULT/전역값)."""
+        key = str(symbol or "").strip().upper()
+        if not key:
+            return int(cls.MAX_POSITIONS_BY_SYMBOL.get("DEFAULT", cls.MAX_POSITIONS))
+        return int(cls.MAX_POSITIONS_BY_SYMBOL.get(key, cls.MAX_POSITIONS_BY_SYMBOL.get("DEFAULT", cls.MAX_POSITIONS)))
+
+    @classmethod
+    def get_symbol_float(cls, symbol: str, mapping: dict, default: float) -> float:
+        upper = str(symbol or "").upper()
+        for key, val in (mapping or {}).items():
+            if key == "DEFAULT":
+                continue
+            if key in upper:
+                return float(val)
+        return float((mapping or {}).get("DEFAULT", default))
+
+    @classmethod
+    def get_symbol_int(cls, symbol: str, mapping: dict, default: int) -> int:
+        upper = str(symbol or "").upper()
+        for key, val in (mapping or {}).items():
+            if key == "DEFAULT":
+                continue
+            if key in upper:
+                return int(val)
+        return int((mapping or {}).get("DEFAULT", default))
+
+    # =========================================
+    # [04] 수익/손실 기본 상수
+    # =========================================
+    HARD_PROFIT_TARGET = 5.0
+    MIN_SCALP_PROFIT = 0.5
+    LOSS_LIMIT_PERCENT = 0.10
+
+    # RSI 스캘핑 기준
+    RSI_UPPER = 65
+    RSI_LOWER = 35
+
+    # 종목별 기본 랏
+    LOT_SIZES = {
+        "NAS100": 0.1,
+        "XAUUSD": 0.01,
+        "BTCUSD": 0.01,
+        "DEFAULT": 0.01
+    }
+
+    # 스프레드 하드 필터(초과 시 시그널 무시)
+    SPREAD_LIMITS = {
+        "NAS100": 50.0,
+        "XAUUSD": 30.0,
+        "BTCUSD": 500.0,
+        "DEFAULT": 100.0
+    }
+
+    # =========================================
+    # [05] AI 진입/청산 보정
+    # =========================================
+    # threshold: 판단 기준, weight: 점수 가감 강도
+    AI_ENTRY_THRESHOLD = float(os.getenv("AI_ENTRY_THRESHOLD", 0.58))
+    AI_EXIT_THRESHOLD = float(os.getenv("AI_EXIT_THRESHOLD", 0.55))
+    AI_ENTRY_WEIGHT = int(os.getenv("AI_ENTRY_WEIGHT", 200))
+    AI_EXIT_WEIGHT = int(os.getenv("AI_EXIT_WEIGHT", 150))
+
+    # 청산 점수 합성 가중치
+    # exit_score = context + opposite*W1 + gap*W2 (+ adverse bonus)
+    EXIT_SCORE_OPPOSITE_WEIGHT = _get_float("EXIT_SCORE_OPPOSITE_WEIGHT", 0.45)
+    EXIT_SCORE_GAP_WEIGHT = _get_float("EXIT_SCORE_GAP_WEIGHT", 0.80)
+    EXIT_SCORE_ADVERSE_BONUS = int(os.getenv("EXIT_SCORE_ADVERSE_BONUS", 45))
+    EXIT_SCORE_MIN = int(os.getenv("EXIT_SCORE_MIN", 0))
+    EXIT_SCORE_MAX = int(os.getenv("EXIT_SCORE_MAX", 500))
+
+    # AI 진입 차단 필터
+    AI_USE_ENTRY_FILTER = _get_bool("AI_USE_ENTRY_FILTER", False)
+    AI_ENTRY_BLOCK_PROB = float(os.getenv("AI_ENTRY_BLOCK_PROB", 0.40))
+
+    # semantic bounded live rollout
+    SEMANTIC_LIVE_ROLLOUT_MODE = str(
+        os.getenv("SEMANTIC_LIVE_ROLLOUT_MODE", "log_only") or "log_only"
+    ).strip().lower()
+    SEMANTIC_LIVE_KILL_SWITCH = _get_bool("SEMANTIC_LIVE_KILL_SWITCH", False)
+    SEMANTIC_TIMING_THRESHOLD = _get_float("SEMANTIC_TIMING_THRESHOLD", 0.55)
+    SEMANTIC_ENTRY_QUALITY_THRESHOLD = _get_float("SEMANTIC_ENTRY_QUALITY_THRESHOLD", 0.55)
+    SEMANTIC_EXIT_MANAGEMENT_THRESHOLD = _get_float("SEMANTIC_EXIT_MANAGEMENT_THRESHOLD", 0.55)
+    SEMANTIC_LIVE_ALERT_ON_DISAGREEMENT = _get_bool("SEMANTIC_LIVE_ALERT_ON_DISAGREEMENT", True)
+    SEMANTIC_LIVE_REQUIRE_CLEAN_TRACE = _get_bool("SEMANTIC_LIVE_REQUIRE_CLEAN_TRACE", True)
+    SEMANTIC_LIVE_ALLOW_FALLBACK_HEAVY = _get_bool("SEMANTIC_LIVE_ALLOW_FALLBACK_HEAVY", False)
+    SEMANTIC_LIVE_MAX_MISSING_FEATURES = int(os.getenv("SEMANTIC_LIVE_MAX_MISSING_FEATURES", 2))
+    SEMANTIC_LIVE_ALLOWED_COMPATIBILITY_MODES = _get_csv(
+        "SEMANTIC_LIVE_ALLOWED_COMPATIBILITY_MODES",
+        "hybrid",
+    )
+    SEMANTIC_LIVE_THRESHOLD_RELIEF_MAX_PTS = int(
+        os.getenv("SEMANTIC_LIVE_THRESHOLD_RELIEF_MAX_PTS", 18)
+    )
+    SEMANTIC_LIVE_THRESHOLD_RAISE_MAX_PTS = int(
+        os.getenv("SEMANTIC_LIVE_THRESHOLD_RAISE_MAX_PTS", 12)
+    )
+    SEMANTIC_LIVE_THRESHOLD_RELIEF_GAIN = _get_float(
+        "SEMANTIC_LIVE_THRESHOLD_RELIEF_GAIN",
+        90.0,
+    )
+    SEMANTIC_LIVE_THRESHOLD_RAISE_GAIN = _get_float(
+        "SEMANTIC_LIVE_THRESHOLD_RAISE_GAIN",
+        72.0,
+    )
+    SEMANTIC_LIVE_THRESHOLD_MIN_ADJUST_PTS = int(
+        os.getenv("SEMANTIC_LIVE_THRESHOLD_MIN_ADJUST_PTS", 2)
+    )
+    SEMANTIC_LIVE_PARTIAL_WEIGHT_MAX = _get_float(
+        "SEMANTIC_LIVE_PARTIAL_WEIGHT_MAX",
+        0.15,
+    )
+    SEMANTIC_LIVE_PARTIAL_WEIGHT_GAIN = _get_float(
+        "SEMANTIC_LIVE_PARTIAL_WEIGHT_GAIN",
+        0.80,
+    )
+    SEMANTIC_EXIT_ROLLOUT_ENABLED = _get_bool("SEMANTIC_EXIT_ROLLOUT_ENABLED", False)
+    SEMANTIC_LIVE_SYMBOL_ALLOWLIST = _get_csv(
+        "SEMANTIC_LIVE_SYMBOL_ALLOWLIST",
+        "",
+    )
+    SEMANTIC_LIVE_ENTRY_STAGE_ALLOWLIST = _get_csv(
+        "SEMANTIC_LIVE_ENTRY_STAGE_ALLOWLIST",
+        "aggressive,balanced",
+    )
+    SEMANTIC_LIVE_MIN_TIMING_PROB = _get_float("SEMANTIC_LIVE_MIN_TIMING_PROB", 0.58)
+    SEMANTIC_LIVE_MIN_ENTRY_QUALITY_PROB = _get_float("SEMANTIC_LIVE_MIN_ENTRY_QUALITY_PROB", 0.58)
+
+    # 적응형 3단계 진입 라우팅(aggressive/balanced/conservative)
+    ENABLE_ADAPTIVE_ENTRY_ROUTING = _get_bool("ENABLE_ADAPTIVE_ENTRY_ROUTING", True)
+    ENTRY_ADAPTIVE_REFRESH_SEC = int(os.getenv("ENTRY_ADAPTIVE_REFRESH_SEC", 120))
+    ENTRY_ADAPTIVE_MIN_SAMPLES = int(os.getenv("ENTRY_ADAPTIVE_MIN_SAMPLES", 30))
+    ENTRY_ADAPTIVE_RULE_WEIGHT = _get_float("ENTRY_ADAPTIVE_RULE_WEIGHT", 0.60)
+    ENTRY_ADAPTIVE_MODEL_WEIGHT = _get_float("ENTRY_ADAPTIVE_MODEL_WEIGHT", 0.40)
+    ENABLE_ADAPTIVE_ENTRY_DIRECTIONAL_BIAS = _get_bool("ENABLE_ADAPTIVE_ENTRY_DIRECTIONAL_BIAS", True)
+    ENTRY_ADAPTIVE_DIRECTIONAL_MIN_CASE_SAMPLES = int(os.getenv("ENTRY_ADAPTIVE_DIRECTIONAL_MIN_CASE_SAMPLES", 8))
+    ENTRY_ADAPTIVE_DIRECTIONAL_BB_UPPER = _get_float("ENTRY_ADAPTIVE_DIRECTIONAL_BB_UPPER", 0.78)
+    ENTRY_ADAPTIVE_DIRECTIONAL_BB_LOWER = _get_float("ENTRY_ADAPTIVE_DIRECTIONAL_BB_LOWER", 0.22)
+    ENTRY_ADAPTIVE_DIRECTIONAL_BB_FALLING = _get_float("ENTRY_ADAPTIVE_DIRECTIONAL_BB_FALLING", 0.35)
+    ENTRY_ADAPTIVE_DIRECTIONAL_LOSS_CENTER = _get_float("ENTRY_ADAPTIVE_DIRECTIONAL_LOSS_CENTER", 0.55)
+    ENTRY_ADAPTIVE_DIRECTIONAL_EXPECTANCY_GAIN = _get_float("ENTRY_ADAPTIVE_DIRECTIONAL_EXPECTANCY_GAIN", 22.0)
+    ENTRY_ADAPTIVE_DIRECTIONAL_LOSSRATE_GAIN = _get_float("ENTRY_ADAPTIVE_DIRECTIONAL_LOSSRATE_GAIN", 28.0)
+    ENTRY_ADAPTIVE_DIRECTIONAL_CASE_CAP = _get_float("ENTRY_ADAPTIVE_DIRECTIONAL_CASE_CAP", 28.0)
+    ENTRY_ADAPTIVE_DIRECTIONAL_SIDE_CAP = _get_float("ENTRY_ADAPTIVE_DIRECTIONAL_SIDE_CAP", 42.0)
+    ENTRY_ADAPTIVE_DIRECTIONAL_EMA_ALPHA = _get_float("ENTRY_ADAPTIVE_DIRECTIONAL_EMA_ALPHA", 0.35)
+    ENTRY_ADAPTIVE_DIRECTIONAL_OPPOSITE_GAIN = _get_float("ENTRY_ADAPTIVE_DIRECTIONAL_OPPOSITE_GAIN", 0.30)
+    ENTRY_ADAPTIVE_DIRECTIONAL_MIN_CASE_SAMPLES_BY_SYMBOL = {
+        "BTCUSD": int(os.getenv("ENTRY_ADAPTIVE_DIRECTIONAL_MIN_CASE_SAMPLES_BTCUSD", 5)),
+        "NAS100": int(os.getenv("ENTRY_ADAPTIVE_DIRECTIONAL_MIN_CASE_SAMPLES_NAS100", ENTRY_ADAPTIVE_DIRECTIONAL_MIN_CASE_SAMPLES)),
+        "XAUUSD": int(os.getenv("ENTRY_ADAPTIVE_DIRECTIONAL_MIN_CASE_SAMPLES_XAUUSD", 7)),
+        "DEFAULT": int(os.getenv("ENTRY_ADAPTIVE_DIRECTIONAL_MIN_CASE_SAMPLES_DEFAULT", ENTRY_ADAPTIVE_DIRECTIONAL_MIN_CASE_SAMPLES)),
+    }
+    ENTRY_ADAPTIVE_DIRECTIONAL_EXPECTANCY_GAIN_BY_SYMBOL = {
+        "BTCUSD": _get_float("ENTRY_ADAPTIVE_DIRECTIONAL_EXPECTANCY_GAIN_BTCUSD", 30.0),
+        "NAS100": _get_float("ENTRY_ADAPTIVE_DIRECTIONAL_EXPECTANCY_GAIN_NAS100", 18.0),
+        "XAUUSD": _get_float("ENTRY_ADAPTIVE_DIRECTIONAL_EXPECTANCY_GAIN_XAUUSD", ENTRY_ADAPTIVE_DIRECTIONAL_EXPECTANCY_GAIN),
+        "DEFAULT": _get_float("ENTRY_ADAPTIVE_DIRECTIONAL_EXPECTANCY_GAIN_DEFAULT", ENTRY_ADAPTIVE_DIRECTIONAL_EXPECTANCY_GAIN),
+    }
+    ENTRY_ADAPTIVE_DIRECTIONAL_SIDE_CAP_BY_SYMBOL = {
+        "BTCUSD": _get_float("ENTRY_ADAPTIVE_DIRECTIONAL_SIDE_CAP_BTCUSD", 52.0),
+        "NAS100": _get_float("ENTRY_ADAPTIVE_DIRECTIONAL_SIDE_CAP_NAS100", 36.0),
+        "XAUUSD": _get_float("ENTRY_ADAPTIVE_DIRECTIONAL_SIDE_CAP_XAUUSD", 44.0),
+        "DEFAULT": _get_float("ENTRY_ADAPTIVE_DIRECTIONAL_SIDE_CAP_DEFAULT", ENTRY_ADAPTIVE_DIRECTIONAL_SIDE_CAP),
+    }
+    ENTRY_STAGE_AGGRESSIVE_MULT = _get_float("ENTRY_STAGE_AGGRESSIVE_MULT", 0.88)
+    ENTRY_STAGE_BALANCED_MULT = _get_float("ENTRY_STAGE_BALANCED_MULT", 1.00)
+    ENTRY_STAGE_CONSERVATIVE_MULT = _get_float("ENTRY_STAGE_CONSERVATIVE_MULT", 1.15)
+    ENTRY_STAGE_MIN_PROB_AGGRESSIVE = _get_float("ENTRY_STAGE_MIN_PROB_AGGRESSIVE", 0.45)
+    ENTRY_STAGE_MIN_PROB_BALANCED = _get_float("ENTRY_STAGE_MIN_PROB_BALANCED", 0.50)
+    ENTRY_STAGE_MIN_PROB_CONSERVATIVE = _get_float("ENTRY_STAGE_MIN_PROB_CONSERVATIVE", 0.56)
+
+    # 진입 패밀리 우선가중치(Structure/Flow/VP/Trigger)
+    # - Structure: 시간대 박스, 시가, 지지/저항 계열
+    # - Flow: BB(20,2)/(4,4), 이평, 추세 계열
+    # - VP/Trigger: 보조 계열
+    ENTRY_PRIORITY_STRUCTURE = _get_float("ENTRY_PRIORITY_STRUCTURE", 1.00)
+    ENTRY_PRIORITY_FLOW = _get_float("ENTRY_PRIORITY_FLOW", 1.00)
+    ENTRY_PRIORITY_VP = _get_float("ENTRY_PRIORITY_VP", 1.00)
+    ENTRY_PRIORITY_TRIGGER = _get_float("ENTRY_PRIORITY_TRIGGER", 1.00)
+    # 박스/볼밴 돌파 후 지지/저항(리테스트 홀드) 강화
+    BOX_RETEST_SCORE = int(os.getenv("BOX_RETEST_SCORE", 95))
+    BOX_RETEST_LOOKBACK = int(os.getenv("BOX_RETEST_LOOKBACK", 8))
+    BOX_RETEST_TOL_RATIO = _get_float("BOX_RETEST_TOL_RATIO", 0.00035)
+    BB_LEVEL_RETEST_SCORE = int(os.getenv("BB_LEVEL_RETEST_SCORE", 55))
+    BB_LEVEL_RETEST_LOOKBACK = int(os.getenv("BB_LEVEL_RETEST_LOOKBACK", 8))
+    BB_LEVEL_RETEST_TOL_RATIO = _get_float("BB_LEVEL_RETEST_TOL_RATIO", 0.00030)
+    BB_MID_HOLD_SCORE = int(os.getenv("BB_MID_HOLD_SCORE", 45))
+    BB_MID_HOLD_LOOKBACK = int(os.getenv("BB_MID_HOLD_LOOKBACK", 6))
+    # 진입 편중/과밀 완화 가드
+    ENTRY_CLUSTER_GUARD_ENABLED = _get_bool("ENTRY_CLUSTER_GUARD_ENABLED", True)
+    ENTRY_CLUSTER_WINDOW_SECONDS = int(os.getenv("ENTRY_CLUSTER_WINDOW_SECONDS", 180))
+    ENTRY_CLUSTER_MIN_MOVE_PCT = _get_float("ENTRY_CLUSTER_MIN_MOVE_PCT", 0.0004)
+    ENTRY_CLUSTER_WINDOW_SECONDS_BY_SYMBOL = {
+        "BTCUSD": int(os.getenv("ENTRY_CLUSTER_WINDOW_SECONDS_BTCUSD", ENTRY_CLUSTER_WINDOW_SECONDS)),
+        "NAS100": int(os.getenv("ENTRY_CLUSTER_WINDOW_SECONDS_NAS100", ENTRY_CLUSTER_WINDOW_SECONDS)),
+        "XAUUSD": int(os.getenv("ENTRY_CLUSTER_WINDOW_SECONDS_XAUUSD", ENTRY_CLUSTER_WINDOW_SECONDS)),
+        "DEFAULT": int(os.getenv("ENTRY_CLUSTER_WINDOW_SECONDS_DEFAULT", ENTRY_CLUSTER_WINDOW_SECONDS)),
+    }
+    ENTRY_CLUSTER_MIN_MOVE_PCT_BY_SYMBOL = {
+        "BTCUSD": _get_float("ENTRY_CLUSTER_MIN_MOVE_PCT_BTCUSD", ENTRY_CLUSTER_MIN_MOVE_PCT),
+        "NAS100": _get_float("ENTRY_CLUSTER_MIN_MOVE_PCT_NAS100", ENTRY_CLUSTER_MIN_MOVE_PCT),
+        "XAUUSD": _get_float("ENTRY_CLUSTER_MIN_MOVE_PCT_XAUUSD", ENTRY_CLUSTER_MIN_MOVE_PCT),
+        "DEFAULT": _get_float("ENTRY_CLUSTER_MIN_MOVE_PCT_DEFAULT", ENTRY_CLUSTER_MIN_MOVE_PCT),
+    }
+    ENTRY_CLUSTER_SEMANTIC_RELIEF_ENABLED = _get_bool("ENTRY_CLUSTER_SEMANTIC_RELIEF_ENABLED", True)
+    ENTRY_CLUSTER_SEMANTIC_RELIEF_WINDOW_MULT = _get_float("ENTRY_CLUSTER_SEMANTIC_RELIEF_WINDOW_MULT", 0.55)
+    ENTRY_CLUSTER_SEMANTIC_RELIEF_MOVE_MULT = _get_float("ENTRY_CLUSTER_SEMANTIC_RELIEF_MOVE_MULT", 0.35)
+    ENTRY_CLUSTER_SEMANTIC_MIN_CONFIDENCE = _get_float("ENTRY_CLUSTER_SEMANTIC_MIN_CONFIDENCE", 0.58)
+    ENTRY_CLUSTER_SEMANTIC_MIN_CONFIRM_FAKE_GAP = _get_float("ENTRY_CLUSTER_SEMANTIC_MIN_CONFIRM_FAKE_GAP", 0.12)
+    ENTRY_CLUSTER_SEMANTIC_MIN_CONTINUE_FAIL_GAP = _get_float("ENTRY_CLUSTER_SEMANTIC_MIN_CONTINUE_FAIL_GAP", 0.18)
+    ENTRY_CLUSTER_SEMANTIC_MIN_PERSISTENCE = _get_float("ENTRY_CLUSTER_SEMANTIC_MIN_PERSISTENCE", 0.50)
+    ENTRY_CLUSTER_SEMANTIC_MIN_STREAK = int(os.getenv("ENTRY_CLUSTER_SEMANTIC_MIN_STREAK", 2))
+    ENTRY_CLUSTER_SEMANTIC_MAX_SIDE_BARRIER = _get_float("ENTRY_CLUSTER_SEMANTIC_MAX_SIDE_BARRIER", 0.22)
+    ENTRY_CLUSTER_SEMANTIC_MIN_SCORE = int(os.getenv("ENTRY_CLUSTER_SEMANTIC_MIN_SCORE", 6))
+    ENTRY_PYRAMID_SCORE_STEP = int(os.getenv("ENTRY_PYRAMID_SCORE_STEP", 20))
+    ENTRY_PYRAMID_MIN_PROGRESS_PCT = _get_float("ENTRY_PYRAMID_MIN_PROGRESS_PCT", 0.00035)
+    ENTRY_PYRAMID_MODE = str(os.getenv("ENTRY_PYRAMID_MODE", "adverse") or "adverse").strip().lower()
+    ENTRY_PYRAMID_REQUIRE_DRAWDOWN = _get_bool("ENTRY_PYRAMID_REQUIRE_DRAWDOWN", True)
+    ENTRY_PYRAMID_EDGE_GUARD = _get_bool("ENTRY_PYRAMID_EDGE_GUARD", True)
+    ENTRY_PYRAMID_MIN_PROGRESS_PCT_BY_SYMBOL = {
+        "BTCUSD": _get_float("ENTRY_PYRAMID_MIN_PROGRESS_PCT_BTCUSD", ENTRY_PYRAMID_MIN_PROGRESS_PCT),
+        "NAS100": _get_float("ENTRY_PYRAMID_MIN_PROGRESS_PCT_NAS100", ENTRY_PYRAMID_MIN_PROGRESS_PCT),
+        "XAUUSD": _get_float("ENTRY_PYRAMID_MIN_PROGRESS_PCT_XAUUSD", ENTRY_PYRAMID_MIN_PROGRESS_PCT),
+        "DEFAULT": _get_float("ENTRY_PYRAMID_MIN_PROGRESS_PCT_DEFAULT", ENTRY_PYRAMID_MIN_PROGRESS_PCT),
+    }
+    # 볼린저 중앙선/밴드 지지 없는 억지 진입 차단
+    ENABLE_ENTRY_BB_GUARD = _get_bool("ENABLE_ENTRY_BB_GUARD", True)
+    ENTRY_BB_MID_BIAS_MODE = str(os.getenv("ENTRY_BB_MID_BIAS_MODE", "trend") or "trend").strip().lower()
+    ENTRY_BB_MID_TOL_PCT = _get_float("ENTRY_BB_MID_TOL_PCT", 0.00015)
+    ENTRY_BB_NEAR_BAND_PCT = _get_float("ENTRY_BB_NEAR_BAND_PCT", 0.00020)
+    ENTRY_BB_BREAKOUT_BLOCK_PCT = _get_float("ENTRY_BB_BREAKOUT_BLOCK_PCT", 0.00005)
+    ENTRY_BB_REQUIRE_EDGE_TOUCH = _get_bool("ENTRY_BB_REQUIRE_EDGE_TOUCH", False)
+    ENTRY_BB_EDGE_TOUCH_PCT = _get_float("ENTRY_BB_EDGE_TOUCH_PCT", ENTRY_BB_NEAR_BAND_PCT)
+    ENABLE_ENTRY_BB_CHANNEL_BREAK_GUARD = _get_bool("ENABLE_ENTRY_BB_CHANNEL_BREAK_GUARD", True)
+    ENTRY_BB_CHANNEL_BREAK_LOOKBACK = int(os.getenv("ENTRY_BB_CHANNEL_BREAK_LOOKBACK", 3))
+    ENTRY_BB_CHANNEL_BREAK_NEAR_LOWER_TOL = _get_float("ENTRY_BB_CHANNEL_BREAK_NEAR_LOWER_TOL", 0.00025)
+    ENTRY_BB_CHANNEL_BREAK_NEAR_UPPER_TOL = _get_float("ENTRY_BB_CHANNEL_BREAK_NEAR_UPPER_TOL", 0.00025)
+    # 박스 중앙(MIDDLE)에서는 BB 근거가 약하면 진입 차단
+    ENABLE_ENTRY_BOX_MID_GUARD = _get_bool("ENABLE_ENTRY_BOX_MID_GUARD", True)
+    ENTRY_BOX_MID_NEAR_RATIO = _get_float("ENTRY_BOX_MID_NEAR_RATIO", 0.0008)
+    ENTRY_BOX_MID_RETEST_LOOKBACK = int(os.getenv("ENTRY_BOX_MID_RETEST_LOOKBACK", 4))
+    ENTRY_BOX_MID_RETEST_TOL_PCT = _get_float("ENTRY_BOX_MID_RETEST_TOL_PCT", 0.00025)
+    ENTRY_BOX_MID_BAND_NEAR_PCT = _get_float("ENTRY_BOX_MID_BAND_NEAR_PCT", 0.00035)
+    ENTRY_BB_MID_TOL_PCT_BY_SYMBOL = {
+        "BTCUSD": _get_float("ENTRY_BB_MID_TOL_PCT_BTCUSD", ENTRY_BB_MID_TOL_PCT),
+        "NAS100": _get_float("ENTRY_BB_MID_TOL_PCT_NAS100", ENTRY_BB_MID_TOL_PCT),
+        "XAUUSD": _get_float("ENTRY_BB_MID_TOL_PCT_XAUUSD", ENTRY_BB_MID_TOL_PCT),
+        "DEFAULT": _get_float("ENTRY_BB_MID_TOL_PCT_DEFAULT", ENTRY_BB_MID_TOL_PCT),
+    }
+    ENTRY_BB_NEAR_BAND_PCT_BY_SYMBOL = {
+        "BTCUSD": _get_float("ENTRY_BB_NEAR_BAND_PCT_BTCUSD", ENTRY_BB_NEAR_BAND_PCT),
+        "NAS100": _get_float("ENTRY_BB_NEAR_BAND_PCT_NAS100", ENTRY_BB_NEAR_BAND_PCT),
+        "XAUUSD": _get_float("ENTRY_BB_NEAR_BAND_PCT_XAUUSD", ENTRY_BB_NEAR_BAND_PCT),
+        "DEFAULT": _get_float("ENTRY_BB_NEAR_BAND_PCT_DEFAULT", ENTRY_BB_NEAR_BAND_PCT),
+    }
+    ENTRY_BB_BREAKOUT_BLOCK_PCT_BY_SYMBOL = {
+        "BTCUSD": _get_float("ENTRY_BB_BREAKOUT_BLOCK_PCT_BTCUSD", ENTRY_BB_BREAKOUT_BLOCK_PCT),
+        "NAS100": _get_float("ENTRY_BB_BREAKOUT_BLOCK_PCT_NAS100", ENTRY_BB_BREAKOUT_BLOCK_PCT),
+        "XAUUSD": _get_float("ENTRY_BB_BREAKOUT_BLOCK_PCT_XAUUSD", ENTRY_BB_BREAKOUT_BLOCK_PCT),
+        "DEFAULT": _get_float("ENTRY_BB_BREAKOUT_BLOCK_PCT_DEFAULT", ENTRY_BB_BREAKOUT_BLOCK_PCT),
+    }
+    ENTRY_BB_EDGE_TOUCH_PCT_BY_SYMBOL = {
+        "BTCUSD": _get_float("ENTRY_BB_EDGE_TOUCH_PCT_BTCUSD", ENTRY_BB_EDGE_TOUCH_PCT),
+        "NAS100": _get_float("ENTRY_BB_EDGE_TOUCH_PCT_NAS100", ENTRY_BB_EDGE_TOUCH_PCT),
+        "XAUUSD": _get_float("ENTRY_BB_EDGE_TOUCH_PCT_XAUUSD", ENTRY_BB_EDGE_TOUCH_PCT),
+        "DEFAULT": _get_float("ENTRY_BB_EDGE_TOUCH_PCT_DEFAULT", ENTRY_BB_EDGE_TOUCH_PCT),
+    }
+    ENTRY_BB_REQUIRE_EDGE_TOUCH_BY_SYMBOL = {
+        "BTCUSD": _get_float("ENTRY_BB_REQUIRE_EDGE_TOUCH_BTCUSD", 0.0),
+        "NAS100": _get_float("ENTRY_BB_REQUIRE_EDGE_TOUCH_NAS100", 0.0),
+        "XAUUSD": _get_float("ENTRY_BB_REQUIRE_EDGE_TOUCH_XAUUSD", 0.0),
+        "DEFAULT": _get_float("ENTRY_BB_REQUIRE_EDGE_TOUCH_DEFAULT", (1.0 if ENTRY_BB_REQUIRE_EDGE_TOUCH else 0.0)),
+    }
+    ENTRY_BB_CHANNEL_UPPER_RATIO = _get_float("ENTRY_BB_CHANNEL_UPPER_RATIO", 0.72)
+    ENTRY_BB_CHANNEL_LOWER_RATIO = _get_float("ENTRY_BB_CHANNEL_LOWER_RATIO", 0.28)
+    ENTRY_BB_CHANNEL_MID_HALF_WIDTH = _get_float("ENTRY_BB_CHANNEL_MID_HALF_WIDTH", 0.12)
+    ENTRY_BB_CHANNEL_UPPER_RATIO_BY_SYMBOL = {
+        "BTCUSD": _get_float("ENTRY_BB_CHANNEL_UPPER_RATIO_BTCUSD", ENTRY_BB_CHANNEL_UPPER_RATIO),
+        "NAS100": _get_float("ENTRY_BB_CHANNEL_UPPER_RATIO_NAS100", 0.70),
+        "XAUUSD": _get_float("ENTRY_BB_CHANNEL_UPPER_RATIO_XAUUSD", 0.76),
+        "DEFAULT": _get_float("ENTRY_BB_CHANNEL_UPPER_RATIO_DEFAULT", ENTRY_BB_CHANNEL_UPPER_RATIO),
+    }
+    ENTRY_BB_CHANNEL_LOWER_RATIO_BY_SYMBOL = {
+        "BTCUSD": _get_float("ENTRY_BB_CHANNEL_LOWER_RATIO_BTCUSD", ENTRY_BB_CHANNEL_LOWER_RATIO),
+        "NAS100": _get_float("ENTRY_BB_CHANNEL_LOWER_RATIO_NAS100", 0.30),
+        "XAUUSD": _get_float("ENTRY_BB_CHANNEL_LOWER_RATIO_XAUUSD", 0.24),
+        "DEFAULT": _get_float("ENTRY_BB_CHANNEL_LOWER_RATIO_DEFAULT", ENTRY_BB_CHANNEL_LOWER_RATIO),
+    }
+    ENTRY_BB_CHANNEL_MID_HALF_WIDTH_BY_SYMBOL = {
+        "BTCUSD": _get_float("ENTRY_BB_CHANNEL_MID_HALF_WIDTH_BTCUSD", 0.14),
+        "NAS100": _get_float("ENTRY_BB_CHANNEL_MID_HALF_WIDTH_NAS100", 0.10),
+        "XAUUSD": _get_float("ENTRY_BB_CHANNEL_MID_HALF_WIDTH_XAUUSD", 0.14),
+        "DEFAULT": _get_float("ENTRY_BB_CHANNEL_MID_HALF_WIDTH_DEFAULT", ENTRY_BB_CHANNEL_MID_HALF_WIDTH),
+    }
+    # Box/BB/Wait scoring knobs (symbol-specific tuning)
+    ENTRY_BOX_LOOKBACK_BARS = int(os.getenv("ENTRY_BOX_LOOKBACK_BARS", 48))
+    ENTRY_BOX_EDGE_BAND = _get_float("ENTRY_BOX_EDGE_BAND", 0.20)
+    ENTRY_BOX_EDGE_SCORE = int(os.getenv("ENTRY_BOX_EDGE_SCORE", 34))
+    ENTRY_BOX_CENTER_LOW = _get_float("ENTRY_BOX_CENTER_LOW", 0.40)
+    ENTRY_BOX_CENTER_HIGH = _get_float("ENTRY_BOX_CENTER_HIGH", 0.60)
+    ENTRY_BOX_CENTER_WAIT_SCORE = int(os.getenv("ENTRY_BOX_CENTER_WAIT_SCORE", 24))
+    ENTRY_BOX_LOOKBACK_BARS_BY_SYMBOL = {
+        "BTCUSD": int(os.getenv("ENTRY_BOX_LOOKBACK_BARS_BTCUSD", ENTRY_BOX_LOOKBACK_BARS)),
+        "NAS100": int(os.getenv("ENTRY_BOX_LOOKBACK_BARS_NAS100", 56)),
+        "XAUUSD": int(os.getenv("ENTRY_BOX_LOOKBACK_BARS_XAUUSD", 40)),
+        "DEFAULT": int(os.getenv("ENTRY_BOX_LOOKBACK_BARS_DEFAULT", ENTRY_BOX_LOOKBACK_BARS)),
+    }
+    ENTRY_BOX_EDGE_BAND_BY_SYMBOL = {
+        "BTCUSD": _get_float("ENTRY_BOX_EDGE_BAND_BTCUSD", ENTRY_BOX_EDGE_BAND),
+        "NAS100": _get_float("ENTRY_BOX_EDGE_BAND_NAS100", 0.18),
+        "XAUUSD": _get_float("ENTRY_BOX_EDGE_BAND_XAUUSD", 0.22),
+        "DEFAULT": _get_float("ENTRY_BOX_EDGE_BAND_DEFAULT", ENTRY_BOX_EDGE_BAND),
+    }
+    ENTRY_BOX_EDGE_SCORE_BY_SYMBOL = {
+        "BTCUSD": int(os.getenv("ENTRY_BOX_EDGE_SCORE_BTCUSD", ENTRY_BOX_EDGE_SCORE)),
+        "NAS100": int(os.getenv("ENTRY_BOX_EDGE_SCORE_NAS100", 38)),
+        "XAUUSD": int(os.getenv("ENTRY_BOX_EDGE_SCORE_XAUUSD", 32)),
+        "DEFAULT": int(os.getenv("ENTRY_BOX_EDGE_SCORE_DEFAULT", ENTRY_BOX_EDGE_SCORE)),
+    }
+    ENTRY_BOX_CENTER_WAIT_SCORE_BY_SYMBOL = {
+        "BTCUSD": int(os.getenv("ENTRY_BOX_CENTER_WAIT_SCORE_BTCUSD", ENTRY_BOX_CENTER_WAIT_SCORE)),
+        "NAS100": int(os.getenv("ENTRY_BOX_CENTER_WAIT_SCORE_NAS100", 20)),
+        "XAUUSD": int(os.getenv("ENTRY_BOX_CENTER_WAIT_SCORE_XAUUSD", 30)),
+        "DEFAULT": int(os.getenv("ENTRY_BOX_CENTER_WAIT_SCORE_DEFAULT", ENTRY_BOX_CENTER_WAIT_SCORE)),
+    }
+    ENTRY_BB_EDGE_BAND = _get_float("ENTRY_BB_EDGE_BAND", 0.20)
+    ENTRY_BB_EDGE_SCORE = int(os.getenv("ENTRY_BB_EDGE_SCORE", 28))
+    ENTRY_BB_CENTER_LOW = _get_float("ENTRY_BB_CENTER_LOW", 0.45)
+    ENTRY_BB_CENTER_HIGH = _get_float("ENTRY_BB_CENTER_HIGH", 0.55)
+    ENTRY_BB_CENTER_WAIT_SCORE = int(os.getenv("ENTRY_BB_CENTER_WAIT_SCORE", 18))
+    ENTRY_BB_EDGE_BAND_BY_SYMBOL = {
+        "BTCUSD": _get_float("ENTRY_BB_EDGE_BAND_BTCUSD", ENTRY_BB_EDGE_BAND),
+        "NAS100": _get_float("ENTRY_BB_EDGE_BAND_NAS100", 0.18),
+        "XAUUSD": _get_float("ENTRY_BB_EDGE_BAND_XAUUSD", 0.24),
+        "DEFAULT": _get_float("ENTRY_BB_EDGE_BAND_DEFAULT", ENTRY_BB_EDGE_BAND),
+    }
+    ENTRY_BB_EDGE_SCORE_BY_SYMBOL = {
+        "BTCUSD": int(os.getenv("ENTRY_BB_EDGE_SCORE_BTCUSD", ENTRY_BB_EDGE_SCORE)),
+        "NAS100": int(os.getenv("ENTRY_BB_EDGE_SCORE_NAS100", 32)),
+        "XAUUSD": int(os.getenv("ENTRY_BB_EDGE_SCORE_XAUUSD", 26)),
+        "DEFAULT": int(os.getenv("ENTRY_BB_EDGE_SCORE_DEFAULT", ENTRY_BB_EDGE_SCORE)),
+    }
+    ENTRY_BB_CENTER_WAIT_SCORE_BY_SYMBOL = {
+        "BTCUSD": int(os.getenv("ENTRY_BB_CENTER_WAIT_SCORE_BTCUSD", ENTRY_BB_CENTER_WAIT_SCORE)),
+        "NAS100": int(os.getenv("ENTRY_BB_CENTER_WAIT_SCORE_NAS100", 16)),
+        "XAUUSD": int(os.getenv("ENTRY_BB_CENTER_WAIT_SCORE_XAUUSD", 26)),
+        "DEFAULT": int(os.getenv("ENTRY_BB_CENTER_WAIT_SCORE_DEFAULT", ENTRY_BB_CENTER_WAIT_SCORE)),
+    }
+    ENTRY_WAIT_CONFLICT_SCORE = int(os.getenv("ENTRY_WAIT_CONFLICT_SCORE", 20))
+    ENTRY_WAIT_NOISE_LOOKBACK_BARS = int(os.getenv("ENTRY_WAIT_NOISE_LOOKBACK_BARS", 12))
+    WAIT_NOISE_FLIP_MIN = int(os.getenv("WAIT_NOISE_FLIP_MIN", 4))
+    WAIT_NOISE_FLIP_SCORE = int(os.getenv("WAIT_NOISE_FLIP_SCORE", 14))
+    WAIT_NOISE_CHOP_RATIO = _get_float("WAIT_NOISE_CHOP_RATIO", 2.2)
+    WAIT_NOISE_CHOP_SCORE = int(os.getenv("WAIT_NOISE_CHOP_SCORE", 14))
+    ENTRY_WAIT_HARD_BLOCK_SCORE = _get_float("ENTRY_WAIT_HARD_BLOCK_SCORE", 70.0)
+    ENTRY_WAIT_SOFT_SCORE = _get_float("ENTRY_WAIT_SOFT_SCORE", 45.0)
+    ENTRY_WAIT_PENALTY_PER_POINT = _get_float("ENTRY_WAIT_PENALTY_PER_POINT", 0.28)
+    ENTRY_WAIT_CONFLICT_SCORE_BY_SYMBOL = {
+        "BTCUSD": int(os.getenv("ENTRY_WAIT_CONFLICT_SCORE_BTCUSD", ENTRY_WAIT_CONFLICT_SCORE)),
+        "NAS100": int(os.getenv("ENTRY_WAIT_CONFLICT_SCORE_NAS100", 18)),
+        "XAUUSD": int(os.getenv("ENTRY_WAIT_CONFLICT_SCORE_XAUUSD", 30)),
+        "DEFAULT": int(os.getenv("ENTRY_WAIT_CONFLICT_SCORE_DEFAULT", ENTRY_WAIT_CONFLICT_SCORE)),
+    }
+    ENTRY_WAIT_NOISE_LOOKBACK_BARS_BY_SYMBOL = {
+        "BTCUSD": int(os.getenv("ENTRY_WAIT_NOISE_LOOKBACK_BARS_BTCUSD", ENTRY_WAIT_NOISE_LOOKBACK_BARS)),
+        "NAS100": int(os.getenv("ENTRY_WAIT_NOISE_LOOKBACK_BARS_NAS100", 14)),
+        "XAUUSD": int(os.getenv("ENTRY_WAIT_NOISE_LOOKBACK_BARS_XAUUSD", 10)),
+        "DEFAULT": int(os.getenv("ENTRY_WAIT_NOISE_LOOKBACK_BARS_DEFAULT", ENTRY_WAIT_NOISE_LOOKBACK_BARS)),
+    }
+    ENTRY_WAIT_HARD_BLOCK_SCORE_BY_SYMBOL = {
+        "BTCUSD": _get_float("ENTRY_WAIT_HARD_BLOCK_SCORE_BTCUSD", ENTRY_WAIT_HARD_BLOCK_SCORE),
+        "NAS100": _get_float("ENTRY_WAIT_HARD_BLOCK_SCORE_NAS100", 72.0),
+        "XAUUSD": _get_float("ENTRY_WAIT_HARD_BLOCK_SCORE_XAUUSD", 62.0),
+        "DEFAULT": _get_float("ENTRY_WAIT_HARD_BLOCK_SCORE_DEFAULT", ENTRY_WAIT_HARD_BLOCK_SCORE),
+    }
+    ENTRY_WAIT_SOFT_SCORE_BY_SYMBOL = {
+        "BTCUSD": _get_float("ENTRY_WAIT_SOFT_SCORE_BTCUSD", ENTRY_WAIT_SOFT_SCORE),
+        "NAS100": _get_float("ENTRY_WAIT_SOFT_SCORE_NAS100", 48.0),
+        "XAUUSD": _get_float("ENTRY_WAIT_SOFT_SCORE_XAUUSD", 36.0),
+        "DEFAULT": _get_float("ENTRY_WAIT_SOFT_SCORE_DEFAULT", ENTRY_WAIT_SOFT_SCORE),
+    }
+    ENTRY_WAIT_PENALTY_PER_POINT_BY_SYMBOL = {
+        "BTCUSD": _get_float("ENTRY_WAIT_PENALTY_PER_POINT_BTCUSD", ENTRY_WAIT_PENALTY_PER_POINT),
+        "NAS100": _get_float("ENTRY_WAIT_PENALTY_PER_POINT_NAS100", 0.24),
+        "XAUUSD": _get_float("ENTRY_WAIT_PENALTY_PER_POINT_XAUUSD", 0.36),
+        "DEFAULT": _get_float("ENTRY_WAIT_PENALTY_PER_POINT_DEFAULT", ENTRY_WAIT_PENALTY_PER_POINT),
+    }
+    # Soft directional veto by H1 box location (score penalty, not hard block)
+    ENTRY_BOX_CONTRA_WAIT_MIN = _get_float("ENTRY_BOX_CONTRA_WAIT_MIN", 8.0)
+    ENTRY_BOX_CONTRA_PENALTY = _get_float("ENTRY_BOX_CONTRA_PENALTY", 22.0)
+    ENTRY_BOX_CONTRA_WAIT_GAIN = _get_float("ENTRY_BOX_CONTRA_WAIT_GAIN", 0.40)
+    ENTRY_BOX_CONTRA_H1_GAP_OVERRIDE = _get_float("ENTRY_BOX_CONTRA_H1_GAP_OVERRIDE", 32.0)
+    ENTRY_BOX_CONTRA_M1_GAP_OVERRIDE = _get_float("ENTRY_BOX_CONTRA_M1_GAP_OVERRIDE", 18.0)
+    ENTRY_BOX_CONTRA_SCORE_GAP_OVERRIDE = _get_float("ENTRY_BOX_CONTRA_SCORE_GAP_OVERRIDE", 120.0)
+    ENTRY_BOX_CONTRA_PENALTY_BY_SYMBOL = {
+        "BTCUSD": _get_float("ENTRY_BOX_CONTRA_PENALTY_BTCUSD", ENTRY_BOX_CONTRA_PENALTY),
+        "NAS100": _get_float("ENTRY_BOX_CONTRA_PENALTY_NAS100", 34.0),
+        "XAUUSD": _get_float("ENTRY_BOX_CONTRA_PENALTY_XAUUSD", 42.0),
+        "DEFAULT": _get_float("ENTRY_BOX_CONTRA_PENALTY_DEFAULT", ENTRY_BOX_CONTRA_PENALTY),
+    }
+    ENTRY_BOX_CONTRA_WAIT_MIN_BY_SYMBOL = {
+        "BTCUSD": _get_float("ENTRY_BOX_CONTRA_WAIT_MIN_BTCUSD", ENTRY_BOX_CONTRA_WAIT_MIN),
+        "NAS100": _get_float("ENTRY_BOX_CONTRA_WAIT_MIN_NAS100", 6.0),
+        "XAUUSD": _get_float("ENTRY_BOX_CONTRA_WAIT_MIN_XAUUSD", 4.0),
+        "DEFAULT": _get_float("ENTRY_BOX_CONTRA_WAIT_MIN_DEFAULT", ENTRY_BOX_CONTRA_WAIT_MIN),
+    }
+    # Falling-knife (down-channel + lower-band) guard by score
+    ENTRY_FALLING_KNIFE_LOOKBACK = int(os.getenv("ENTRY_FALLING_KNIFE_LOOKBACK", 8))
+    ENTRY_FALLING_KNIFE_MIN_DOWN_BARS = int(os.getenv("ENTRY_FALLING_KNIFE_MIN_DOWN_BARS", 6))
+    ENTRY_FALLING_KNIFE_WAIT_SCORE = int(os.getenv("ENTRY_FALLING_KNIFE_WAIT_SCORE", 22))
+    ENTRY_FALLING_KNIFE_SELL_SCORE = int(os.getenv("ENTRY_FALLING_KNIFE_SELL_SCORE", 28))
+    ENTRY_FALLING_KNIFE_WAIT_SCORE_BY_SYMBOL = {
+        "BTCUSD": int(os.getenv("ENTRY_FALLING_KNIFE_WAIT_SCORE_BTCUSD", 34)),
+        "NAS100": int(os.getenv("ENTRY_FALLING_KNIFE_WAIT_SCORE_NAS100", 20)),
+        "XAUUSD": int(os.getenv("ENTRY_FALLING_KNIFE_WAIT_SCORE_XAUUSD", 24)),
+        "DEFAULT": int(os.getenv("ENTRY_FALLING_KNIFE_WAIT_SCORE_DEFAULT", ENTRY_FALLING_KNIFE_WAIT_SCORE)),
+    }
+    ENTRY_FALLING_KNIFE_SELL_SCORE_BY_SYMBOL = {
+        "BTCUSD": int(os.getenv("ENTRY_FALLING_KNIFE_SELL_SCORE_BTCUSD", 40)),
+        "NAS100": int(os.getenv("ENTRY_FALLING_KNIFE_SELL_SCORE_NAS100", 26)),
+        "XAUUSD": int(os.getenv("ENTRY_FALLING_KNIFE_SELL_SCORE_XAUUSD", 30)),
+        "DEFAULT": int(os.getenv("ENTRY_FALLING_KNIFE_SELL_SCORE_DEFAULT", ENTRY_FALLING_KNIFE_SELL_SCORE)),
+    }
+
+    # =========================================
+    # [06] 서버측 SL/TP
+    # =========================================
+    USE_SERVER_SIDE_SL = _get_bool("USE_SERVER_SIDE_SL", True)
+    USE_SERVER_SIDE_TP = _get_bool("USE_SERVER_SIDE_TP", False)
+
+    # 기본 SL/TP 비율(심볼별 값이 없을 때 사용)
+    STOP_LOSS_PCT = _get_float("STOP_LOSS_PCT", 0.002)
+    TAKE_PROFIT_PCT = _get_float("TAKE_PROFIT_PCT", 0.004)
+
+    STOP_LOSS_PCT_BY_SYMBOL = {
+        "NAS100": _get_float("STOP_LOSS_PCT_NAS100", 0.0015),
+        "XAUUSD": _get_float("STOP_LOSS_PCT_XAUUSD", 0.0020),
+        "BTCUSD": _get_float("STOP_LOSS_PCT_BTCUSD", 0.0030),
+        "DEFAULT": STOP_LOSS_PCT,
+    }
+
+    TAKE_PROFIT_PCT_BY_SYMBOL = {
+        "NAS100": _get_float("TAKE_PROFIT_PCT_NAS100", 0.0030),
+        "XAUUSD": _get_float("TAKE_PROFIT_PCT_XAUUSD", 0.0040),
+        "BTCUSD": _get_float("TAKE_PROFIT_PCT_BTCUSD", 0.0060),
+        "DEFAULT": TAKE_PROFIT_PCT,
+    }
+
+    # =========================================
+    # [07] 역행(Adverse)/반전(Reversal) 제어
+    # =========================================
+    ENABLE_ADVERSE_STOP = _get_bool("ENABLE_ADVERSE_STOP", True)
+    ENABLE_ADVERSE_REVERSE = _get_bool("ENABLE_ADVERSE_REVERSE", True)
+
+    # 역행 판단 기준
+    ADVERSE_MOVE_PCT = _get_float("ADVERSE_MOVE_PCT", 0.0012)
+    ADVERSE_LOSS_USD = _get_float("ADVERSE_LOSS_USD", 1.0)
+    ADVERSE_LOSS_USD_BY_SYMBOL = {
+        "BTCUSD": _get_float("ADVERSE_LOSS_USD_BTCUSD", ADVERSE_LOSS_USD),
+        "NAS100": _get_float("ADVERSE_LOSS_USD_NAS100", ADVERSE_LOSS_USD),
+        "XAUUSD": _get_float("ADVERSE_LOSS_USD_XAUUSD", ADVERSE_LOSS_USD),
+        "DEFAULT": _get_float("ADVERSE_LOSS_USD_DEFAULT", ADVERSE_LOSS_USD),
+    }
+
+    # 극단적 역행이 아니면 최소 보유시간 이후에만 역행 청산
+    ADVERSE_MIN_HOLD_SECONDS = int(os.getenv("ADVERSE_MIN_HOLD_SECONDS", 45))
+    # 손실 구간에서 성급한 역행청산을 줄이기 위한 대기 청산(최저손실 대비 반등) 제어
+    ADVERSE_WAIT_FOR_BETTER_EXIT_ENABLED = _get_bool("ADVERSE_WAIT_FOR_BETTER_EXIT_ENABLED", True)
+    ADVERSE_WAIT_MIN_LOSS_USD = _get_float("ADVERSE_WAIT_MIN_LOSS_USD", 0.8)
+    ADVERSE_WAIT_MIN_SECONDS = _get_float("ADVERSE_WAIT_MIN_SECONDS", 10.0)
+    ADVERSE_WAIT_MAX_SECONDS = _get_float("ADVERSE_WAIT_MAX_SECONDS", 120.0)
+    ADVERSE_WAIT_RECOVERY_USD = _get_float("ADVERSE_WAIT_RECOVERY_USD", 0.35)
+    ADVERSE_WAIT_NO_TURN_SCORE_GAP = int(os.getenv("ADVERSE_WAIT_NO_TURN_SCORE_GAP", 35))
+    # If a trade already had meaningful green PnL and gave it back, skip prolonged adverse wait.
+    ADVERSE_WAIT_DISABLE_ON_GIVEBACK = _get_bool("ADVERSE_WAIT_DISABLE_ON_GIVEBACK", True)
+    ADVERSE_WAIT_GIVEBACK_MIN_PEAK_USD = _get_float("ADVERSE_WAIT_GIVEBACK_MIN_PEAK_USD", 0.25)
+    ADVERSE_WAIT_GIVEBACK_MIN_USD = _get_float("ADVERSE_WAIT_GIVEBACK_MIN_USD", 0.20)
+    ADVERSE_WAIT_GIVEBACK_PROFIT_FLOOR_USD = _get_float("ADVERSE_WAIT_GIVEBACK_PROFIT_FLOOR_USD", 0.05)
+
+    # 변동성 기반 역행 임계값 동적 스케일링
+    ADVERSE_VOL_MULT_MIN = _get_float("ADVERSE_VOL_MULT_MIN", 0.85)
+    ADVERSE_VOL_MULT_MAX = _get_float("ADVERSE_VOL_MULT_MAX", 1.80)
+
+    # 진입 엣지가 강할수록 역행 임계값을 넓혀 조기 청산 완화
+    ADVERSE_CONFIDENCE_BONUS_MAX = _get_float("ADVERSE_CONFIDENCE_BONUS_MAX", 0.60)
+
+    # 반전 진입 신호 기준
+    REVERSE_SIGNAL_THRESHOLD = int(os.getenv("REVERSE_SIGNAL_THRESHOLD", 220))
+    REVERSE_SIGNAL_THRESHOLD_BY_SYMBOL = {
+        "BTCUSD": int(os.getenv("REVERSE_SIGNAL_THRESHOLD_BTCUSD", REVERSE_SIGNAL_THRESHOLD)),
+        "NAS100": int(os.getenv("REVERSE_SIGNAL_THRESHOLD_NAS100", REVERSE_SIGNAL_THRESHOLD)),
+        "XAUUSD": int(os.getenv("REVERSE_SIGNAL_THRESHOLD_XAUUSD", REVERSE_SIGNAL_THRESHOLD)),
+        "DEFAULT": int(os.getenv("REVERSE_SIGNAL_THRESHOLD_DEFAULT", REVERSE_SIGNAL_THRESHOLD)),
+    }
+
+    # true면 청산 직후 같은 루프에서 반대방향 진입 허용
+    ALLOW_IMMEDIATE_REVERSE = _get_bool("ALLOW_IMMEDIATE_REVERSE", False)
+    # 반전 재진입은 일반 진입 대비 완화된 임계값을 사용
+    REVERSE_ENTRY_THRESHOLD_MULT = _get_float("REVERSE_ENTRY_THRESHOLD_MULT", 0.65)
+    REVERSE_ENTRY_MIN_SCORE = int(os.getenv("REVERSE_ENTRY_MIN_SCORE", 170))
+    REVERSE_ENTRY_THRESHOLD_MULT_BY_SYMBOL = {
+        "BTCUSD": _get_float("REVERSE_ENTRY_THRESHOLD_MULT_BTCUSD", REVERSE_ENTRY_THRESHOLD_MULT),
+        "NAS100": _get_float("REVERSE_ENTRY_THRESHOLD_MULT_NAS100", REVERSE_ENTRY_THRESHOLD_MULT),
+        "XAUUSD": _get_float("REVERSE_ENTRY_THRESHOLD_MULT_XAUUSD", REVERSE_ENTRY_THRESHOLD_MULT),
+        "DEFAULT": _get_float("REVERSE_ENTRY_THRESHOLD_MULT_DEFAULT", REVERSE_ENTRY_THRESHOLD_MULT),
+    }
+    REVERSE_ENTRY_MIN_SCORE_BY_SYMBOL = {
+        "BTCUSD": int(os.getenv("REVERSE_ENTRY_MIN_SCORE_BTCUSD", REVERSE_ENTRY_MIN_SCORE)),
+        "NAS100": int(os.getenv("REVERSE_ENTRY_MIN_SCORE_NAS100", REVERSE_ENTRY_MIN_SCORE)),
+        "XAUUSD": int(os.getenv("REVERSE_ENTRY_MIN_SCORE_XAUUSD", REVERSE_ENTRY_MIN_SCORE)),
+        "DEFAULT": int(os.getenv("REVERSE_ENTRY_MIN_SCORE_DEFAULT", REVERSE_ENTRY_MIN_SCORE)),
+    }
+
+    # 진입 직후 즉시 반전청산 방지
+    MIN_HOLD_SECONDS_FOR_REVERSAL = int(os.getenv("MIN_HOLD_SECONDS_FOR_REVERSAL", 180))
+    REVERSAL_CONFIRM_TICKS = int(os.getenv("REVERSAL_CONFIRM_TICKS", 2))
+
+    # =========================================
+    # [08] 비용/순익 가드
+    # =========================================
+    # 수수료/스프레드 고려 후 최소 순익
+    MIN_NET_PROFIT_USD = _get_float("MIN_NET_PROFIT_USD", 1.0)
+    EXTRA_FEE_BUFFER_USD = _get_float("EXTRA_FEE_BUFFER_USD", 0.2)
+    ROUNDTRIP_COST_USD = {
+        "NAS100": _get_float("ROUNDTRIP_COST_USD_NAS100", 0.45),
+        "XAUUSD": _get_float("ROUNDTRIP_COST_USD_XAUUSD", 0.35),
+        "BTCUSD": _get_float("ROUNDTRIP_COST_USD_BTCUSD", 1.2),
+        "DEFAULT": _get_float("ROUNDTRIP_COST_USD_DEFAULT", 0.4),
+    }
+
+    # 실시간 스프레드에 따라 비용 추정치를 가변화
+    ENABLE_DYNAMIC_SPREAD_COST = _get_bool("ENABLE_DYNAMIC_SPREAD_COST", True)
+    DYNAMIC_COST_SPREAD_MIN_MULT = _get_float("DYNAMIC_COST_SPREAD_MIN_MULT", 0.80)
+    DYNAMIC_COST_SPREAD_MAX_MULT = _get_float("DYNAMIC_COST_SPREAD_MAX_MULT", 1.40)
+    DYNAMIC_COST_RECENT_TRADES = int(os.getenv("DYNAMIC_COST_RECENT_TRADES", 40))
+    DYNAMIC_COST_CACHE_TTL_SEC = int(os.getenv("DYNAMIC_COST_CACHE_TTL_SEC", 60))
+
+    # 반전 청산 품질 가드
+    REVERSAL_MIN_SCORE_GAP = int(os.getenv("REVERSAL_MIN_SCORE_GAP", 25))
+    # Faster adverse reversal when plus->minus giveback pattern is detected.
+    ADVERSE_REVERSE_PLUS_TO_MINUS_MULT = _get_float("ADVERSE_REVERSE_PLUS_TO_MINUS_MULT", 0.78)
+    ADVERSE_REVERSE_PLUS_TO_MINUS_MIN_SCORE_GAP = int(os.getenv("ADVERSE_REVERSE_PLUS_TO_MINUS_MIN_SCORE_GAP", 12))
+    REVERSAL_PROFIT_LOCK_USD = _get_float("REVERSAL_PROFIT_LOCK_USD", 0.8)
+
+    # =========================================
+    # [09] 청산 실행 안전장치 (Partial/BE/TimeStop/3단계)
+    # =========================================
+    # 부분청산 + 본절 이동
+    ENABLE_PARTIAL_BE = _get_bool("ENABLE_PARTIAL_BE", True)
+    PARTIAL_CLOSE_RATIO = _get_float("PARTIAL_CLOSE_RATIO", 0.4)
+    PARTIAL_TRIGGER_MOVE_PCT_MULT = _get_float("PARTIAL_TRIGGER_MOVE_PCT_MULT", 0.8)
+    PARTIAL_TRIGGER_MIN_MOVE_PCT = _get_float("PARTIAL_TRIGGER_MIN_MOVE_PCT", 0.0005)
+    BE_BUFFER_PCT = _get_float("BE_BUFFER_PCT", 0.00015)
+    BE_MIN_LOCK_PROFIT_USD = _get_float("BE_MIN_LOCK_PROFIT_USD", 0.8)
+    EXIT_STOP_UP_ENABLED = _get_bool("EXIT_STOP_UP_ENABLED", True)
+    EXIT_STOP_UP_MIN_PROFIT_USD = _get_float("EXIT_STOP_UP_MIN_PROFIT_USD", 0.20)
+    EXIT_STOP_UP_LOCK_PEAK_USD = _get_float("EXIT_STOP_UP_LOCK_PEAK_USD", 0.80)
+    EXIT_STOP_UP_LOCK_RATIO = _get_float("EXIT_STOP_UP_LOCK_RATIO", 0.35)
+    EXIT_STOP_UP_TIGHT_MIN_PROFIT_USD = _get_float("EXIT_STOP_UP_TIGHT_MIN_PROFIT_USD", 0.10)
+    EXIT_STOP_UP_TIGHT_LOCK_PEAK_USD = _get_float("EXIT_STOP_UP_TIGHT_LOCK_PEAK_USD", 0.50)
+    EXIT_STOP_UP_TIGHT_LOCK_RATIO = _get_float("EXIT_STOP_UP_TIGHT_LOCK_RATIO", 0.45)
+
+    # 시간 경과 정체 포지션 정리
+    ENABLE_TIME_STOP = _get_bool("ENABLE_TIME_STOP", True)
+    TIME_STOP_SECONDS = int(os.getenv("TIME_STOP_SECONDS", 1800))
+    TIME_STOP_MIN_FAVORABLE_MOVE_PCT = _get_float("TIME_STOP_MIN_FAVORABLE_MOVE_PCT", 0.0005)
+
+    # 3단계 청산 점수 임계값(Protect/Lock/Hold)
+    EXIT_PROTECT_THRESHOLD = int(os.getenv("EXIT_PROTECT_THRESHOLD", 180))
+    EXIT_LOCK_THRESHOLD = int(os.getenv("EXIT_LOCK_THRESHOLD", 160))
+    EXIT_HOLD_THRESHOLD = int(os.getenv("EXIT_HOLD_THRESHOLD", 140))
+    EXIT_CONFIRM_TICKS = int(os.getenv("EXIT_CONFIRM_TICKS", 2))
+    EXIT_CONFIRM_TICKS_RANGE = int(os.getenv("EXIT_CONFIRM_TICKS_RANGE", 2))
+    EXIT_CONFIRM_TICKS_NORMAL = int(os.getenv("EXIT_CONFIRM_TICKS_NORMAL", 2))
+    EXIT_CONFIRM_TICKS_EXPANSION = int(os.getenv("EXIT_CONFIRM_TICKS_EXPANSION", 3))
+    LOCK_RETRACE_TRIGGER_PCT = _get_float("LOCK_RETRACE_TRIGGER_PCT", 0.00045)
+    HOLD_SCORE_TREND_BONUS = int(os.getenv("HOLD_SCORE_TREND_BONUS", 22))
+    HOLD_SCORE_RANGE_PENALTY = int(os.getenv("HOLD_SCORE_RANGE_PENALTY", 16))
+
+    # 적응형 3단계 청산 라우팅
+    ENABLE_ADAPTIVE_EXIT_ROUTING = _get_bool("ENABLE_ADAPTIVE_EXIT_ROUTING", True)
+    EXIT_ADAPTIVE_REFRESH_SEC = int(os.getenv("EXIT_ADAPTIVE_REFRESH_SEC", 120))
+    EXIT_ADAPTIVE_MIN_SAMPLES = int(os.getenv("EXIT_ADAPTIVE_MIN_SAMPLES", 20))
+    EXIT_ADAPTIVE_MODEL_WEIGHT = _get_float("EXIT_ADAPTIVE_MODEL_WEIGHT", 0.45)
+    EXIT_ADAPTIVE_RULE_WEIGHT = _get_float("EXIT_ADAPTIVE_RULE_WEIGHT", 0.55)
+    EXIT_ADAPTIVE_BLEND_MODE = os.getenv("EXIT_ADAPTIVE_BLEND_MODE", "dynamic").strip().lower()
+    EXIT_ADAPTIVE_DYNAMIC_MIN_RULE_WEIGHT = _get_float("EXIT_ADAPTIVE_DYNAMIC_MIN_RULE_WEIGHT", 0.35)
+    EXIT_ADAPTIVE_DYNAMIC_MAX_RULE_WEIGHT = _get_float("EXIT_ADAPTIVE_DYNAMIC_MAX_RULE_WEIGHT", 0.75)
+    EXIT_ADAPTIVE_DYNAMIC_TARGET_SAMPLES = int(os.getenv("EXIT_ADAPTIVE_DYNAMIC_TARGET_SAMPLES", 180))
+    EXIT_ADAPTIVE_DYNAMIC_EMA_ALPHA = _get_float("EXIT_ADAPTIVE_DYNAMIC_EMA_ALPHA", 0.25)
+    EXIT_ADAPTIVE_PROTECT_BIAS = _get_float("EXIT_ADAPTIVE_PROTECT_BIAS", 0.12)
+    EXIT_ADAPTIVE_LOCK_BIAS = _get_float("EXIT_ADAPTIVE_LOCK_BIAS", 0.08)
+    EXIT_ADAPTIVE_HOLD_BIAS = _get_float("EXIT_ADAPTIVE_HOLD_BIAS", -0.03)
+    EXIT_ADAPTIVE_RANGE_PROTECT_BIAS = _get_float("EXIT_ADAPTIVE_RANGE_PROTECT_BIAS", 0.05)
+    EXIT_ADAPTIVE_RANGE_LOCK_BIAS = _get_float("EXIT_ADAPTIVE_RANGE_LOCK_BIAS", 0.04)
+    EXIT_ADAPTIVE_RANGE_HOLD_BIAS = _get_float("EXIT_ADAPTIVE_RANGE_HOLD_BIAS", -0.06)
+    EXIT_ADAPTIVE_TREND_PROTECT_BIAS = _get_float("EXIT_ADAPTIVE_TREND_PROTECT_BIAS", -0.02)
+    EXIT_ADAPTIVE_TREND_LOCK_BIAS = _get_float("EXIT_ADAPTIVE_TREND_LOCK_BIAS", 0.02)
+    EXIT_ADAPTIVE_TREND_HOLD_BIAS = _get_float("EXIT_ADAPTIVE_TREND_HOLD_BIAS", 0.06)
+    EXIT_METRICS_LOG_SEC = int(os.getenv("EXIT_METRICS_LOG_SEC", 60))
+
+    # 청산 실행 프로파일
+    # auto: 장세/리스크에 따라 conservative/aggressive/neutral 선택
+    EXIT_EXEC_PROFILE = os.getenv("EXIT_EXEC_PROFILE", "auto").strip().lower()
+    EXIT_EXEC_AUTO_SPREAD_CONSERVATIVE = _get_float("EXIT_EXEC_AUTO_SPREAD_CONSERVATIVE", 1.30)
+    EXIT_EXEC_AUTO_SPREAD_AGGRESSIVE_MAX = _get_float("EXIT_EXEC_AUTO_SPREAD_AGGRESSIVE_MAX", 1.05)
+    EXIT_EXEC_AUTO_TREND_FAVORABLE_MIN = _get_float("EXIT_EXEC_AUTO_TREND_FAVORABLE_MIN", 0.0004)
+    EXIT_EXEC_CONSERVATIVE_PROTECT_MULT = _get_float("EXIT_EXEC_CONSERVATIVE_PROTECT_MULT", 0.90)
+    EXIT_EXEC_CONSERVATIVE_LOCK_MULT = _get_float("EXIT_EXEC_CONSERVATIVE_LOCK_MULT", 0.92)
+    EXIT_EXEC_CONSERVATIVE_HOLD_MULT = _get_float("EXIT_EXEC_CONSERVATIVE_HOLD_MULT", 1.08)
+    EXIT_EXEC_CONSERVATIVE_CONFIRM_MULT = _get_float("EXIT_EXEC_CONSERVATIVE_CONFIRM_MULT", 0.85)
+    EXIT_EXEC_CONSERVATIVE_CONFIRM_ADD = int(os.getenv("EXIT_EXEC_CONSERVATIVE_CONFIRM_ADD", -1))
+    EXIT_EXEC_AGGRESSIVE_PROTECT_MULT = _get_float("EXIT_EXEC_AGGRESSIVE_PROTECT_MULT", 1.08)
+    EXIT_EXEC_AGGRESSIVE_LOCK_MULT = _get_float("EXIT_EXEC_AGGRESSIVE_LOCK_MULT", 1.06)
+    EXIT_EXEC_AGGRESSIVE_HOLD_MULT = _get_float("EXIT_EXEC_AGGRESSIVE_HOLD_MULT", 0.92)
+    EXIT_EXEC_AGGRESSIVE_CONFIRM_MULT = _get_float("EXIT_EXEC_AGGRESSIVE_CONFIRM_MULT", 1.15)
+    EXIT_EXEC_AGGRESSIVE_CONFIRM_ADD = int(os.getenv("EXIT_EXEC_AGGRESSIVE_CONFIRM_ADD", 1))
+    EXIT_EXEC_MULT_MIN = _get_float("EXIT_EXEC_MULT_MIN", 0.70)
+    EXIT_EXEC_MULT_MAX = _get_float("EXIT_EXEC_MULT_MAX", 1.40)
+    EXIT_EXEC_CONFIRM_ADD_MIN = int(os.getenv("EXIT_EXEC_CONFIRM_ADD_MIN", -2))
+    EXIT_EXEC_CONFIRM_ADD_MAX = int(os.getenv("EXIT_EXEC_CONFIRM_ADD_MAX", 3))
+    EXIT_STAGE_ENTRY_META_MAX_BIAS = _get_float("EXIT_STAGE_ENTRY_META_MAX_BIAS", 0.06)
+    EXIT_STAGE_ENTRY_META_MAX_DELTA = _get_float("EXIT_STAGE_ENTRY_META_MAX_DELTA", 0.08)
+    EXIT_STAGE_ENTRY_META_ENABLED = _get_bool("EXIT_STAGE_ENTRY_META_ENABLED", True)
+
+    # 하드 가드
+    # - plus_to_minus: 수익 포지션이 손실로 뒤집히는 구간 보호
+    # - adverse: 급격한 역행 대응
+    # - profit_giveback: 피크 대비 되돌림이 크면 이익 확정
+    EXIT_HARD_GUARD_ENABLED = _get_bool("EXIT_HARD_GUARD_ENABLED", True)
+    EXIT_HARD_GUARD_PLUS_TO_MINUS_ENABLED = _get_bool("EXIT_HARD_GUARD_PLUS_TO_MINUS_ENABLED", True)
+    EXIT_HARD_GUARD_ADVERSE_ENABLED = _get_bool("EXIT_HARD_GUARD_ADVERSE_ENABLED", True)
+    PROFIT_GIVEBACK_GUARD_ENABLED = _get_bool("PROFIT_GIVEBACK_GUARD_ENABLED", True)
+    PROFIT_GIVEBACK_MIN_PEAK_USD = _get_float("PROFIT_GIVEBACK_MIN_PEAK_USD", 1.2)
+    PROFIT_GIVEBACK_RETRACE_USD = _get_float("PROFIT_GIVEBACK_RETRACE_USD", 0.7)
+    PLUS_TO_MINUS_PEAK_PROFIT_USD = _get_float("PLUS_TO_MINUS_PEAK_PROFIT_USD", 1.0)
+    PLUS_TO_MINUS_PROFIT_FLOOR_USD = _get_float("PLUS_TO_MINUS_PROFIT_FLOOR_USD", 0.0)
+    PLUS_TO_MINUS_MIN_MOVE_PCT = _get_float("PLUS_TO_MINUS_MIN_MOVE_PCT", 0.0010)
+    PLUS_TO_MINUS_MIN_RETRACE_USD = _get_float("PLUS_TO_MINUS_MIN_RETRACE_USD", 0.6)
+    PLUS_TO_MINUS_MIN_HOLD_SECONDS = int(os.getenv("PLUS_TO_MINUS_MIN_HOLD_SECONDS", 20))
+    # 손실 구간에서는 소프트 청산(Protect/Time Stop)을 최대한 지연하여
+    # 가능하면 플러스로 회복한 뒤 청산하도록 유도한다.
+    EXIT_PREFER_GREEN_CLOSE_ENABLED = _get_bool("EXIT_PREFER_GREEN_CLOSE_ENABLED", True)
+    EXIT_GREEN_CLOSE_MIN_PROFIT_USD = _get_float("EXIT_GREEN_CLOSE_MIN_PROFIT_USD", 0.03)
+    EXIT_GREEN_CLOSE_LOSS_LIMIT_FRACTION = _get_float("EXIT_GREEN_CLOSE_LOSS_LIMIT_FRACTION", 0.75)
+    EXIT_GREEN_CLOSE_MAX_HOLD_SECONDS = int(os.getenv("EXIT_GREEN_CLOSE_MAX_HOLD_SECONDS", 3600))
+
+    # 손실 품질 라벨링(좋은손실/나쁜손실) 파라미터
+    LOSS_QUALITY_SMALL_LOSS_USD = _get_float("LOSS_QUALITY_SMALL_LOSS_USD", 0.7)
+    LOSS_QUALITY_LARGE_LOSS_USD = _get_float("LOSS_QUALITY_LARGE_LOSS_USD", 3.0)
+    LOSS_QUALITY_GOOD_DELAY_TICKS_MAX = int(os.getenv("LOSS_QUALITY_GOOD_DELAY_TICKS_MAX", 2))
+    LOSS_QUALITY_BAD_DELAY_TICKS_MIN = int(os.getenv("LOSS_QUALITY_BAD_DELAY_TICKS_MIN", 3))
+    LOSS_QUALITY_GOOD_MULT = _get_float("LOSS_QUALITY_GOOD_MULT", 0.65)
+    LOSS_QUALITY_NEUTRAL_MULT = _get_float("LOSS_QUALITY_NEUTRAL_MULT", 0.85)
+    LOSS_QUALITY_BAD_MULT = _get_float("LOSS_QUALITY_BAD_MULT", 1.25)
+    # adverse_wait 품질 반영: recovery는 가점, timeout은 감점, recovery일 때 지연페널티 완화
+    LOSS_QUALITY_WAIT_RECOVERY_BONUS = _get_float("LOSS_QUALITY_WAIT_RECOVERY_BONUS", 0.20)
+    LOSS_QUALITY_WAIT_TIMEOUT_PENALTY = _get_float("LOSS_QUALITY_WAIT_TIMEOUT_PENALTY", 0.20)
+    LOSS_QUALITY_WAIT_DELAY_RELIEF = _get_float("LOSS_QUALITY_WAIT_DELAY_RELIEF", 0.20)
+    LOSS_QUALITY_WAIT_UNNECESSARY_PENALTY = _get_float("LOSS_QUALITY_WAIT_UNNECESSARY_PENALTY", 0.10)
+    EXIT_RECOVERY_WAIT_ENABLED = _get_bool("EXIT_RECOVERY_WAIT_ENABLED", True)
+    EXIT_RECOVERY_BE_MAX_LOSS_USD = _get_float("EXIT_RECOVERY_BE_MAX_LOSS_USD", 0.90)
+    EXIT_RECOVERY_TP1_MAX_LOSS_USD = _get_float("EXIT_RECOVERY_TP1_MAX_LOSS_USD", 0.35)
+    EXIT_RECOVERY_WAIT_MAX_SECONDS = int(os.getenv("EXIT_RECOVERY_WAIT_MAX_SECONDS", 240))
+    EXIT_RECOVERY_REVERSE_SCORE_GAP = int(os.getenv("EXIT_RECOVERY_REVERSE_SCORE_GAP", 26))
+    EXIT_RECOVERY_REVERSE_MIN_PROB = _get_float("EXIT_RECOVERY_REVERSE_MIN_PROB", 0.58)
+    EXIT_RECOVERY_REVERSE_MIN_HOLD_SECONDS = int(os.getenv("EXIT_RECOVERY_REVERSE_MIN_HOLD_SECONDS", 45))
+    EXIT_RECOVERY_WAIT_HOLD_ENABLED = _get_bool("EXIT_RECOVERY_WAIT_HOLD_ENABLED", True)
+    EXIT_RECOVERY_BE_CLOSE_USD = _get_float("EXIT_RECOVERY_BE_CLOSE_USD", 0.02)
+    EXIT_RECOVERY_TP1_CLOSE_USD = _get_float("EXIT_RECOVERY_TP1_CLOSE_USD", 0.12)
+    EXIT_RECOVERY_REVERSE_EXEC_ENABLED = _get_bool("EXIT_RECOVERY_REVERSE_EXEC_ENABLED", True)
+
+    # Shock Counterfactual (급변 반사실 학습) 운영 스위치/튜닝
+    ENABLE_SHOCK_COUNTERFACTUAL = _get_bool("ENABLE_SHOCK_COUNTERFACTUAL", True)
+    ENABLE_SHOCK_WEEKLY_REPORT = _get_bool("ENABLE_SHOCK_WEEKLY_REPORT", True)
+    SHOCK_REPORT_INTERVAL_SEC = int(os.getenv("SHOCK_REPORT_INTERVAL_SEC", 604800))
+    SHOCK_REPORT_WINDOW_DAYS = int(os.getenv("SHOCK_REPORT_WINDOW_DAYS", 7))
+    SHOCK_REPORT_DIR = os.getenv("SHOCK_REPORT_DIR", r"data\reports")
+
+    ENABLE_SHOCK_WEEKLY_TUNING = _get_bool("ENABLE_SHOCK_WEEKLY_TUNING", True)
+    SHOCK_TUNING_INTERVAL_SEC = int(os.getenv("SHOCK_TUNING_INTERVAL_SEC", 604800))
+    SHOCK_TUNING_MIN_SAMPLES = int(os.getenv("SHOCK_TUNING_MIN_SAMPLES", 30))
+    SHOCK_TUNING_STEP = _get_float("SHOCK_TUNING_STEP", 3.0)
+    SHOCK_TUNING_EARLY_EXIT_HIGH = _get_float("SHOCK_TUNING_EARLY_EXIT_HIGH", 0.55)
+    SHOCK_TUNING_BAD_HOLD_HIGH = _get_float("SHOCK_TUNING_BAD_HOLD_HIGH", 0.55)
+
+    SHOCK_LEVEL_WATCH_THRESHOLD = _get_float("SHOCK_LEVEL_WATCH_THRESHOLD", 35.0)
+    SHOCK_LEVEL_ALERT_THRESHOLD = _get_float("SHOCK_LEVEL_ALERT_THRESHOLD", 60.0)
+    SHOCK_LEVEL_WATCH_MIN = _get_float("SHOCK_LEVEL_WATCH_MIN", 20.0)
+    SHOCK_LEVEL_WATCH_MAX = _get_float("SHOCK_LEVEL_WATCH_MAX", 60.0)
+    SHOCK_LEVEL_ALERT_MIN = _get_float("SHOCK_LEVEL_ALERT_MIN", 45.0)
+    SHOCK_LEVEL_ALERT_MAX = _get_float("SHOCK_LEVEL_ALERT_MAX", 85.0)
+
+    # UI 품질 판정(사후 리포트/대시보드)
+    EXIT_UI_STOPLIKE_WARN_RATIO = _get_float("EXIT_UI_STOPLIKE_WARN_RATIO", 0.30)
+    EXIT_UI_STOPLIKE_BAD_RATIO = _get_float("EXIT_UI_STOPLIKE_BAD_RATIO", 0.45)
+    EXIT_UI_CAPTURE_WARN_RATIO = _get_float("EXIT_UI_CAPTURE_WARN_RATIO", 0.20)
+    EXIT_UI_CAPTURE_GOOD_RATIO = _get_float("EXIT_UI_CAPTURE_GOOD_RATIO", 0.35)
+    EXIT_UI_ADVERSE_REV_WARN_RATIO = _get_float("EXIT_UI_ADVERSE_REV_WARN_RATIO", 0.06)
+    EXIT_UI_ADVERSE_REV_BAD_RATIO = _get_float("EXIT_UI_ADVERSE_REV_BAD_RATIO", 0.12)
+    EXIT_UI_REVERSAL_WARN_RATIO = _get_float("EXIT_UI_REVERSAL_WARN_RATIO", 0.30)
+    EXIT_UI_SCALP_GOOD_RATIO = _get_float("EXIT_UI_SCALP_GOOD_RATIO", 0.15)
+    EXIT_UI_PROFILE = os.getenv("EXIT_UI_PROFILE", "neutral").strip().lower()
+
+    # =========================================
+    # [10] 정책 학습/롤백 안전장치
+    # =========================================
+    EXIT_EV_K = _get_float("EXIT_EV_K", 1.20)
+    POLICY_ADAPTIVE_TARGET_SAMPLES = int(os.getenv("POLICY_ADAPTIVE_TARGET_SAMPLES", 160))
+    POLICY_ADAPTIVE_EMA_ALPHA = _get_float("POLICY_ADAPTIVE_EMA_ALPHA", 0.35)
+    POLICY_ADAPTIVE_MIN_SYMBOL_SAMPLES = int(os.getenv("POLICY_ADAPTIVE_MIN_SYMBOL_SAMPLES", 20))
+    POLICY_ADAPTIVE_MIN_REGIME_SAMPLES = int(os.getenv("POLICY_ADAPTIVE_MIN_REGIME_SAMPLES", 20))
+    POLICY_UPDATE_MIN_INTERVAL_SEC = _get_float("POLICY_UPDATE_MIN_INTERVAL_SEC", 900.0)
+    POLICY_UPDATE_MAX_CHANGE_PCT = _get_float("POLICY_UPDATE_MAX_CHANGE_PCT", 0.10)
+    ENABLE_POLICY_LOOP_REFRESH = _get_bool("ENABLE_POLICY_LOOP_REFRESH", False)
+    POLICY_STARTUP_WARMUP_LOOPS = int(os.getenv("POLICY_STARTUP_WARMUP_LOOPS", 5))
+    POLICY_C3_MIN_TOTAL_SAMPLES = int(os.getenv("POLICY_C3_MIN_TOTAL_SAMPLES", 120))
+    POLICY_C3_MIN_READY_SYMBOLS = int(os.getenv("POLICY_C3_MIN_READY_SYMBOLS", 2))
+    POLICY_C3_MIN_SYMBOL_SAMPLES = int(os.getenv("POLICY_C3_MIN_SYMBOL_SAMPLES", 20))
+    POLICY_C3_REJECT_STREAK_BLOCK = int(os.getenv("POLICY_C3_REJECT_STREAK_BLOCK", 2))
+    POLICY_C3_ROLLBACK_COOLDOWN_SEC = _get_float("POLICY_C3_ROLLBACK_COOLDOWN_SEC", 1800.0)
+    SIGNED_EXIT_SCORE_CLIP_ABS = _get_float("SIGNED_EXIT_SCORE_CLIP_ABS", 300.0)
+    LABEL_WEIGHT_MIN = _get_float("LABEL_WEIGHT_MIN", 0.20)
+    LABEL_WEIGHT_MAX = _get_float("LABEL_WEIGHT_MAX", 1.00)
+    REGIME_SWITCH_MIN_STREAK = int(os.getenv("REGIME_SWITCH_MIN_STREAK", 2))
+    REGIME_SWITCH_COOLDOWN_SEC = _get_float("REGIME_SWITCH_COOLDOWN_SEC", 45.0)
+
+    # =========================================
+    # [11] 시장 레짐(유동성/변동성) 적응
+    # =========================================
+    ENABLE_MARKET_REGIME_ADAPT = _get_bool("ENABLE_MARKET_REGIME_ADAPT", True)
+    REGIME_VOL_WINDOW = int(os.getenv("REGIME_VOL_WINDOW", 20))
+    REGIME_VOL_SPIKE_LOW = _get_float("REGIME_VOL_SPIKE_LOW", 0.70)
+    REGIME_VOL_SPIKE_HIGH = _get_float("REGIME_VOL_SPIKE_HIGH", 1.50)
+    REGIME_ATR_COMPRESS_LOW = _get_float("REGIME_ATR_COMPRESS_LOW", 0.80)
+    REGIME_ATR_EXPAND_HIGH = _get_float("REGIME_ATR_EXPAND_HIGH", 1.35)
+    REGIME_SPREAD_PENALTY_START = _get_float("REGIME_SPREAD_PENALTY_START", 0.85)
+    REGIME_SCORE_SCALE_MIN = _get_float("REGIME_SCORE_SCALE_MIN", 0.75)
+    REGIME_SCORE_SCALE_MAX = _get_float("REGIME_SCORE_SCALE_MAX", 1.25)
+
+    # =========================================
+    # [12] Volume Profile 점수
+    # =========================================
+    ENABLE_VOLUME_PROFILE_SCORE = _get_bool("ENABLE_VOLUME_PROFILE_SCORE", True)
+    VP_DATA_DIR = os.getenv(
+        "VP_DATA_DIR",
+        r"C:\Users\bhs33\AppData\Roaming\MetaQuotes\Terminal\Common\Files",
+    )
+    VP_FILENAME_SUFFIX = os.getenv("VP_FILENAME_SUFFIX", "_vp_data.csv")
+    VP_BREAKOUT_SCORE = int(os.getenv("VP_BREAKOUT_SCORE", 70))
+    VP_INSIDE_SCORE = int(os.getenv("VP_INSIDE_SCORE", 35))
+    VP_NEAR_POC_RATIO = _get_float("VP_NEAR_POC_RATIO", 0.12)
+
+    # =========================================
+    # [13] 볼린저 터치/수축 점수
+    # =========================================
+    ENABLE_BB_TOUCH_SCORE = _get_bool("ENABLE_BB_TOUCH_SCORE", True)
+    BB_TOUCH_LOOKBACK_BARS = int(os.getenv("BB_TOUCH_LOOKBACK_BARS", 6))
+    BB_TOUCH_TOLERANCE_RATIO = _get_float("BB_TOUCH_TOLERANCE_RATIO", 0.00025)
+    BB_TOUCH_SQUEEZE_BONUS_MAX = int(os.getenv("BB_TOUCH_SQUEEZE_BONUS_MAX", 32))
+
+    BB20_TOUCH_SCORE_1 = int(os.getenv("BB20_TOUCH_SCORE_1", 24))
+    BB20_TOUCH_SCORE_2 = int(os.getenv("BB20_TOUCH_SCORE_2", 48))
+    BB20_TOUCH_SCORE_3 = int(os.getenv("BB20_TOUCH_SCORE_3", 76))
+
+    BB4_TOUCH_SCORE_1 = int(os.getenv("BB4_TOUCH_SCORE_1", 24))
+    BB4_TOUCH_SCORE_2 = int(os.getenv("BB4_TOUCH_SCORE_2", 48))
+    BB4_TOUCH_SCORE_3 = int(os.getenv("BB4_TOUCH_SCORE_3", 76))
+
+    # BB 흐름/터치 민감도
+    BB20_FLOW_TREND_SCORE = int(os.getenv("BB20_FLOW_TREND_SCORE", 140))
+    BB4_FLOW_EXPANSION_SCORE = int(os.getenv("BB4_FLOW_EXPANSION_SCORE", 95))
+    BB4_FLOW_NEAR_SCORE = int(os.getenv("BB4_FLOW_NEAR_SCORE", 48))
+    BB4_FLOW_NEAR_WIDTH_RATIO = _get_float("BB4_FLOW_NEAR_WIDTH_RATIO", 0.35)
+    BB4_TOUCH_COUNT_MODE = str(os.getenv("BB4_TOUCH_COUNT_MODE", "window") or "window").strip().lower()
+    BB4_TOUCH_WINDOW_BARS = int(os.getenv("BB4_TOUCH_WINDOW_BARS", 12))
+    BB20_TOUCH_COUNT_MODE = str(os.getenv("BB20_TOUCH_COUNT_MODE", "consecutive") or "consecutive").strip().lower()
+    BB20_TOUCH_WINDOW_BARS = int(os.getenv("BB20_TOUCH_WINDOW_BARS", 24))
+    BB4_3_FLOW_EXPANSION_SCORE = int(os.getenv("BB4_3_FLOW_EXPANSION_SCORE", 72))
+    BB4_3_FLOW_NEAR_SCORE = int(os.getenv("BB4_3_FLOW_NEAR_SCORE", 36))
+    BB4_3_FLOW_NEAR_WIDTH_RATIO = _get_float("BB4_3_FLOW_NEAR_WIDTH_RATIO", 0.30)
+    BB4_3_TOUCH_SCORE_1 = int(os.getenv("BB4_3_TOUCH_SCORE_1", 18))
+    BB4_3_TOUCH_SCORE_2 = int(os.getenv("BB4_3_TOUCH_SCORE_2", 36))
+    BB4_3_TOUCH_SCORE_3 = int(os.getenv("BB4_3_TOUCH_SCORE_3", 58))
+    BB4_3_TOUCH_WINDOW_BARS = int(os.getenv("BB4_3_TOUCH_WINDOW_BARS", 10))
+    BB_TOUCH_GLOBAL_MULT = _get_float("BB_TOUCH_GLOBAL_MULT", 1.20)
+    BB20_TOUCH_MULT = _get_float("BB20_TOUCH_MULT", 1.10)
+    BB4_TOUCH_MULT = _get_float("BB4_TOUCH_MULT", 1.25)
+    # 1H 문맥 강화: BB 위치 + 장/단기 추세선 정렬
+    H1_BB_POSITION_SCORE = int(os.getenv("H1_BB_POSITION_SCORE", 42))
+    H1_BB_EXTREME_SCORE = int(os.getenv("H1_BB_EXTREME_SCORE", 58))
+    H1_TREND_ALIGN_SCORE = int(os.getenv("H1_TREND_ALIGN_SCORE", 62))
+    H1_TREND_CONFLICT_PENALTY = int(os.getenv("H1_TREND_CONFLICT_PENALTY", 18))
+    M1_TRIGGER_WEIGHT_MULT = _get_float("M1_TRIGGER_WEIGHT_MULT", 1.35)
+    ENABLE_H1_ENTRY_GATE = _get_bool("ENABLE_H1_ENTRY_GATE", True)
+    H1_ENTRY_GATE_STRICT = _get_bool("H1_ENTRY_GATE_STRICT", True)
+    H1_ENTRY_GATE_MIN_CONTEXT = int(os.getenv("H1_ENTRY_GATE_MIN_CONTEXT", 20))
+    H1_ENTRY_GATE_MIN_GAP = int(os.getenv("H1_ENTRY_GATE_MIN_GAP", 8))
+    ENTRY_H1_GATE_MODE = str(os.getenv("ENTRY_H1_GATE_MODE", "soft") or "soft").strip().lower()
+    ENABLE_TOPDOWN_TIMEFRAME_GATE = _get_bool("ENABLE_TOPDOWN_TIMEFRAME_GATE", True)
+    TOPDOWN_HIGHER_TF_MIN_ALIGN = int(os.getenv("TOPDOWN_HIGHER_TF_MIN_ALIGN", 2))
+    TOPDOWN_HIGHER_TF_MAX_CONFLICT = int(os.getenv("TOPDOWN_HIGHER_TF_MAX_CONFLICT", 1))
+    ENTRY_TOPDOWN_GATE_MODE = str(os.getenv("ENTRY_TOPDOWN_GATE_MODE", "soft") or "soft").strip().lower()
+    ENTRY_CONTEXT_ADJ_MIN = int(os.getenv("ENTRY_CONTEXT_ADJ_MIN", -90))
+    ENTRY_CONTEXT_ADJ_MAX = int(os.getenv("ENTRY_CONTEXT_ADJ_MAX", 160))
+    ENTRY_CTX_TREND_BONUS = int(os.getenv("ENTRY_CTX_TREND_BONUS", 20))
+    ENTRY_CTX_RANGE_PENALTY = int(os.getenv("ENTRY_CTX_RANGE_PENALTY", 24))
+    ENTRY_CTX_LOW_LIQ_PENALTY = int(os.getenv("ENTRY_CTX_LOW_LIQ_PENALTY", 32))
+    ENTRY_CTX_SPREAD_SCALE = int(os.getenv("ENTRY_CTX_SPREAD_SCALE", 45))
+    ENTRY_CTX_VOL_EXPAND_PENALTY = int(os.getenv("ENTRY_CTX_VOL_EXPAND_PENALTY", 16))
+    ENTRY_CTX_VOL_CONTRACT_BONUS = int(os.getenv("ENTRY_CTX_VOL_CONTRACT_BONUS", 8))
+    ENTRY_CTX_TOPDOWN_ALIGN_DEFICIT_PENALTY = int(os.getenv("ENTRY_CTX_TOPDOWN_ALIGN_DEFICIT_PENALTY", 14))
+    ENTRY_CTX_TOPDOWN_CONFLICT_PENALTY = int(os.getenv("ENTRY_CTX_TOPDOWN_CONFLICT_PENALTY", 16))
+    ENTRY_CTX_H1_CONTEXT_DEFICIT_PENALTY = int(os.getenv("ENTRY_CTX_H1_CONTEXT_DEFICIT_PENALTY", 1))
+    ENTRY_CTX_H1_GAP_DEFICIT_PENALTY = int(os.getenv("ENTRY_CTX_H1_GAP_DEFICIT_PENALTY", 2))
+    ENABLE_ENTRY_HARD_SHOCK_BLOCK = _get_bool("ENABLE_ENTRY_HARD_SHOCK_BLOCK", True)
+    ENTRY_HARD_MIN_VOL_RATIO = _get_float("ENTRY_HARD_MIN_VOL_RATIO", 0.55)
+    ENTRY_HARD_MIN_VOL_RATIO_RANGE = _get_float("ENTRY_HARD_MIN_VOL_RATIO_RANGE", 0.35)
+    ENTRY_HARD_MAX_VOL_RATIO = _get_float("ENTRY_HARD_MAX_VOL_RATIO", 2.40)
+    ENTRY_HARD_MAX_SPREAD_RATIO = _get_float("ENTRY_HARD_MAX_SPREAD_RATIO", 1.80)
+    ENTRY_HARD_MIN_VOL_RATIO_BY_SYMBOL = {
+        "BTCUSD": _get_float("ENTRY_HARD_MIN_VOL_RATIO_BTCUSD", ENTRY_HARD_MIN_VOL_RATIO),
+        "NAS100": _get_float("ENTRY_HARD_MIN_VOL_RATIO_NAS100", 0.35),
+        "XAUUSD": _get_float("ENTRY_HARD_MIN_VOL_RATIO_XAUUSD", 0.40),
+        "DEFAULT": _get_float("ENTRY_HARD_MIN_VOL_RATIO_DEFAULT", ENTRY_HARD_MIN_VOL_RATIO),
+    }
+    ENTRY_HARD_MIN_VOL_RATIO_RANGE_BY_SYMBOL = {
+        "BTCUSD": _get_float("ENTRY_HARD_MIN_VOL_RATIO_RANGE_BTCUSD", max(0.25, ENTRY_HARD_MIN_VOL_RATIO_RANGE)),
+        "NAS100": _get_float("ENTRY_HARD_MIN_VOL_RATIO_RANGE_NAS100", 0.30),
+        "XAUUSD": _get_float("ENTRY_HARD_MIN_VOL_RATIO_RANGE_XAUUSD", 0.35),
+        "DEFAULT": _get_float("ENTRY_HARD_MIN_VOL_RATIO_RANGE_DEFAULT", ENTRY_HARD_MIN_VOL_RATIO_RANGE),
+    }
+    ENTRY_HARD_SHOCK_MIN_SPREAD_RATIO = _get_float("ENTRY_HARD_SHOCK_MIN_SPREAD_RATIO", 1.45)
+    ENTRY_HARD_SHOCK_MIN_VOL_RATIO = _get_float("ENTRY_HARD_SHOCK_MIN_VOL_RATIO", 1.60)
+    ENTRY_HARD_SHOCK_MAX_VOLUME_RATIO = _get_float("ENTRY_HARD_SHOCK_MAX_VOLUME_RATIO", 0.85)
+    ENABLE_ENTRY_DECISION_LOG = _get_bool("ENABLE_ENTRY_DECISION_LOG", True)
+    ENTRY_DECISION_LOG_PATH = os.getenv("ENTRY_DECISION_LOG_PATH", r"data\trades\entry_decisions.csv")
+    ENTRY_DECISION_DAILY_ROLLOVER = _get_bool("ENTRY_DECISION_DAILY_ROLLOVER", True)
+    ENABLE_P7_GUARDED_SIZE_OVERLAY = _get_bool("ENABLE_P7_GUARDED_SIZE_OVERLAY", False)
+    P7_GUARDED_SIZE_OVERLAY_MODE = str(
+        os.getenv("P7_GUARDED_SIZE_OVERLAY_MODE", "disabled") or "disabled"
+    ).strip().lower()
+    P7_GUARDED_SIZE_OVERLAY_SOURCE_PATH = os.getenv(
+        "P7_GUARDED_SIZE_OVERLAY_SOURCE_PATH",
+        r"data\analysis\profitability_operations\profitability_operations_p7_guarded_size_overlay_latest.json",
+    )
+    P7_GUARDED_SIZE_OVERLAY_MAX_STEP = _get_float("P7_GUARDED_SIZE_OVERLAY_MAX_STEP", 0.10)
+    P7_GUARDED_SIZE_OVERLAY_SYMBOL_ALLOWLIST = _get_csv(
+        "P7_GUARDED_SIZE_OVERLAY_SYMBOL_ALLOWLIST",
+        "",
+    )
+    TOPDOWN_BB_POSITION_SCORE = int(os.getenv("TOPDOWN_BB_POSITION_SCORE", 18))
+    TOPDOWN_BB_EXTREME_SCORE = int(os.getenv("TOPDOWN_BB_EXTREME_SCORE", 24))
+    TOPDOWN_TREND_ALIGN_SCORE = int(os.getenv("TOPDOWN_TREND_ALIGN_SCORE", 22))
+    TOPDOWN_TREND_CONFLICT_PENALTY = int(os.getenv("TOPDOWN_TREND_CONFLICT_PENALTY", 10))
+    ENABLE_SESSION_POLICY = _get_bool("ENABLE_SESSION_POLICY", True)
+    SESSION_POLICY_REFRESH_SEC = int(os.getenv("SESSION_POLICY_REFRESH_SEC", 300))
+    SESSION_POLICY_MIN_SAMPLES = int(os.getenv("SESSION_POLICY_MIN_SAMPLES", 24))
+    SESSION_POLICY_STRENGTH = _get_float("SESSION_POLICY_STRENGTH", 0.18)
+    SESSION_POLICY_MULT_MIN = _get_float("SESSION_POLICY_MULT_MIN", 0.90)
+    SESSION_POLICY_MULT_MAX = _get_float("SESSION_POLICY_MULT_MAX", 1.10)
+    ENABLE_ATR_THRESHOLD_POLICY = _get_bool("ENABLE_ATR_THRESHOLD_POLICY", True)
+    ATR_POLICY_PERIOD = int(os.getenv("ATR_POLICY_PERIOD", 14))
+    ATR_POLICY_REF_LOOKBACK = int(os.getenv("ATR_POLICY_REF_LOOKBACK", 96))
+    ATR_POLICY_THRESHOLD_EXP = _get_float("ATR_POLICY_THRESHOLD_EXP", 0.35)
+    ATR_POLICY_MIN_MULT = _get_float("ATR_POLICY_MIN_MULT", 0.85)
+    ATR_POLICY_MAX_MULT = _get_float("ATR_POLICY_MAX_MULT", 1.25)
+    ENABLE_ENTRY_UTILITY_GATE = _get_bool("ENABLE_ENTRY_UTILITY_GATE", True)
+    ENTRY_DECISION_MODE = str(os.getenv("ENTRY_DECISION_MODE", "utility_only") or "utility_only").strip().lower()
+    ENTRY_UTILITY_LOOKBACK_TRADES = int(os.getenv("ENTRY_UTILITY_LOOKBACK_TRADES", 200))
+    ENTRY_UTILITY_MIN_WINS = int(os.getenv("ENTRY_UTILITY_MIN_WINS", 30))
+    ENTRY_UTILITY_MIN_LOSSES = int(os.getenv("ENTRY_UTILITY_MIN_LOSSES", 30))
+    ENTRY_UTILITY_TRIM_Q = _get_float("ENTRY_UTILITY_TRIM_Q", 0.05)
+    ENTRY_UTILITY_MIN = _get_float("ENTRY_UTILITY_MIN", 0.10)
+    ENTRY_UTILITY_MIN_BY_SYMBOL = {
+        "BTCUSD": _get_float("ENTRY_UTILITY_MIN_BTCUSD", 0.12),
+        "NAS100": _get_float("ENTRY_UTILITY_MIN_NAS100", -0.05),
+        "XAUUSD": _get_float("ENTRY_UTILITY_MIN_XAUUSD", -0.05),
+        "DEFAULT": _get_float("ENTRY_UTILITY_MIN_DEFAULT", ENTRY_UTILITY_MIN),
+    }
+    ENTRY_UTILITY_ADDON_PENALTY_USD = _get_float("ENTRY_UTILITY_ADDON_PENALTY_USD", 0.15)
+    ENTRY_UTILITY_PROFILE = str(os.getenv("ENTRY_UTILITY_PROFILE", "balanced") or "balanced").strip().lower()
+    _ENTRY_UTILITY_PRESETS = {
+        "conservative": {"context_scale": 0.0030, "margin_scale": 0.08, "context_cap": 0.60},
+        "balanced": {"context_scale": 0.0040, "margin_scale": 0.10, "context_cap": 0.80},
+        "aggressive": {"context_scale": 0.0060, "margin_scale": 0.14, "context_cap": 1.00},
+    }
+    _ENTRY_UTILITY_PRESET = _ENTRY_UTILITY_PRESETS.get(ENTRY_UTILITY_PROFILE, _ENTRY_UTILITY_PRESETS["balanced"])
+    ENTRY_UTILITY_CONTEXT_SCALE_USD = _get_float("ENTRY_UTILITY_CONTEXT_SCALE_USD", _ENTRY_UTILITY_PRESET["context_scale"])
+    ENTRY_UTILITY_SCORE_MARGIN_SCALE_USD = _get_float("ENTRY_UTILITY_SCORE_MARGIN_SCALE_USD", _ENTRY_UTILITY_PRESET["margin_scale"])
+    ENTRY_UTILITY_TOPDOWN_PENALTY_USD = _get_float("ENTRY_UTILITY_TOPDOWN_PENALTY_USD", 0.08)
+    ENTRY_UTILITY_H1_PENALTY_USD = _get_float("ENTRY_UTILITY_H1_PENALTY_USD", 0.06)
+    ENTRY_UTILITY_CONTEXT_CAP_USD = _get_float("ENTRY_UTILITY_CONTEXT_CAP_USD", _ENTRY_UTILITY_PRESET["context_cap"])
+    ENABLE_UTILITY_BB_PENALTY = _get_bool("ENABLE_UTILITY_BB_PENALTY", True)
+    ENABLE_BB_GUARD_HARD_RETURN = _get_bool("ENABLE_BB_GUARD_HARD_RETURN", False)
+    ENTRY_UTILITY_BB_BASE_PENALTY_USD = _get_float("ENTRY_UTILITY_BB_BASE_PENALTY_USD", 0.30)
+    ENTRY_UTILITY_BB_BASE_PENALTY_BY_SYMBOL = {
+        "NAS100": _get_float("ENTRY_UTILITY_BB_BASE_PENALTY_USD_NAS100", 0.15),
+        "XAUUSD": _get_float("ENTRY_UTILITY_BB_BASE_PENALTY_USD_XAUUSD", 0.18),
+        "BTCUSD": _get_float("ENTRY_UTILITY_BB_BASE_PENALTY_USD_BTCUSD", 0.30),
+        "DEFAULT": _get_float("ENTRY_UTILITY_BB_BASE_PENALTY_USD_DEFAULT", ENTRY_UTILITY_BB_BASE_PENALTY_USD),
+    }
+    ENTRY_UTILITY_BB_PENALTY_MID_MULT = _get_float("ENTRY_UTILITY_BB_PENALTY_MID_MULT", 1.00)
+    ENTRY_UTILITY_BB_PENALTY_EDGE_MULT = _get_float("ENTRY_UTILITY_BB_PENALTY_EDGE_MULT", 0.85)
+    ENTRY_UTILITY_BB_PENALTY_OTHER_MULT = _get_float("ENTRY_UTILITY_BB_PENALTY_OTHER_MULT", 0.70)
+    ENTRY_UTILITY_STATS_CACHE_TTL_SEC = int(os.getenv("ENTRY_UTILITY_STATS_CACHE_TTL_SEC", 60))
+
+    # =========================================
+    # [14] 진입 조건 학습(패밀리 보정)
+    # =========================================
+    ENABLE_ENTRY_CONDITION_LEARNING = _get_bool("ENABLE_ENTRY_CONDITION_LEARNING", True)
+    ENTRY_CONDITION_REFRESH_SEC = int(os.getenv("ENTRY_CONDITION_REFRESH_SEC", 180))
+    ENTRY_CONDITION_MIN_SAMPLES = int(os.getenv("ENTRY_CONDITION_MIN_SAMPLES", 30))
+    ENTRY_CONDITION_WEIGHT_STRENGTH = _get_float("ENTRY_CONDITION_WEIGHT_STRENGTH", 0.22)
+    ENTRY_CONDITION_MULT_MIN = _get_float("ENTRY_CONDITION_MULT_MIN", 0.82)
+    ENTRY_CONDITION_MULT_MAX = _get_float("ENTRY_CONDITION_MULT_MAX", 1.18)
+
+    # 특정 패밀리(Structure/Flow/VP/Trigger) 편중 완화용 소프트 캡
+    ENTRY_FAMILY_MAX_SHARE = _get_float("ENTRY_FAMILY_MAX_SHARE", 0.58)
+    ENTRY_FAMILY_DOMINANCE_FLOOR = _get_float("ENTRY_FAMILY_DOMINANCE_FLOOR", 55.0)
+    TRADE_HISTORY_CSV_PATH = os.getenv("TRADE_HISTORY_CSV_PATH", r"data\trades\trade_history.csv")
+    CLOSED_TRADE_CSV_PATH = os.getenv("CLOSED_TRADE_CSV_PATH", r"data\trades\trade_closed_history.csv")
+    STARTUP_RECONCILE_LIGHT_MODE = _get_bool("STARTUP_RECONCILE_LIGHT_MODE", True)
+    STARTUP_RECONCILE_PROFILE_ENABLED = _get_bool("STARTUP_RECONCILE_PROFILE_ENABLED", True)
+    STARTUP_RECONCILE_PROFILE_PATH = os.getenv(
+        "STARTUP_RECONCILE_PROFILE_PATH",
+        r"data\analysis\startup_reconcile_latest.json",
+    )
+    SYMBOL_LOOP_PROFILE_ENABLED = _get_bool("SYMBOL_LOOP_PROFILE_ENABLED", True)
+    SYMBOL_LOOP_PROFILE_PATH = os.getenv(
+        "SYMBOL_LOOP_PROFILE_PATH",
+        r"data\analysis\symbol_loop_profile_latest.json",
+    )
+    SYMBOL_LOOP_SLOW_WARN_SEC = _get_float("SYMBOL_LOOP_SLOW_WARN_SEC", 3.0)
+    ENTRY_EVAL_PROFILE_ENABLED = _get_bool("ENTRY_EVAL_PROFILE_ENABLED", True)
+    ENTRY_EVAL_PROFILE_PATH = os.getenv(
+        "ENTRY_EVAL_PROFILE_PATH",
+        r"data\analysis\entry_eval_profile_latest.json",
+    )
+    ENTRY_EVAL_SLOW_WARN_MS = _get_float("ENTRY_EVAL_SLOW_WARN_MS", 800.0)
+    OPEN_SNAPSHOT_CACHE_ENABLED = _get_bool("OPEN_SNAPSHOT_CACHE_ENABLED", True)
+
+    # Core action routing (PR-3 tuning)
+    ENTRY_CORE_MIN_SCORE = _get_float("ENTRY_CORE_MIN_SCORE", 3.4)
+    ENTRY_CORE_TIE_BAND = _get_float("ENTRY_CORE_TIE_BAND", 1.2)
+    ENTRY_CORE_MIDDLE_H1_GAP_MAX = _get_float("ENTRY_CORE_MIDDLE_H1_GAP_MAX", 11.0)
+    ENTRY_CORE_MIDDLE_M1_GAP_MAX = _get_float("ENTRY_CORE_MIDDLE_M1_GAP_MAX", 6.0)
+    ENTRY_CORE_MIDDLE_WEAK_PENALTY = _get_float("ENTRY_CORE_MIDDLE_WEAK_PENALTY", 10.0)
+    ENTRY_CORE_MIDDLE_WEAK_PENALTY_BY_SYMBOL = {
+        "BTCUSD": _get_float("ENTRY_CORE_MIDDLE_WEAK_PENALTY_BTCUSD", 8.0),
+        "NAS100": _get_float("ENTRY_CORE_MIDDLE_WEAK_PENALTY_NAS100", 10.0),
+        "XAUUSD": _get_float("ENTRY_CORE_MIDDLE_WEAK_PENALTY_XAUUSD", 12.0),
+        "DEFAULT": _get_float("ENTRY_CORE_MIDDLE_WEAK_PENALTY_DEFAULT", ENTRY_CORE_MIDDLE_WEAK_PENALTY),
+    }
+    ENABLE_ENTRY_PREFLIGHT_2H = _get_bool("ENABLE_ENTRY_PREFLIGHT_2H", True)
+    ENTRY_PREFLIGHT_H1_LOOKBACK = int(os.getenv("ENTRY_PREFLIGHT_H1_LOOKBACK", 24))
+    ENTRY_PREFLIGHT_SPREAD_OK_RATIO = _get_float("ENTRY_PREFLIGHT_SPREAD_OK_RATIO", 1.20)
+    ENTRY_PREFLIGHT_SPREAD_BAD_RATIO = _get_float("ENTRY_PREFLIGHT_SPREAD_BAD_RATIO", 1.60)
+    ENTRY_PREFLIGHT_2H_TREND_RATIO = _get_float("ENTRY_PREFLIGHT_2H_TREND_RATIO", 1.15)
+    ENTRY_PREFLIGHT_2H_SHOCK_RATIO = _get_float("ENTRY_PREFLIGHT_2H_SHOCK_RATIO", 2.40)
+    ENTRY_PREFLIGHT_2H_PULLBACK_ONLY_RATIO = _get_float("ENTRY_PREFLIGHT_2H_PULLBACK_ONLY_RATIO", 1.80)
+    ENTRY_PREFLIGHT_HARD_BLOCK = _get_bool("ENTRY_PREFLIGHT_HARD_BLOCK", False)
+    ENTRY_PREFLIGHT_HARD_BLOCK_SHOCK_ONLY = _get_bool("ENTRY_PREFLIGHT_HARD_BLOCK_SHOCK_ONLY", True)
+    ENTRY_PREFLIGHT_ENFORCE_DIRECTION_HARD = _get_bool("ENTRY_PREFLIGHT_ENFORCE_DIRECTION_HARD", False)
+    ENTRY_PREFLIGHT_DIRECTION_PENALTY = _get_float("ENTRY_PREFLIGHT_DIRECTION_PENALTY", 14.0)
+    ENTRY_PREFLIGHT_DIRECTION_PENALTY_BY_SYMBOL = {
+        "BTCUSD": _get_float("ENTRY_PREFLIGHT_DIRECTION_PENALTY_BTCUSD", ENTRY_PREFLIGHT_DIRECTION_PENALTY),
+        "NAS100": _get_float("ENTRY_PREFLIGHT_DIRECTION_PENALTY_NAS100", 10.0),
+        "XAUUSD": _get_float("ENTRY_PREFLIGHT_DIRECTION_PENALTY_XAUUSD", 2.0),
+        "DEFAULT": _get_float("ENTRY_PREFLIGHT_DIRECTION_PENALTY_DEFAULT", ENTRY_PREFLIGHT_DIRECTION_PENALTY),
+    }
+    ENTRY_PREFLIGHT_CONTRA_SCORE_PENALTY = _get_float("ENTRY_PREFLIGHT_CONTRA_SCORE_PENALTY", 24.0)
+    ENTRY_PREFLIGHT_CONTRA_WAIT_MIN = _get_float("ENTRY_PREFLIGHT_CONTRA_WAIT_MIN", 8.0)
+    ENTRY_PREFLIGHT_CONTRA_WAIT_GAIN = _get_float("ENTRY_PREFLIGHT_CONTRA_WAIT_GAIN", 0.30)
+    ENTRY_PREFLIGHT_CONTRA_SCORE_PENALTY_BY_SYMBOL = {
+        "BTCUSD": _get_float("ENTRY_PREFLIGHT_CONTRA_SCORE_PENALTY_BTCUSD", ENTRY_PREFLIGHT_CONTRA_SCORE_PENALTY),
+        "NAS100": _get_float("ENTRY_PREFLIGHT_CONTRA_SCORE_PENALTY_NAS100", 28.0),
+        "XAUUSD": _get_float("ENTRY_PREFLIGHT_CONTRA_SCORE_PENALTY_XAUUSD", 34.0),
+        "DEFAULT": _get_float("ENTRY_PREFLIGHT_CONTRA_SCORE_PENALTY_DEFAULT", ENTRY_PREFLIGHT_CONTRA_SCORE_PENALTY),
+    }
+    ENTRY_PREFLIGHT_CONTRA_WAIT_MIN_BY_SYMBOL = {
+        "BTCUSD": _get_float("ENTRY_PREFLIGHT_CONTRA_WAIT_MIN_BTCUSD", ENTRY_PREFLIGHT_CONTRA_WAIT_MIN),
+        "NAS100": _get_float("ENTRY_PREFLIGHT_CONTRA_WAIT_MIN_NAS100", 6.0),
+        "XAUUSD": _get_float("ENTRY_PREFLIGHT_CONTRA_WAIT_MIN_XAUUSD", 4.0),
+        "DEFAULT": _get_float("ENTRY_PREFLIGHT_CONTRA_WAIT_MIN_DEFAULT", ENTRY_PREFLIGHT_CONTRA_WAIT_MIN),
+    }
+    ENTRY_PREFLIGHT_CONTRA_WAIT_GAIN_BY_SYMBOL = {
+        "BTCUSD": _get_float("ENTRY_PREFLIGHT_CONTRA_WAIT_GAIN_BTCUSD", ENTRY_PREFLIGHT_CONTRA_WAIT_GAIN),
+        "NAS100": _get_float("ENTRY_PREFLIGHT_CONTRA_WAIT_GAIN_NAS100", 0.34),
+        "XAUUSD": _get_float("ENTRY_PREFLIGHT_CONTRA_WAIT_GAIN_XAUUSD", 0.40),
+        "DEFAULT": _get_float("ENTRY_PREFLIGHT_CONTRA_WAIT_GAIN_DEFAULT", ENTRY_PREFLIGHT_CONTRA_WAIT_GAIN),
+    }
+    ENTRY_PREFLIGHT_NO_TRADE_PENALTY = _get_float("ENTRY_PREFLIGHT_NO_TRADE_PENALTY", 6.0)
+    ENTRY_PREFLIGHT_BREAKOUT_GAP_MIN = _get_float("ENTRY_PREFLIGHT_BREAKOUT_GAP_MIN", 6.0)
+    ENTRY_PREFLIGHT_PULLBACK_BREAKOUT_PENALTY = _get_float("ENTRY_PREFLIGHT_PULLBACK_BREAKOUT_PENALTY", 5.0)
+    ENTRY_CORE_BOX_TREND_SHIFT = _get_float("ENTRY_CORE_BOX_TREND_SHIFT", 16.0)
+    ENTRY_CORE_BOX_TREND_SHIFT_H1_GAP = _get_float("ENTRY_CORE_BOX_TREND_SHIFT_H1_GAP", 6.0)
+    ENTRY_CORE_BOX_TREND_SHIFT_M1_GAP = _get_float("ENTRY_CORE_BOX_TREND_SHIFT_M1_GAP", 3.0)
+    ENTRY_CORE_BOX_TREND_SHIFT_IN_RANGE = _get_bool("ENTRY_CORE_BOX_TREND_SHIFT_IN_RANGE", False)
+    ENTRY_CORE_BOX_RANGE_CONTRA_BONUS = _get_float("ENTRY_CORE_BOX_RANGE_CONTRA_BONUS", 10.0)
+    ENTRY_CORE_BOX_RANGE_CONTRA_BONUS_BY_SYMBOL = {
+        "BTCUSD": _get_float("ENTRY_CORE_BOX_RANGE_CONTRA_BONUS_BTCUSD", 8.0),
+        "NAS100": _get_float("ENTRY_CORE_BOX_RANGE_CONTRA_BONUS_NAS100", 14.0),
+        "XAUUSD": _get_float("ENTRY_CORE_BOX_RANGE_CONTRA_BONUS_XAUUSD", 12.0),
+        "DEFAULT": _get_float("ENTRY_CORE_BOX_RANGE_CONTRA_BONUS_DEFAULT", ENTRY_CORE_BOX_RANGE_CONTRA_BONUS),
+    }
+    ENTRY_BEAR_CONTINUATION_SELL_SCORE = int(os.getenv("ENTRY_BEAR_CONTINUATION_SELL_SCORE", 22))
+    ENTRY_BEAR_CONTINUATION_WAIT_SCORE = int(os.getenv("ENTRY_BEAR_CONTINUATION_WAIT_SCORE", 16))
+
+    # Utility EV-lite stabilization (model/noise robust)
+    ENTRY_UTILITY_P_WEIGHT = _get_float("ENTRY_UTILITY_P_WEIGHT", 0.55)
+    ENTRY_UTILITY_P_CALIBRATION_ENABLED = _get_bool("ENTRY_UTILITY_P_CALIBRATION_ENABLED", True)
+    ENTRY_UTILITY_P_CALIBRATION_SAMPLES = int(os.getenv("ENTRY_UTILITY_P_CALIBRATION_SAMPLES", 120))
+    ENTRY_UTILITY_P_CALIBRATION_BLEND_MIN = _get_float("ENTRY_UTILITY_P_CALIBRATION_BLEND_MIN", 0.20)
+    ENTRY_UTILITY_P_CLIP_LOW = _get_float("ENTRY_UTILITY_P_CLIP_LOW", 0.05)
+    ENTRY_UTILITY_P_CLIP_HIGH = _get_float("ENTRY_UTILITY_P_CLIP_HIGH", 0.95)
+    ENTRY_UTILITY_WIN_MULT = _get_float("ENTRY_UTILITY_WIN_MULT", 1.00)
+    ENTRY_UTILITY_LOSS_MULT = _get_float("ENTRY_UTILITY_LOSS_MULT", 0.70)
+    ENTRY_UTILITY_FALLBACK_WIN_USD = _get_float("ENTRY_UTILITY_FALLBACK_WIN_USD", 1.00)
+    ENTRY_UTILITY_FALLBACK_LOSS_USD = _get_float("ENTRY_UTILITY_FALLBACK_LOSS_USD", 1.00)
+    ENTRY_UTILITY_FALLBACK_WIN_BY_SYMBOL = {
+        "BTCUSD": _get_float("ENTRY_UTILITY_FALLBACK_WIN_BTCUSD", 1.60),
+        "NAS100": _get_float("ENTRY_UTILITY_FALLBACK_WIN_NAS100", 2.10),
+        "XAUUSD": _get_float("ENTRY_UTILITY_FALLBACK_WIN_XAUUSD", 1.90),
+        "DEFAULT": _get_float("ENTRY_UTILITY_FALLBACK_WIN_DEFAULT", ENTRY_UTILITY_FALLBACK_WIN_USD),
+    }
+    ENTRY_UTILITY_FALLBACK_LOSS_BY_SYMBOL = {
+        "BTCUSD": _get_float("ENTRY_UTILITY_FALLBACK_LOSS_BTCUSD", 0.75),
+        "NAS100": _get_float("ENTRY_UTILITY_FALLBACK_LOSS_NAS100", 0.45),
+        "XAUUSD": _get_float("ENTRY_UTILITY_FALLBACK_LOSS_XAUUSD", 0.55),
+        "DEFAULT": _get_float("ENTRY_UTILITY_FALLBACK_LOSS_DEFAULT", ENTRY_UTILITY_FALLBACK_LOSS_USD),
+    }
+
+    # =========================================
+    # [15] State optional advanced inputs
+    # =========================================
+    STATE_ADVANCED_INPUTS_ENABLED = _get_bool("STATE_ADVANCED_INPUTS_ENABLED", True)
+    STATE_ADVANCED_FORCE_ON = _get_bool("STATE_ADVANCED_FORCE_ON", False)
+    STATE_ADVANCED_TICK_HISTORY_ENABLED = _get_bool("STATE_ADVANCED_TICK_HISTORY_ENABLED", True)
+    STATE_ADVANCED_ORDER_BOOK_ENABLED = _get_bool("STATE_ADVANCED_ORDER_BOOK_ENABLED", True)
+    STATE_ADVANCED_EVENT_RISK_ENABLED = _get_bool("STATE_ADVANCED_EVENT_RISK_ENABLED", True)
+    STATE_ADVANCED_TICK_LOOKBACK_SEC = int(os.getenv("STATE_ADVANCED_TICK_LOOKBACK_SEC", 90))
+    STATE_ADVANCED_TICK_COUNT = int(os.getenv("STATE_ADVANCED_TICK_COUNT", 96))
+    STATE_ADVANCED_SHOCK_LOOKBACK_DAYS = int(os.getenv("STATE_ADVANCED_SHOCK_LOOKBACK_DAYS", 21))
+    STATE_ADVANCED_EVENT_WINDOW_MIN = int(os.getenv("STATE_ADVANCED_EVENT_WINDOW_MIN", 45))
+    STATE_ADVANCED_SPREAD_TRIGGER = _get_float("STATE_ADVANCED_SPREAD_TRIGGER", 1.15)
+    STATE_ADVANCED_VOLUME_TRIGGER = _get_float("STATE_ADVANCED_VOLUME_TRIGGER", 0.55)
+    STATE_ADVANCED_WAIT_CONFLICT_TRIGGER = _get_float("STATE_ADVANCED_WAIT_CONFLICT_TRIGGER", 8.0)
+    STATE_ADVANCED_WAIT_NOISE_TRIGGER = _get_float("STATE_ADVANCED_WAIT_NOISE_TRIGGER", 10.0)
