@@ -88,3 +88,7 @@ trade_shock_events.csv
 *.jpeg
 *.JPG
 *.png
+!docs/assets/
+!docs/assets/*.png
+!docs/assets/*.jpg
+!docs/assets/*.jpeg
