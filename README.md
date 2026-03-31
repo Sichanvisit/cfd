@@ -18,6 +18,28 @@
 
 현재는 배포형 서비스보다는 연구, 운영 자동화, 구조 설계, 데이터 해석 역량을 보여주는 포트폴리오 성격이 더 강합니다.
 
+## 핵심 기술 스택
+
+| 영역 | 기술 |
+| --- | --- |
+| Backend | Python 3.12, FastAPI |
+| Frontend | Next.js 14, React 18 |
+| Data | pandas, CSV/상태 데이터 가공, 피처 구조화 |
+| ML | 학습/평가 스크립트, 재학습 파이프라인, ML 보조 예측 |
+| Runtime | MetaTrader 5 연동, 실시간 상태 추적, 운영 모니터링 |
+| Quality | pytest, 검증 스크립트, 문서화 |
+
+이 프로젝트에서 특히 강조하고 싶은 기술 키워드는 아래와 같습니다.
+
+- `Python`
+- `FastAPI`
+- `Next.js`
+- `React`
+- `pandas`
+- `Machine Learning`
+- `Data Pipeline`
+- `Monitoring Dashboard`
+
 ## 프로젝트 개요
 
 트레이딩에서는 단순히 "가격이 올랐다/내렸다"를 보는 것보다,
