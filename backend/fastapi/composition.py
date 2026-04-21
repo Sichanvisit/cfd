@@ -12,11 +12,20 @@ from backend.services.trade_read_service import TradeReadService
 from backend.trading.trade_logger import TradeLogger
 
 
+def _resolve_trade_csv_path(project_root: Path, fallback_trade_csv: Path) -> Path:
+    configured = str(getattr(Config, "TRADE_HISTORY_CSV_PATH", "") or "").strip()
+    path = Path(configured) if configured else Path(fallback_trade_csv)
+    if not path.is_absolute():
+        path = Path(project_root) / path
+    return path
+
+
 def compose_runtime_components(project_root: Path, trade_csv: Path) -> dict:
     """Build application services in one place for consistent dependency wiring."""
-    trade_logger = TradeLogger(filename=str(getattr(Config, "TRADE_HISTORY_CSV_PATH", str(trade_csv))))
-    trade_read_service = TradeReadService(trade_csv, trade_logger=trade_logger)
-    mt5_snapshot_service = Mt5SnapshotService(trade_csv, trade_logger=trade_logger)
+    resolved_trade_csv = _resolve_trade_csv_path(project_root, trade_csv)
+    trade_logger = TradeLogger(filename=str(resolved_trade_csv))
+    trade_read_service = TradeReadService(resolved_trade_csv, trade_logger=trade_logger)
+    mt5_snapshot_service = Mt5SnapshotService(resolved_trade_csv, trade_logger=trade_logger)
     return {
         "trade_logger": trade_logger,
         "trade_read_service": trade_read_service,
