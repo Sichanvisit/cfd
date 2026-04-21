@@ -7,7 +7,9 @@ import logging
 
 import pandas as pd
 
+from backend.integrations import notifier as telegram_notifier
 from backend.services.exit_profile_router import resolve_exit_profile
+from backend.services.trade_csv_schema import normalize_manual_reason_tag
 
 
 def _preserve_close_metadata(df: pd.DataFrame, row_idx: int) -> None:
@@ -36,6 +38,24 @@ def _preserve_close_metadata(df: pd.DataFrame, row_idx: int) -> None:
             entry_setup_id=setup_id,
             fallback_profile="neutral",
         )
+
+
+def _apply_pnl_breakdown_fields(
+    df: pd.DataFrame,
+    row_idx: int,
+    *,
+    net_profit: float,
+    gross_pnl: float,
+    cost_total: float,
+) -> None:
+    if "profit" in df.columns:
+        df.at[row_idx, "profit"] = round(float(net_profit), 2)
+    if "gross_pnl" in df.columns:
+        df.at[row_idx, "gross_pnl"] = round(float(gross_pnl), 2)
+    if "cost_total" in df.columns:
+        df.at[row_idx, "cost_total"] = round(float(cost_total), 2)
+    if "net_pnl_after_cost" in df.columns:
+        df.at[row_idx, "net_pnl_after_cost"] = round(float(net_profit), 2)
 
 
 def force_close_unknown(trade_logger, ticket, reason="Manual/Unknown", exit_score=0, logger: logging.Logger | None = None):
@@ -106,26 +126,38 @@ def update_closed_trade(trade_logger, ticket, deal, fallback_reason="Manual/Unkn
 
         symbol_info = trade_logger.broker.symbol_info(deal.symbol)
         point = symbol_info.point if symbol_info else 0.00001
-        profit = deal.profit + deal.swap + deal.commission
+        deal_profit = float(getattr(deal, "profit", 0.0) or 0.0)
+        deal_swap = float(getattr(deal, "swap", 0.0) or 0.0)
+        deal_commission = float(getattr(deal, "commission", 0.0) or 0.0)
+        profit = deal_profit + deal_swap + deal_commission
+        used_agg_profit = False
         agg_profit = trade_logger._sum_exit_profit_for_position(ticket)
         if agg_profit is not None and (abs(float(profit)) < 1e-9 or abs(float(agg_profit)) > abs(float(profit))):
             profit = float(agg_profit)
+            used_agg_profit = True
+        gross_pnl = float(profit) if used_agg_profit else float(deal_profit)
+        cost_total = float(gross_pnl - float(profit))
         close_text = trade_logger._ts_to_kst_text(int(deal.time))
         close_ts = int(trade_logger._ts_to_kst_dt(int(deal.time)).timestamp())
         t_int = int(ticket)
         shock_meta = trade_logger.resolve_shock_event_on_close(t_int, close_text, close_ts)
         exit_meta = trade_logger.pending_exit.pop(t_int, None)
         live_meta = trade_logger.live_exit_context.pop(t_int, None)
-        deal_comment = str(getattr(deal, "comment", "") or "").strip()
+        deal_comment = normalize_manual_reason_tag(getattr(deal, "comment", "") or "")
         exit_reason = ""
         exit_score = 0
+        manual_exit_tag = ""
         pre_reason = ""
         pre_score = 0
+        pre_manual_exit_tag = ""
         try:
             pre_reason = str(df.at[idx.tolist()[0], "exit_reason"] or "").strip()
             pre_score = int(pd.to_numeric(df.at[idx.tolist()[0], "exit_score"], errors="coerce") or 0)
+            pre_manual_exit_tag = normalize_manual_reason_tag(df.at[idx.tolist()[0], "manual_exit_tag"])
         except Exception:
             pass
+        if deal_comment:
+            manual_exit_tag = deal_comment
         if pre_reason and trade_logger._normalize_exit_reason(pre_reason).upper() not in {"MANUAL/UNKNOWN", "UNKNOWN"}:
             exit_reason = pre_reason
             exit_score = pre_score
@@ -167,9 +199,16 @@ def update_closed_trade(trade_logger, ticket, deal, fallback_reason="Manual/Unkn
             df.at[i, "exit_fill_price"] = float(deal.price)
             slip_pts = abs(float(deal.price) - req_px) / max(1e-12, float(point))
             df.at[i, "exit_slippage_points"] = float(slip_pts)
-            df.at[i, "profit"] = round(profit, 2)
+            _apply_pnl_breakdown_fields(
+                df,
+                i,
+                net_profit=float(profit),
+                gross_pnl=gross_pnl,
+                cost_total=cost_total,
+            )
             df.at[i, "points"] = round(points_i, 1)
             df.at[i, "exit_reason"] = exit_reason
+            df.at[i, "manual_exit_tag"] = manual_exit_tag or pre_manual_exit_tag
             df.at[i, "exit_score"] = int(exit_score)
             _preserve_close_metadata(df, i)
             if shock_meta:
@@ -197,13 +236,21 @@ def update_closed_trade(trade_logger, ticket, deal, fallback_reason="Manual/Unkn
         df = df.drop(index=idx.tolist()).reset_index(drop=True)
         trade_logger._write_open_df(df)
         trade_logger._sync_open_rows_to_store(df[df["status"] == "OPEN"].copy())
+        review_context = {
+            "shock_level": str(closed_rows.iloc[0].get("shock_level", "") or "").strip().lower(),
+            "shock_reason": str(closed_rows.iloc[0].get("shock_reason", "") or "").strip(),
+            "pre_shock_stage": str(closed_rows.iloc[0].get("pre_shock_stage", "") or "").strip().lower(),
+            "post_shock_stage": str(closed_rows.iloc[0].get("post_shock_stage", "") or "").strip().lower(),
+        }
 
-        icon = "WIN" if profit > 0 else "LOSS"
-        return (
-            f"{icon} [Exit]\n"
-            f"Symbol: {symbol}\n"
-            f"PnL: ${profit:.2f} ({int(points)} ticks)\n"
-            f"Entry: {open_price} -> Exit: {deal.price}"
+        return telegram_notifier.format_exit_message(
+            symbol=symbol,
+            profit=float(profit),
+            points=float(points),
+            entry_price=float(sample_open_price),
+            exit_price=float(deal.price),
+            exit_reason=exit_reason,
+            review_context=review_context,
         )
     except Exception as exc:
         log.exception("CSV update failed for ticket %s: %s", ticket, exc)

@@ -250,6 +250,10 @@ def resolve_semantic_shadow_compare_label(
         return "agree_enter"
     if semantic_enter and not baseline_enter:
         return "semantic_earlier_enter"
+    if prediction.get("recommendation") == "wait_better_entry" and baseline_enter:
+        return "semantic_wait_for_better_entry"
+    if prediction.get("recommendation") == "wait_better_entry" and str(baseline_outcome or "").strip().lower() == "wait":
+        return "semantic_wait_better_entry"
     if (not semantic_enter) and baseline_enter:
         return "semantic_later_block"
     if str(baseline_outcome or "").strip().lower() == "wait":
@@ -349,6 +353,13 @@ class SemanticShadowRuntime:
             should_enter = False
 
         trace_quality_state = resolve_trace_quality_state(row)
+        recommendation = "wait"
+        if exit_management_block["decision"]:
+            recommendation = "exit_protect"
+        elif should_enter:
+            recommendation = "enter_now"
+        elif entry_quality_block["decision"] and not timing_block["decision"]:
+            recommendation = "wait_better_entry"
         reason_parts: list[str] = []
         if timing_prob is not None:
             reason_parts.append(f"timing={timing_prob:.3f}")
@@ -373,6 +384,6 @@ class SemanticShadowRuntime:
             "entry_quality": entry_quality_block,
             "exit_management": exit_management_block,
             "should_enter": bool(should_enter),
-            "recommendation": ("enter_now" if should_enter else "wait"),
+            "recommendation": recommendation,
             "reason": ", ".join(reason_parts),
         }

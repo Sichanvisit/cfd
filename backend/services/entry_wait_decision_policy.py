@@ -108,15 +108,17 @@ def resolve_entry_wait_decision_policy_v1(
     )
     symbol_probe_prefer_wait_lock = _to_bool(symbol_probe_temperament.get("prefer_wait_lock", False))
 
+    lower_rebound_probe_active = _to_bool(wait_metadata_local.get("lower_rebound_probe_active", False))
+    upper_reject_probe_active = _to_bool(wait_metadata_local.get("upper_reject_probe_active", False))
     xau_second_support_probe = _to_bool(wait_metadata_local.get("xau_second_support_probe", False))
     xau_upper_sell_probe = _to_bool(wait_metadata_local.get("xau_upper_sell_probe", False))
 
     enter_value += float((action_readiness - 0.50) * 0.90)
     wait_value += float(max(0.0, 0.50 - action_readiness) * 0.55)
-    if xau_second_support_probe:
+    if lower_rebound_probe_active or xau_second_support_probe:
         enter_value += 0.22
         wait_value -= 0.14
-    if xau_upper_sell_probe:
+    if upper_reject_probe_active or xau_upper_sell_probe:
         enter_value += 0.22
         wait_value -= 0.14
     if wait_vs_enter_hint == "prefer_enter":

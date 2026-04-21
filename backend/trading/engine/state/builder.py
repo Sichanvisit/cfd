@@ -87,6 +87,74 @@ def _compute_topdown_confluence(metadata: dict) -> tuple[float, float, dict]:
     return float(confluence_bias), float(conflict_score), detail
 
 
+def _normalize_micro_structure(metadata: dict, position_scale: dict) -> tuple[dict, dict]:
+    micro = dict(metadata.get("micro_structure_v1") or {})
+    run_stats = dict(micro.get("direction_run_stats") or {})
+
+    body_size_pct_20 = _to_float(micro.get("body_size_pct_20"), _to_float(metadata.get("recent_body_mean"), 0.0))
+    upper_wick_ratio_20 = _to_float(micro.get("upper_wick_ratio_20"), 0.0)
+    lower_wick_ratio_20 = _to_float(micro.get("lower_wick_ratio_20"), 0.0)
+    doji_ratio_20 = _to_float(micro.get("doji_ratio_20"), 0.0)
+    same_color_run_current = _to_float(
+        micro.get("same_color_run_current"),
+        _to_float(run_stats.get("same_color_run_current"), 0.0),
+    )
+    same_color_run_max_20 = _to_float(
+        micro.get("same_color_run_max_20"),
+        _to_float(run_stats.get("same_color_run_max_20"), 0.0),
+    )
+    bull_ratio_20 = _to_float(
+        micro.get("bull_ratio_20"),
+        _to_float(run_stats.get("bull_ratio_20"), 0.0),
+    )
+    bear_ratio_20 = _to_float(
+        micro.get("bear_ratio_20"),
+        _to_float(run_stats.get("bear_ratio_20"), 0.0),
+    )
+    range_compression_ratio_20 = _to_float(
+        micro.get("range_compression_ratio_20"),
+        _to_float(position_scale.get("compression_score"), 0.0),
+    )
+    volume_burst_ratio_20 = _to_float(micro.get("volume_burst_ratio_20"), 0.0)
+    volume_burst_decay_20 = _to_float(micro.get("volume_burst_decay_20"), 0.0)
+    swing_high_retest_count_20 = _to_float(micro.get("swing_high_retest_count_20"), 0.0)
+    swing_low_retest_count_20 = _to_float(micro.get("swing_low_retest_count_20"), 0.0)
+    gap_fill_progress = micro.get("gap_fill_progress")
+    if gap_fill_progress is not None:
+        gap_fill_progress = _to_float(gap_fill_progress, 0.0)
+
+    normalized = {
+        "version": str(micro.get("version") or ""),
+        "data_state": str(micro.get("data_state", "MISSING") or "MISSING"),
+        "anchor_state": str(micro.get("anchor_state", "MISSING") or "MISSING"),
+        "lookback_bars": int(_to_float(micro.get("lookback_bars"), 0.0)),
+        "baseline_lookback_bars": int(_to_float(micro.get("baseline_lookback_bars"), 0.0)),
+        "window_size": int(_to_float(micro.get("window_size"), 0.0)),
+        "volume_source": str(micro.get("volume_source") or ""),
+        "body_size_pct_20": body_size_pct_20,
+        "upper_wick_ratio_20": upper_wick_ratio_20,
+        "lower_wick_ratio_20": lower_wick_ratio_20,
+        "doji_ratio_20": doji_ratio_20,
+        "same_color_run_current": same_color_run_current,
+        "same_color_run_max_20": same_color_run_max_20,
+        "bull_ratio_20": bull_ratio_20,
+        "bear_ratio_20": bear_ratio_20,
+        "range_compression_ratio_20": range_compression_ratio_20,
+        "volume_burst_ratio_20": volume_burst_ratio_20,
+        "volume_burst_decay_20": volume_burst_decay_20,
+        "swing_high_retest_count_20": swing_high_retest_count_20,
+        "swing_low_retest_count_20": swing_low_retest_count_20,
+        "gap_fill_progress": gap_fill_progress,
+        "direction_run_stats": {
+            "same_color_run_current": same_color_run_current,
+            "same_color_run_max_20": same_color_run_max_20,
+            "bull_ratio_20": bull_ratio_20,
+            "bear_ratio_20": bear_ratio_20,
+        },
+    }
+    return normalized, micro
+
+
 def build_state_raw_snapshot(ctx: EngineContext) -> StateRawSnapshot:
     regime = compute_regime_state(ctx)
     quality = compute_quality_state(ctx)
@@ -102,6 +170,7 @@ def build_state_raw_snapshot(ctx: EngineContext) -> StateRawSnapshot:
     tick_history = dict(advanced_inputs.get("tick_history") or {})
     order_book = dict(advanced_inputs.get("order_book") or {})
     event_risk = dict(advanced_inputs.get("event_risk") or {})
+    micro_structure, raw_micro_structure = _normalize_micro_structure(metadata, position_scale)
     return StateRawSnapshot(
         market_mode=regime["market_mode"],
         direction_policy=regime["direction_policy"],
@@ -122,6 +191,20 @@ def build_state_raw_snapshot(ctx: EngineContext) -> StateRawSnapshot:
         s_current_minus_di=_to_float(metadata.get("current_minus_di"), 0.0),
         s_recent_range_mean=_to_float(metadata.get("recent_range_mean"), 0.0),
         s_recent_body_mean=_to_float(metadata.get("recent_body_mean"), 0.0),
+        s_body_size_pct_20=_to_float(micro_structure.get("body_size_pct_20"), 0.0),
+        s_upper_wick_ratio_20=_to_float(micro_structure.get("upper_wick_ratio_20"), 0.0),
+        s_lower_wick_ratio_20=_to_float(micro_structure.get("lower_wick_ratio_20"), 0.0),
+        s_doji_ratio_20=_to_float(micro_structure.get("doji_ratio_20"), 0.0),
+        s_same_color_run_current=_to_float(micro_structure.get("same_color_run_current"), 0.0),
+        s_same_color_run_max_20=_to_float(micro_structure.get("same_color_run_max_20"), 0.0),
+        s_bull_ratio_20=_to_float(micro_structure.get("bull_ratio_20"), 0.0),
+        s_bear_ratio_20=_to_float(micro_structure.get("bear_ratio_20"), 0.0),
+        s_range_compression_ratio_20=_to_float(micro_structure.get("range_compression_ratio_20"), 0.0),
+        s_volume_burst_ratio_20=_to_float(micro_structure.get("volume_burst_ratio_20"), 0.0),
+        s_volume_burst_decay_20=_to_float(micro_structure.get("volume_burst_decay_20"), 0.0),
+        s_swing_high_retest_count_20=_to_float(micro_structure.get("swing_high_retest_count_20"), 0.0),
+        s_swing_low_retest_count_20=_to_float(micro_structure.get("swing_low_retest_count_20"), 0.0),
+        s_gap_fill_progress=micro_structure.get("gap_fill_progress"),
         s_sr_level_rank=_to_float(metadata.get("sr_level_rank"), 0.0),
         s_sr_touch_count=_to_float(metadata.get("sr_touch_count"), 0.0),
         s_session_box_height_ratio=_to_float(metadata.get("session_box_height_ratio"), 0.0),
@@ -165,6 +248,29 @@ def build_state_raw_snapshot(ctx: EngineContext) -> StateRawSnapshot:
             "current_minus_di": _to_float(metadata.get("current_minus_di"), 0.0),
             "recent_range_mean": _to_float(metadata.get("recent_range_mean"), 0.0),
             "recent_body_mean": _to_float(metadata.get("recent_body_mean"), 0.0),
+            "micro_structure_v1": raw_micro_structure,
+            "micro_structure_version": str(micro_structure.get("version") or ""),
+            "micro_structure_data_state": str(micro_structure.get("data_state") or "MISSING"),
+            "micro_structure_anchor_state": str(micro_structure.get("anchor_state") or "MISSING"),
+            "micro_structure_lookback_bars": int(_to_float(micro_structure.get("lookback_bars"), 0.0)),
+            "micro_structure_baseline_lookback_bars": int(_to_float(micro_structure.get("baseline_lookback_bars"), 0.0)),
+            "micro_structure_window_size": int(_to_float(micro_structure.get("window_size"), 0.0)),
+            "micro_structure_volume_source": str(micro_structure.get("volume_source") or ""),
+            "micro_body_size_pct_20": _to_float(micro_structure.get("body_size_pct_20"), 0.0),
+            "micro_upper_wick_ratio_20": _to_float(micro_structure.get("upper_wick_ratio_20"), 0.0),
+            "micro_lower_wick_ratio_20": _to_float(micro_structure.get("lower_wick_ratio_20"), 0.0),
+            "micro_doji_ratio_20": _to_float(micro_structure.get("doji_ratio_20"), 0.0),
+            "micro_same_color_run_current": _to_float(micro_structure.get("same_color_run_current"), 0.0),
+            "micro_same_color_run_max_20": _to_float(micro_structure.get("same_color_run_max_20"), 0.0),
+            "micro_bull_ratio_20": _to_float(micro_structure.get("bull_ratio_20"), 0.0),
+            "micro_bear_ratio_20": _to_float(micro_structure.get("bear_ratio_20"), 0.0),
+            "micro_direction_run_stats_v1": dict(micro_structure.get("direction_run_stats") or {}),
+            "micro_range_compression_ratio_20": _to_float(micro_structure.get("range_compression_ratio_20"), 0.0),
+            "micro_volume_burst_ratio_20": _to_float(micro_structure.get("volume_burst_ratio_20"), 0.0),
+            "micro_volume_burst_decay_20": _to_float(micro_structure.get("volume_burst_decay_20"), 0.0),
+            "micro_swing_high_retest_count_20": _to_float(micro_structure.get("swing_high_retest_count_20"), 0.0),
+            "micro_swing_low_retest_count_20": _to_float(micro_structure.get("swing_low_retest_count_20"), 0.0),
+            "micro_gap_fill_progress": micro_structure.get("gap_fill_progress"),
             "sr_level_rank": _to_float(metadata.get("sr_level_rank"), 0.0),
             "sr_touch_count": _to_float(metadata.get("sr_touch_count"), 0.0),
             "session_state_source": str(metadata.get("session_state_source", "UNKNOWN") or "UNKNOWN"),

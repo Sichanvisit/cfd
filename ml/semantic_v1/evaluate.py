@@ -498,7 +498,11 @@ def train_semantic_model(config: TrainConfig) -> dict[str, Any]:
 
     pipeline = _build_pipeline(categorical_columns, numeric_columns)
     y_train = train_df[config.target_column].astype(int)
-    pipeline.fit(train_df[feature_columns], y_train)
+    fit_kwargs: dict[str, Any] = {}
+    if "sample_weight" in train_df.columns:
+        sample_weight = pd.to_numeric(train_df["sample_weight"], errors="coerce").fillna(1.0).clip(lower=0.01)
+        fit_kwargs["model__sample_weight"] = sample_weight.to_numpy(dtype=float)
+    pipeline.fit(train_df[feature_columns], y_train, **fit_kwargs)
 
     validation_prob = (
         _positive_class_probability(pipeline, validation_df[feature_columns], positive_class=1)
@@ -520,6 +524,7 @@ def train_semantic_model(config: TrainConfig) -> dict[str, Any]:
         "base_model": pipeline,
         "calibration": calibration,
         "positive_label": config.positive_label,
+        "weighted_training": bool("sample_weight" in dataset.columns),
     }
 
     metrics = evaluate_model_bundle(bundle, test_df, target_column=config.target_column, margin_column=config.margin_column)

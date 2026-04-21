@@ -9,6 +9,7 @@ def _utility_input(
     profit: float = -0.4,
     peak_profit: float = 0.0,
     exit_profile_id: str = "neutral",
+    state_execution_bias_v1: dict | None = None,
 ) -> dict:
     return {
         "contract_version": "exit_utility_input_v1",
@@ -31,7 +32,8 @@ def _utility_input(
             "allow_wait_tp1": True,
         },
         "bias": {
-            "state_execution_bias_v1": {
+            "state_execution_bias_v1": state_execution_bias_v1
+            or {
                 "prefer_fast_cut": False,
                 "exit_pressure": 0.0,
             }
@@ -95,5 +97,37 @@ def test_exit_recovery_utility_bundle_disables_green_recovery_for_tight_protect(
     assert compact["gating"]["tight_protect_green_disable"] is True
     assert compact["gating"]["wait_be_disable_reason"] == "tight_protect_green_disable"
     assert compact["gating"]["wait_tp1_disable_reason"] == "tight_protect_green_disable"
+    assert compact["utilities"]["u_wait_be"] == -999.0
+    assert compact["utilities"]["u_wait_tp1"] == -999.0
+
+
+def test_exit_recovery_utility_bundle_disables_wait_for_countertrend_no_green_fast_cut():
+    compact = compact_exit_recovery_utility_bundle_v1(
+        resolve_exit_recovery_utility_bundle_v1(
+            exit_utility_input_v1=_utility_input(
+                profit=-1.2,
+                peak_profit=0.0,
+                exit_profile_id="conservative",
+                state_execution_bias_v1={
+                    "prefer_fast_cut": True,
+                    "exit_pressure": 0.24,
+                    "countertrend_with_entry": True,
+                    "topdown_state_label": "BULL_CONFLUENCE",
+                },
+            ),
+            exit_utility_base_bundle_v1=_base_bundle(),
+            recovery_predictions={
+                "p_recover_be": 0.28,
+                "p_recover_tp1": 0.18,
+                "p_deeper_loss": 0.42,
+                "p_reverse_valid": 0.05,
+            },
+            lower_reversal_hold_bias=False,
+        )
+    )
+
+    assert compact["gating"]["countertrend_no_green_fast_cut"] is True
+    assert compact["gating"]["wait_be_disable_reason"] == "countertrend_no_green_fast_cut"
+    assert compact["gating"]["wait_tp1_disable_reason"] == "countertrend_no_green_fast_cut"
     assert compact["utilities"]["u_wait_be"] == -999.0
     assert compact["utilities"]["u_wait_tp1"] == -999.0

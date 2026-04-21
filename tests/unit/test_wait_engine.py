@@ -232,6 +232,40 @@ def test_entry_wait_decision_does_not_prefer_wait_for_xau_upper_sell_probe():
     assert decision["selected"] is False
 
 
+def test_entry_wait_engine_surfaces_common_probe_flags_for_nas_upper_reject_scene():
+    wait_state = WaitEngine.build_entry_wait_state_from_row(
+        symbol="NAS100",
+        row={
+            "symbol": "NAS100",
+            "action": "SELL",
+            "box_state": "UPPER",
+            "bb_state": "MID",
+            "blocked_by": "outer_band_reversal_guard",
+            "wait_score": 34.0,
+            "wait_conflict": 0.0,
+            "wait_noise": 12.0,
+            "wait_penalty": 0.0,
+            "entry_probe_plan_v1": {
+                "symbol_probe_temperament_v1": {
+                    "scene_id": "nas_clean_confirm_probe",
+                },
+            },
+            "observe_confirm_v2": {
+                "state": "OBSERVE",
+                "action": "WAIT",
+                "side": "SELL",
+                "reason": "upper_reject_probe_observe",
+                "metadata": {},
+            },
+        },
+    )
+
+    assert wait_state.state == "ACTIVE"
+    assert wait_state.hard_wait is False
+    assert wait_state.metadata["upper_reject_probe_active"] is True
+    assert wait_state.metadata["xau_upper_sell_probe"] is False
+
+
 def test_exit_wait_engine_marks_reversal_confirm_without_tf_confirm():
     wait_state = WaitEngine.build_exit_wait_state(
         symbol="XAUUSD",
@@ -1635,3 +1669,65 @@ def test_exit_utility_decision_prefers_exit_now_for_xau_lower_buy_at_upper_edge_
     assert decision["reached_opposite_edge"] is True
     assert decision["symbol_edge_completion_bias_v1"]["active"] is True
     assert decision["winner"] == "exit_now"
+
+
+def test_exit_utility_decision_prefers_exit_now_when_meaningful_peak_is_being_given_back():
+    wait_state = WaitEngine.build_exit_wait_state(
+        symbol="XAUUSD",
+        trade_ctx={"profit": 0.45, "entry_setup_id": "trend_pullback_sell", "direction": "SELL"},
+        stage_inputs={
+            "profit": 0.45,
+            "peak_profit": 1.15,
+            "duration_sec": 240.0,
+            "regime_now": "NORMAL",
+            "current_box_state": "MIDDLE",
+            "current_bb_state": "MID",
+            "entry_direction": "SELL",
+        },
+        adverse_risk=False,
+        tf_confirm=False,
+        chosen_stage="hold",
+        policy_stage="mid",
+        confirm_needed=2,
+        exit_signal_score=10,
+        score_gap=0,
+        detail={"route_txt": "unit"},
+    )
+
+    decision = WaitEngine.evaluate_exit_utility_decision(
+        symbol="XAUUSD",
+        wait_state=wait_state,
+        stage_inputs={
+            "profit": 0.45,
+            "peak_profit": 1.15,
+            "duration_sec": 240.0,
+            "score_gap": 0,
+            "adverse_risk": False,
+            "regime_now": "NORMAL",
+            "current_box_state": "MIDDLE",
+            "current_bb_state": "MID",
+            "entry_direction": "SELL",
+        },
+        exit_predictions={
+            "p_more_profit": 0.85,
+            "p_giveback": 0.10,
+            "p_reverse_valid": 0.05,
+        },
+        wait_predictions={
+            "p_better_exit_if_wait": 0.60,
+            "expected_exit_improvement": 0.16,
+            "expected_miss_cost": 0.04,
+        },
+        recovery_predictions={
+            "p_recover_be": 0.20,
+            "p_recover_tp1": 0.10,
+            "p_deeper_loss": 0.18,
+            "p_reverse_valid": 0.05,
+        },
+        exit_profile_id="neutral",
+        roundtrip_cost=0.35,
+    )
+
+    assert decision["winner"] == "exit_now"
+    assert decision["exit_utility_scene_bias_bundle_v1"]["flags"]["meaningful_giveback_exit_pressure"] is True
+    assert decision["utility_exit_now"] > decision["utility_hold"]

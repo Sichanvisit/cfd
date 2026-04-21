@@ -54,6 +54,7 @@ def test_try_reverse_entry_requires_flat_symbol(monkeypatch):
     trade_logger = _DummyTradeLogger()
 
     monkeypatch.setattr(Config, "ALLOW_IMMEDIATE_REVERSE", True)
+    monkeypatch.setattr(Config, "IMMEDIATE_REVERSE_FLAT_WAIT_SEC", 0.0)
 
     try_reverse_entry(
         app,
@@ -70,3 +71,89 @@ def test_try_reverse_entry_requires_flat_symbol(monkeypatch):
     )
 
     assert app.execute_order_called is False
+
+
+def test_try_reverse_entry_retries_pending_candidate_once_symbol_turns_flat(monkeypatch):
+    app = _DummyApp()
+    trade_logger = _DummyTradeLogger()
+    positions_state = {"open": True}
+
+    def _positions_get(symbol=None):
+        if positions_state["open"]:
+            return [SimpleNamespace(magic=Config.MAGIC_NUMBER, type=1)]
+        return []
+
+    app.broker = SimpleNamespace(positions_get=_positions_get)
+
+    monkeypatch.setattr(Config, "ALLOW_IMMEDIATE_REVERSE", True)
+    monkeypatch.setattr(Config, "IMMEDIATE_REVERSE_FLAT_WAIT_SEC", 0.0)
+    monkeypatch.setattr(Config, "IMMEDIATE_REVERSE_PENDING_TTL_SEC", 30.0)
+
+    try_reverse_entry(
+        app,
+        reverse_action="BUY",
+        reverse_score=250,
+        reverse_reasons=["reverse"],
+        symbol="BTCUSD",
+        buy_s=220,
+        sell_s=80,
+        tick=SimpleNamespace(ask=100.2, bid=100.1),
+        scorer=None,
+        df_all={},
+        trade_logger=trade_logger,
+    )
+
+    assert app.execute_order_called is False
+    assert "BTCUSD" in app.pending_reverse_by_symbol
+
+    positions_state["open"] = False
+    try_reverse_entry(
+        app,
+        reverse_action=None,
+        reverse_score=0,
+        reverse_reasons=[],
+        symbol="BTCUSD",
+        buy_s=220,
+        sell_s=80,
+        tick=SimpleNamespace(ask=100.2, bid=100.1),
+        scorer=None,
+        df_all={},
+        trade_logger=trade_logger,
+    )
+
+    assert app.execute_order_called is True
+    assert "BTCUSD" not in app.pending_reverse_by_symbol
+
+
+def test_try_reverse_entry_waits_briefly_for_recent_close_before_order(monkeypatch):
+    app = _DummyApp()
+    trade_logger = _DummyTradeLogger()
+    call_counter = {"count": 0}
+
+    def _positions_get(symbol=None):
+        call_counter["count"] += 1
+        if call_counter["count"] == 1:
+            return [SimpleNamespace(magic=Config.MAGIC_NUMBER, type=1)]
+        return []
+
+    app.broker = SimpleNamespace(positions_get=_positions_get)
+
+    monkeypatch.setattr(Config, "ALLOW_IMMEDIATE_REVERSE", True)
+    monkeypatch.setattr(Config, "IMMEDIATE_REVERSE_FLAT_WAIT_SEC", 0.3)
+    monkeypatch.setattr(Config, "IMMEDIATE_REVERSE_PENDING_TTL_SEC", 30.0)
+
+    try_reverse_entry(
+        app,
+        reverse_action="BUY",
+        reverse_score=250,
+        reverse_reasons=["reverse"],
+        symbol="BTCUSD",
+        buy_s=220,
+        sell_s=80,
+        tick=SimpleNamespace(ask=100.2, bid=100.1),
+        scorer=None,
+        df_all={},
+        trade_logger=trade_logger,
+    )
+
+    assert app.execute_order_called is True

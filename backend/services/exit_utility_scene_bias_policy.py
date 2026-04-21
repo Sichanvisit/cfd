@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from backend.core.config import Config
+
 
 def _as_mapping(value: object) -> dict[str, Any]:
     return dict(value or {}) if isinstance(value, Mapping) else {}
@@ -64,9 +66,19 @@ def resolve_exit_utility_scene_bias_bundle_v1(
     adverse_risk = _to_bool(risk.get("adverse_risk", False), False)
     recovery_policy_id = _to_str(policy.get("recovery_policy_id", ""))
     locked_profit = _to_float(base_inputs.get("locked_profit", max(0.0, profit)), 0.0)
+    state_execution_bias = _as_mapping(bias.get("state_execution_bias_v1"))
     symbol_edge_execution_bias = _as_mapping(
         bias.get("symbol_edge_execution_overrides_v1")
     )
+    countertrend_with_entry = _to_bool(
+        state_execution_bias.get("countertrend_with_entry", False),
+        False,
+    )
+    prefer_fast_cut = _to_bool(state_execution_bias.get("prefer_fast_cut", False), False)
+    topdown_state_label = _to_str(
+        state_execution_bias.get("topdown_state_label", ""),
+        "",
+    ).upper()
 
     range_middle_observe = bool(regime_now == "RANGE" and current_box_state == "MIDDLE")
     range_lower_edge = bool(
@@ -243,6 +255,138 @@ def resolve_exit_utility_scene_bias_bundle_v1(
         utility_hold_delta -= 0.30 + min(0.18, giveback * 0.30)
         utility_wait_exit_delta -= 0.22
 
+    meaningful_giveback_exit_pressure = bool(
+        _to_bool(getattr(Config, "EXIT_MEANINGFUL_GIVEBACK_PRESSURE_ENABLED", True), True)
+        and profit > 0.0
+        and not adverse_risk
+        and peak_profit >= _to_float(getattr(Config, "EXIT_MEANINGFUL_GIVEBACK_MIN_PEAK_USD", 1.0), 1.0)
+        and giveback
+        >= max(
+            _to_float(getattr(Config, "EXIT_MEANINGFUL_GIVEBACK_MIN_USD", 0.55), 0.55),
+            peak_profit * _to_float(getattr(Config, "EXIT_MEANINGFUL_GIVEBACK_RATIO", 0.35), 0.35),
+        )
+        and state in {"ACTIVE", "GREEN_CLOSE", "NONE"}
+        and not xau_lower_edge_to_edge_hold_bias
+        and not btc_lower_hold_bias
+        and not btc_lower_mid_noise_hold_bias
+    )
+    if meaningful_giveback_exit_pressure:
+        exit_bonus = _to_float(
+            getattr(Config, "EXIT_MEANINGFUL_GIVEBACK_EXIT_BONUS", 0.26),
+            0.26,
+        ) + min(0.22, giveback * 0.16)
+        hold_penalty = _to_float(
+            getattr(Config, "EXIT_MEANINGFUL_GIVEBACK_HOLD_PENALTY", 0.30),
+            0.30,
+        ) + min(0.26, giveback * 0.20)
+        wait_penalty = _to_float(
+            getattr(Config, "EXIT_MEANINGFUL_GIVEBACK_WAIT_PENALTY", 0.18),
+            0.18,
+        ) + min(0.16, giveback * 0.14)
+        if giveback >= 1.0:
+            exit_bonus += 0.06
+            hold_penalty += 0.08
+            wait_penalty += 0.04
+        utility_exit_now_delta += exit_bonus
+        utility_hold_delta -= hold_penalty
+        utility_wait_exit_delta -= wait_penalty
+
+    countertrend_no_green_exit_pressure = bool(
+        _to_bool(getattr(Config, "EXIT_COUNTERTREND_NO_GREEN_PRESSURE_ENABLED", True), True)
+        and countertrend_with_entry
+        and topdown_state_label in {"BULL_CONFLUENCE", "BEAR_CONFLUENCE", "TOPDOWN_CONFLICT"}
+        and not reached_opposite_edge
+        and not xau_lower_edge_to_edge_hold_bias
+        and not nas_upper_hold_bias
+        and not btc_lower_hold_bias
+        and not btc_lower_mid_noise_hold_bias
+        and profit < 0.0
+        and peak_profit
+        <= _to_float(getattr(Config, "EXIT_COUNTERTREND_NO_GREEN_MAX_PEAK_USD", 0.10), 0.10)
+    )
+    if countertrend_no_green_exit_pressure:
+        exit_bonus = _to_float(
+            getattr(Config, "EXIT_COUNTERTREND_NO_GREEN_EXIT_BONUS", 0.24),
+            0.24,
+        )
+        hold_penalty = _to_float(
+            getattr(Config, "EXIT_COUNTERTREND_NO_GREEN_HOLD_PENALTY", 0.28),
+            0.28,
+        )
+        wait_penalty = _to_float(
+            getattr(Config, "EXIT_COUNTERTREND_NO_GREEN_WAIT_PENALTY", 0.18),
+            0.18,
+        )
+        utility_exit_now_delta += exit_bonus
+        utility_hold_delta -= hold_penalty
+        utility_wait_exit_delta -= wait_penalty
+
+    countertrend_topdown_exit_pressure = bool(
+        _to_bool(getattr(Config, "EXIT_COUNTERTREND_TOPDOWN_PRESSURE_ENABLED", True), True)
+        and countertrend_with_entry
+        and topdown_state_label in {"BULL_CONFLUENCE", "BEAR_CONFLUENCE", "TOPDOWN_CONFLICT"}
+        and not reached_opposite_edge
+        and not xau_lower_edge_to_edge_hold_bias
+        and not nas_upper_hold_bias
+        and not btc_lower_hold_bias
+        and not btc_lower_mid_noise_hold_bias
+        and (
+            adverse_risk
+            or prefer_fast_cut
+            or peak_profit
+            >= _to_float(getattr(Config, "EXIT_COUNTERTREND_TOPDOWN_MIN_PEAK_USD", 0.40), 0.40)
+            or giveback
+            >= _to_float(getattr(Config, "EXIT_COUNTERTREND_TOPDOWN_MIN_GIVEBACK_USD", 0.15), 0.15)
+        )
+    )
+    if countertrend_topdown_exit_pressure:
+        exit_bonus = _to_float(
+            getattr(Config, "EXIT_COUNTERTREND_TOPDOWN_EXIT_BONUS", 0.18),
+            0.18,
+        ) + min(0.12, giveback * 0.12)
+        hold_penalty = _to_float(
+            getattr(Config, "EXIT_COUNTERTREND_TOPDOWN_HOLD_PENALTY", 0.22),
+            0.22,
+        ) + min(0.14, giveback * 0.15)
+        wait_penalty = _to_float(
+            getattr(Config, "EXIT_COUNTERTREND_TOPDOWN_WAIT_PENALTY", 0.14),
+            0.14,
+        ) + min(0.12, giveback * 0.12)
+        utility_exit_now_delta += exit_bonus
+        utility_hold_delta -= hold_penalty
+        utility_wait_exit_delta -= wait_penalty
+
+    countertrend_continuation_exit_pressure = bool(
+        _to_bool(getattr(Config, "EXIT_COUNTERTREND_CONTINUATION_PRESSURE_ENABLED", True), True)
+        and countertrend_with_entry
+        and topdown_state_label in {"BULL_CONFLUENCE", "BEAR_CONFLUENCE"}
+        and not reached_opposite_edge
+        and not xau_lower_edge_to_edge_hold_bias
+        and not nas_upper_hold_bias
+        and not btc_lower_hold_bias
+        and not btc_lower_mid_noise_hold_bias
+        and peak_profit
+        >= _to_float(getattr(Config, "EXIT_COUNTERTREND_CONTINUATION_MIN_PEAK_USD", 0.80), 0.80)
+        and giveback
+        >= _to_float(getattr(Config, "EXIT_COUNTERTREND_CONTINUATION_MIN_GIVEBACK_USD", 0.50), 0.50)
+    )
+    if countertrend_continuation_exit_pressure:
+        exit_bonus = _to_float(
+            getattr(Config, "EXIT_COUNTERTREND_CONTINUATION_EXIT_BONUS", 0.16),
+            0.16,
+        ) + min(0.10, giveback * 0.10)
+        hold_penalty = _to_float(
+            getattr(Config, "EXIT_COUNTERTREND_CONTINUATION_HOLD_PENALTY", 0.18),
+            0.18,
+        ) + min(0.12, giveback * 0.12)
+        wait_penalty = _to_float(
+            getattr(Config, "EXIT_COUNTERTREND_CONTINUATION_WAIT_PENALTY", 0.12),
+            0.12,
+        ) + min(0.10, giveback * 0.10)
+        utility_exit_now_delta += exit_bonus
+        utility_hold_delta -= hold_penalty
+        utility_wait_exit_delta -= wait_penalty
+
     return {
         "contract_version": "exit_utility_scene_bias_bundle_v1",
         "identity": {
@@ -260,6 +404,10 @@ def resolve_exit_utility_scene_bias_bundle_v1(
             "btc_lower_mid_noise_hold_bias": bool(btc_lower_mid_noise_hold_bias),
             "btc_upper_tight": bool(btc_upper_tight),
             "btc_upper_support_bounce_exit": bool(btc_upper_support_bounce_exit),
+            "meaningful_giveback_exit_pressure": bool(meaningful_giveback_exit_pressure),
+            "countertrend_no_green_exit_pressure": bool(countertrend_no_green_exit_pressure),
+            "countertrend_topdown_exit_pressure": bool(countertrend_topdown_exit_pressure),
+            "countertrend_continuation_exit_pressure": bool(countertrend_continuation_exit_pressure),
         },
         "utility_deltas": {
             "utility_exit_now_delta": _round6(utility_exit_now_delta, 0.0),
@@ -322,6 +470,22 @@ def compact_exit_utility_scene_bias_bundle_v1(
             "btc_upper_tight": _to_bool(flags.get("btc_upper_tight", False), False),
             "btc_upper_support_bounce_exit": _to_bool(
                 flags.get("btc_upper_support_bounce_exit", False),
+                False,
+            ),
+            "meaningful_giveback_exit_pressure": _to_bool(
+                flags.get("meaningful_giveback_exit_pressure", False),
+                False,
+            ),
+            "countertrend_no_green_exit_pressure": _to_bool(
+                flags.get("countertrend_no_green_exit_pressure", False),
+                False,
+            ),
+            "countertrend_topdown_exit_pressure": _to_bool(
+                flags.get("countertrend_topdown_exit_pressure", False),
+                False,
+            ),
+            "countertrend_continuation_exit_pressure": _to_bool(
+                flags.get("countertrend_continuation_exit_pressure", False),
                 False,
             ),
         },

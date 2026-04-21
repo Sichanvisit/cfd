@@ -21,6 +21,35 @@ def _canonical_symbol(symbol: str) -> str:
     return s
 
 
+def _read_recent_closed_frame(trade_logger, *, symbol: str = "", limit: int = 300) -> pd.DataFrame:
+    lim = max(1, int(limit or 1))
+    query_latest_closed = getattr(trade_logger, "query_latest_closed", None)
+    if callable(query_latest_closed):
+        try:
+            frame = query_latest_closed(symbol=symbol, limit=lim)
+            if frame is not None:
+                return frame
+        except Exception:
+            pass
+
+    reader = getattr(trade_logger, "read_closed_df", None)
+    if not callable(reader):
+        return pd.DataFrame()
+    try:
+        closed = reader()
+    except Exception:
+        return pd.DataFrame()
+    if closed is None or closed.empty:
+        return pd.DataFrame()
+    frame = closed.copy()
+    if symbol:
+        symbol_key = _canonical_symbol(symbol)
+        frame = frame[frame.get("symbol", "").fillna("").astype(str).map(_canonical_symbol) == symbol_key].copy()
+    if len(frame) > lim:
+        frame = frame.tail(lim).copy()
+    return frame
+
+
 def refresh_entry_profile(current_profile: dict, trade_logger) -> dict:
     if not bool(getattr(Config, "ENABLE_ADAPTIVE_ENTRY_ROUTING", True)):
         return dict(current_profile or {})
@@ -29,11 +58,12 @@ def refresh_entry_profile(current_profile: dict, trade_logger) -> dict:
     profile = dict(current_profile or {})
     if (now_s - float(profile.get("updated_at", 0.0))) < ttl:
         return profile
-    reader = getattr(trade_logger, "read_closed_df", None)
-    if not callable(reader):
-        return profile
+    recent_limit = max(
+        int(getattr(Config, "ENTRY_ADAPTIVE_MIN_SAMPLES", 30)) * 6,
+        int(getattr(Config, "ENTRY_ADAPTIVE_RECENT_TRADES", 360) or 360),
+    )
     try:
-        closed = reader()
+        closed = _read_recent_closed_frame(trade_logger, limit=recent_limit)
     except Exception:
         return profile
     if closed is None or closed.empty:
@@ -202,11 +232,12 @@ def refresh_exit_profile(current_profile: dict, trade_logger, normalize_exit_rea
     profile = dict(current_profile or {})
     if (now_s - float(profile.get("updated_at", 0.0))) < ttl:
         return profile
-    reader = getattr(trade_logger, "read_closed_df", None)
-    if not callable(reader):
-        return profile
+    recent_limit = max(
+        int(getattr(Config, "EXIT_ADAPTIVE_MIN_SAMPLES", 20)) * 6,
+        int(getattr(Config, "EXIT_ADAPTIVE_RECENT_TRADES", 240) or 240),
+    )
     try:
-        closed = reader()
+        closed = _read_recent_closed_frame(trade_logger, limit=recent_limit)
     except Exception:
         return profile
     if closed is None or closed.empty:

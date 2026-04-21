@@ -14,6 +14,7 @@ import pandas as pd
 from backend.core.config import Config
 from backend.core.trade_constants import ORDER_TYPE_BUY, ORDER_TYPE_SELL
 from backend.domain.decision_models import DecisionContext, DecisionResult, PredictionBundle, SetupCandidate, WaitState
+from backend.services.entry_authority_trace import build_entry_authority_fields
 from backend.services.consumer_contract import (
     CONSUMER_FREEZE_HANDOFF_V1,
     CONSUMER_INPUT_CONTRACT_V1,
@@ -139,6 +140,11 @@ def _build_entry_eval_profile(
     if timings:
         dominant_stage, dominant_stage_ms = max(timings.items(), key=lambda item: float(item[1]))
     snapshot_row = dict(snapshot_row or {})
+    helper_prefront_profile = dict(snapshot_row.get("entry_helper_prefront_profile_v1", {}) or {})
+    helper_front_profile = dict(snapshot_row.get("entry_helper_front_profile_v1", {}) or {})
+    helper_back_profile = dict(snapshot_row.get("entry_helper_back_profile_v1", {}) or {})
+    helper_internal_profile = dict(snapshot_row.get("entry_helper_payload_profile_v1", {}) or {})
+    append_log_profile = dict(snapshot_row.get("entry_append_log_profile_v1", {}) or {})
     return {
         "contract_version": "entry_eval_profile_v1",
         "updated_at": datetime.now().isoformat(timespec="seconds"),
@@ -149,6 +155,11 @@ def _build_entry_eval_profile(
         "dominant_stage": str(dominant_stage or ""),
         "dominant_stage_ms": round(float(dominant_stage_ms or 0.0), 3),
         "stage_timings_ms": timings,
+        "helper_prefront_profile": helper_prefront_profile,
+        "helper_front_profile": helper_front_profile,
+        "helper_back_profile": helper_back_profile,
+        "helper_internal_profile": helper_internal_profile,
+        "append_log_profile": append_log_profile,
         "new_ticket_count": int(new_ticket_count or 0),
         "newest_ticket": int(newest_ticket or 0),
         "snapshot": {
@@ -383,6 +394,7 @@ class EntryService:
         *,
         setup_id: str = "",
         setup_reason: str = "",
+        runtime_signal_row: dict | None = None,
     ) -> tuple[bool, str]:
         return self.guard_engine.pass_box_middle_guard(
             symbol,
@@ -393,6 +405,7 @@ class EntryService:
             indicators,
             setup_id=str(setup_id or ""),
             setup_reason=str(setup_reason or ""),
+            runtime_signal_row=dict(runtime_signal_row or {}),
         )
 
     @staticmethod
@@ -515,6 +528,16 @@ class EntryService:
     def _attach_consumer_scope_contract(context: DecisionContext | None) -> DecisionContext | None:
         if context is None:
             return None
+        metadata_ref = getattr(context, "metadata", {})
+        if isinstance(metadata_ref, dict) and all(
+            key in metadata_ref
+            for key in (
+                "consumer_input_contract_v1",
+                "consumer_scope_contract_v1",
+                "layer_mode_contract_v1",
+            )
+        ):
+            return context
         metadata = dict(getattr(context, "metadata", {}) or {})
         metadata["consumer_input_contract_v1"] = copy.deepcopy(CONSUMER_INPUT_CONTRACT_V1)
         metadata["consumer_layer_mode_integration_v1"] = copy.deepcopy(CONSUMER_LAYER_MODE_INTEGRATION_V1)
@@ -1567,6 +1590,80 @@ class EntryService:
             },
         )
 
+    @classmethod
+    def _build_lean_entry_decision_artifacts(cls, row: dict) -> tuple[dict, dict]:
+        payload = dict(row or {})
+        context_payload = {
+            "symbol": str(payload.get("symbol", "") or ""),
+            "phase": "entry",
+            "market_mode": str(payload.get("preflight_regime", "") or ""),
+            "direction_policy": str(payload.get("preflight_allowed_action", "") or ""),
+            "box_state": str(payload.get("box_state", "") or ""),
+            "bb_state": str(payload.get("bb_state", "") or ""),
+            "liquidity_state": str(payload.get("preflight_liquidity", "") or ""),
+            "regime_name": str(payload.get("preflight_regime", "") or ""),
+            "regime_zone": str(payload.get("preflight_approach_mode", "") or ""),
+            "volatility_state": "",
+            "metadata": {
+                "core_pass": payload.get("core_pass", ""),
+                "core_reason": str(payload.get("core_reason", "") or ""),
+                "core_allowed_action": str(payload.get("core_allowed_action", "") or ""),
+                "entry_stage": str(payload.get("entry_stage", "") or ""),
+                "decision_mode": str(payload.get("decision_rule_version", "") or ""),
+                "preflight_reason": str(payload.get("preflight_reason", "") or ""),
+                "observe_confirm_v2": payload.get("observe_confirm_v2", {}),
+                "energy_helper_v2": payload.get("energy_helper_v2", {}),
+                "forecast_effective_policy_v1": payload.get("forecast_effective_policy_v1", {}),
+                "forecast_assist_v1": payload.get("forecast_assist_v1", {}),
+                "entry_default_side_gate_v1": payload.get("entry_default_side_gate_v1", {}),
+                "entry_probe_plan_v1": payload.get("entry_probe_plan_v1", {}),
+                "edge_pair_law_v1": payload.get("edge_pair_law_v1", {}),
+                "probe_candidate_v1": payload.get("probe_candidate_v1", {}),
+            },
+        }
+        result_payload = {
+            "phase": "entry",
+            "symbol": str(payload.get("symbol", "") or ""),
+            "action": str(payload.get("action", "") or ""),
+            "outcome": str(payload.get("outcome", "") or ""),
+            "blocked_by": str(payload.get("blocked_by", "") or ""),
+            "reason": str(
+                payload.get("observe_reason", "")
+                or payload.get("action_none_reason", "")
+                or payload.get("blocked_by", "")
+                or ""
+            ),
+            "decision_rule_version": str(payload.get("decision_rule_version", "") or ""),
+            "wait_state": str(payload.get("quick_trace_state", "") or payload.get("entry_wait_state", "") or ""),
+            "selected_setup": {
+                "setup_id": str(payload.get("setup_id", "") or ""),
+                "setup_side": str(payload.get("setup_side", "") or ""),
+                "setup_status": str(payload.get("setup_status", "") or ""),
+                "setup_trigger_state": str(payload.get("setup_trigger_state", "") or ""),
+                "setup_score": payload.get("setup_score", ""),
+                "setup_entry_quality": payload.get("setup_entry_quality", ""),
+                "setup_reason": str(payload.get("setup_reason", "") or ""),
+            },
+            "metrics": {
+                "considered": payload.get("considered", ""),
+                "size_multiplier": payload.get("size_multiplier", ""),
+                "ai_probability": payload.get("ai_probability", ""),
+                "utility_u": payload.get("utility_u", ""),
+                "observe_reason": payload.get("observe_reason", ""),
+                "action_none_reason": payload.get("action_none_reason", ""),
+            },
+            "predictions": {
+                "wait": {
+                    "observe_reason": str(payload.get("observe_reason", "") or ""),
+                    "action_none_reason": str(payload.get("action_none_reason", "") or ""),
+                }
+            },
+        }
+        return (
+            compact_entry_decision_context(context_payload),
+            compact_entry_decision_result(result_payload),
+        )
+
     def _compute_context_threshold_adjustment(
         self,
         regime: dict,
@@ -1581,8 +1678,186 @@ class EntryService:
             entry_h1_context_opposite=entry_h1_context_opposite,
         )
 
+    @staticmethod
+    def _coerce_float(value: object, default: float = 0.0) -> float:
+        try:
+            parsed = pd.to_numeric(value, errors="coerce")
+            if pd.isna(parsed):
+                return float(default)
+            return float(parsed)
+        except Exception:
+            return float(default)
+
+    @staticmethod
+    def _coerce_bool(value: object) -> bool:
+        if isinstance(value, bool):
+            return value
+        text = str(value or "").strip().lower()
+        return text in {"1", "true", "yes", "on"}
+
+    def _resolve_nas_clean_confirm_low_vol_relief(
+        self,
+        *,
+        symbol: str,
+        blocked_reason: str,
+    ) -> tuple[bool, dict[str, object]]:
+        canonical_symbol = self._canonical_symbol(symbol)
+        rows = getattr(self.runtime, "latest_signal_by_symbol", None)
+        row = rows.get(symbol, {}) if isinstance(rows, dict) else {}
+        row = dict(row or {}) if isinstance(row, dict) else {}
+        observe_reason = str(row.get("observe_reason", "") or "").lower()
+        plan = dict(row.get("entry_probe_plan_v1", {}) or {})
+        probe_scene_id = str(
+            row.get("probe_scene_id")
+            or plan.get("scene_id")
+            or plan.get("symbol_scene_relief")
+            or ""
+        ).lower()
+        pair_gap = self._coerce_float(plan.get("pair_gap", row.get("probe_pair_gap", 0.0)))
+        candidate_support = self._coerce_float(
+            plan.get("candidate_support", row.get("probe_candidate_support", 0.0))
+        )
+        intended_action = str(plan.get("intended_action", row.get("action", "")) or "").upper()
+        plan_ready = self._coerce_bool(plan.get("ready_for_entry", row.get("probe_plan_ready", False)))
+        action_confirm_score = self._coerce_float(plan.get("action_confirm_score", 0.0))
+        confirm_fake_gap = self._coerce_float(
+            plan.get("confirm_fake_gap", row.get("transition_confirm_fake_gap", 0.0))
+        )
+        wait_confirm_gap = self._coerce_float(plan.get("wait_confirm_gap", 0.0))
+        continue_fail_gap = self._coerce_float(
+            plan.get("continue_fail_gap", row.get("management_continue_fail_gap", 0.0))
+        )
+        same_side_barrier = self._coerce_float(plan.get("same_side_barrier", 1.0), default=1.0)
+        structural_relief_active = self._coerce_bool(plan.get("structural_relief_active", False))
+        structural_relief_candidate_support = self._coerce_float(
+            plan.get("structural_relief_candidate_support", 0.0)
+        )
+        structural_relief_action_confirm_score = self._coerce_float(
+            plan.get("structural_relief_action_confirm_score", 0.0)
+        )
+        structural_relief_confirm_fake_gap = self._coerce_float(
+            plan.get("structural_relief_confirm_fake_gap", -1.0),
+            default=-1.0,
+        )
+        structural_relief_wait_confirm_gap = self._coerce_float(
+            plan.get("structural_relief_wait_confirm_gap", -1.0),
+            default=-1.0,
+        )
+        structural_relief_continue_fail_gap = self._coerce_float(
+            plan.get("structural_relief_continue_fail_gap", -1.0),
+            default=-1.0,
+        )
+        structural_relief_max_side_barrier = self._coerce_float(
+            plan.get("structural_relief_max_side_barrier", 1.0),
+            default=1.0,
+        )
+        near_confirm_pair_gap = self._coerce_float(plan.get("near_confirm_pair_gap", 0.10), default=0.10)
+        near_confirm = self._coerce_bool(plan.get("near_confirm", False)) or (
+            pair_gap >= near_confirm_pair_gap
+        )
+        allowed_observe_reasons = {
+            "upper_reject_probe_observe",
+            "lower_rebound_probe_observe",
+        }
+        relaxed_action_confirm_floor = max(structural_relief_action_confirm_score - 0.03, 0.05)
+        relaxed_confirm_fake_floor = structural_relief_confirm_fake_gap - 0.04
+        relaxed_wait_confirm_floor = structural_relief_wait_confirm_gap - 0.05
+        relaxed_continue_fail_floor = structural_relief_continue_fail_gap - 0.04
+        pair_support = bool(candidate_support >= structural_relief_candidate_support)
+        near_confirm_support = bool(pair_gap >= near_confirm_pair_gap)
+        forecast_support = bool(
+            action_confirm_score >= relaxed_action_confirm_floor
+            and confirm_fake_gap >= relaxed_confirm_fake_floor
+            and wait_confirm_gap >= relaxed_wait_confirm_floor
+            and continue_fail_gap >= relaxed_continue_fail_floor
+        )
+        barrier_support = bool(same_side_barrier <= structural_relief_max_side_barrier)
+        active = self._coerce_bool(plan.get("active", row.get("probe_plan_active", False)))
+        plan_ready_support = bool(
+            active
+            and plan_ready
+            and intended_action in {"BUY", "SELL"}
+            and probe_scene_id == "nas_clean_confirm_probe"
+            and observe_reason in allowed_observe_reasons
+        )
+        applied = bool(
+            canonical_symbol == "NAS100"
+            and str(blocked_reason or "") == "hard_guard_volatility_too_low"
+            and probe_scene_id == "nas_clean_confirm_probe"
+            and observe_reason in allowed_observe_reasons
+            and active
+            and (
+                (
+                    structural_relief_active
+                    and near_confirm
+                    and pair_support
+                    and near_confirm_support
+                    and forecast_support
+                    and barrier_support
+                )
+                or plan_ready_support
+            )
+        )
+        trace = {
+            "contract_version": "entry_hard_guard_relief_v1",
+            "blocked_reason": str(blocked_reason or ""),
+            "symbol": str(canonical_symbol),
+            "scene_id": str(probe_scene_id or ""),
+            "observe_reason": str(observe_reason or ""),
+            "applied": bool(applied),
+            "criteria": {
+                "active": bool(active),
+                "structural_relief_active": bool(structural_relief_active),
+                "near_confirm": bool(near_confirm),
+                "pair_support": bool(pair_support),
+                "near_confirm_support": bool(near_confirm_support),
+                "forecast_support": bool(forecast_support),
+                "barrier_support": bool(barrier_support),
+                "plan_ready": bool(plan_ready),
+                "plan_ready_support": bool(plan_ready_support),
+            },
+            "metrics": {
+                "intended_action": str(intended_action),
+                "pair_gap": float(pair_gap),
+                "candidate_support": float(candidate_support),
+                "action_confirm_score": float(action_confirm_score),
+                "confirm_fake_gap": float(confirm_fake_gap),
+                "wait_confirm_gap": float(wait_confirm_gap),
+                "continue_fail_gap": float(continue_fail_gap),
+                "same_side_barrier": float(same_side_barrier),
+                "near_confirm_pair_gap": float(near_confirm_pair_gap),
+                "structural_relief_candidate_support": float(structural_relief_candidate_support),
+                "relaxed_action_confirm_floor": float(relaxed_action_confirm_floor),
+                "relaxed_confirm_fake_floor": float(relaxed_confirm_fake_floor),
+                "relaxed_wait_confirm_floor": float(relaxed_wait_confirm_floor),
+                "relaxed_continue_fail_floor": float(relaxed_continue_fail_floor),
+                "structural_relief_max_side_barrier": float(structural_relief_max_side_barrier),
+            },
+            "reason": (
+                "nas_clean_confirm_low_vol_relief"
+                if applied
+                else "no_relief_applied"
+            ),
+        }
+        return applied, trace
+
     def _check_hard_no_trade_guard(self, symbol: str, regime: dict) -> str:
-        return self.threshold_engine.check_hard_no_trade_guard(symbol, regime)
+        blocked_reason = self.threshold_engine.check_hard_no_trade_guard(symbol, regime)
+        if str(blocked_reason or "") != "hard_guard_volatility_too_low":
+            return blocked_reason
+        relief_applied, relief_trace = self._resolve_nas_clean_confirm_low_vol_relief(
+            symbol=symbol,
+            blocked_reason=blocked_reason,
+        )
+        rows = getattr(self.runtime, "latest_signal_by_symbol", None)
+        if isinstance(rows, dict):
+            current_row = rows.get(symbol, {})
+            if isinstance(current_row, dict):
+                current_row["entry_hard_guard_relief_v1"] = dict(relief_trace or {})
+                rows[symbol] = current_row
+        if relief_applied:
+            return ""
+        return blocked_reason
 
     @staticmethod
     def _trimmed_mean(series: pd.Series, q: float) -> float:
@@ -1647,6 +1922,7 @@ class EntryService:
         sell_s: float,
         has_buy: bool,
         has_sell: bool,
+        entry_context_bundle: dict | None = None,
     ) -> dict:
         comps = (result or {}).get("components", {}) if isinstance(result, dict) else {}
         buy_h1 = int(pd.to_numeric(comps.get("h1_context_buy", 0), errors="coerce") or 0)
@@ -1658,15 +1934,16 @@ class EntryService:
         wait_noise = float(pd.to_numeric(comps.get("wait_noise", 0), errors="coerce") or 0.0)
         h1_gap = float(buy_h1 - sell_h1)
         m1_gap = float(buy_m1 - sell_m1)
-        entry_context_bundle = self._context_classifier.build_entry_context(
-            symbol=symbol,
-            tick=tick,
-            df_all=df_all,
-            scorer=scorer,
-            result=result,
-            buy_s=buy_s,
-            sell_s=sell_s,
-        )
+        if not isinstance(entry_context_bundle, dict):
+            entry_context_bundle = self._context_classifier.build_entry_context(
+                symbol=symbol,
+                tick=tick,
+                df_all=df_all,
+                scorer=scorer,
+                result=result,
+                buy_s=buy_s,
+                sell_s=sell_s,
+            )
         context = entry_context_bundle.get("context")
         context = self._attach_consumer_scope_contract(context)
         preflight = entry_context_bundle.get("preflight", {})
@@ -2838,6 +3115,16 @@ class EntryService:
 
     def _append_entry_decision_log(self, row: dict) -> None:
         row = dict(row or {})
+        append_started_at = time.perf_counter()
+        append_stage_timings_ms: dict[str, float] = {}
+
+        def _record_append_stage(stage_name: str, started_at: float) -> None:
+            append_stage_timings_ms[str(stage_name)] = round(
+                (time.perf_counter() - float(started_at)) * 1000.0,
+                3,
+            )
+
+        stage_started_at = time.perf_counter()
         canonical_observe_confirm_field = str(row.get("prs_canonical_observe_confirm_field", "") or "").strip()
         compatibility_observe_confirm_field = str(
             row.get("prs_compatibility_observe_confirm_field", "") or ""
@@ -2894,9 +3181,20 @@ class EntryService:
             row["consumer_handoff_contract_version"] = str(
                 output_contract.get("contract_version", "") or "observe_confirm_output_contract_v2"
             )
-        decision_result = self._entry_decision_result_from_row(row)
-        context_payload = decision_result.context.to_dict() if decision_result.context is not None else {}
-        context_metadata = dict((context_payload.get("metadata", {}) or {}))
+        row.update(build_entry_authority_fields(row))
+        _record_append_stage("row_prepare", stage_started_at)
+        stage_started_at = time.perf_counter()
+        use_lean_materialization = str(row.get("outcome", "") or "").strip().lower() in {"wait", "skipped"}
+        if use_lean_materialization:
+            context_payload, compact_result_payload = self._build_lean_entry_decision_artifacts(row)
+            context_metadata = dict((context_payload.get("metadata", {}) or {}))
+            decision_result_dict = {}
+        else:
+            decision_result = self._entry_decision_result_from_row(row)
+            context_payload = decision_result.context.to_dict() if decision_result.context is not None else {}
+            context_metadata = dict((context_payload.get("metadata", {}) or {}))
+            compact_result_payload = {}
+            decision_result_dict = decision_result.to_dict()
         energy_helper_payload = dict(context_metadata.get("energy_helper_v2", {}) or {})
         if energy_helper_payload:
             row["energy_helper_v2"] = json.dumps(energy_helper_payload, ensure_ascii=False, separators=(",", ":"))
@@ -2997,7 +3295,11 @@ class EntryService:
             compact_context_payload["metadata"] = compact_context_metadata
 
         row["entry_decision_context_v1"] = compact_entry_decision_context(compact_context_payload)
-        row["entry_decision_result_v1"] = compact_entry_decision_result(decision_result.to_dict())
+        row["entry_decision_result_v1"] = (
+            dict(compact_result_payload)
+            if use_lean_materialization
+            else compact_entry_decision_result(decision_result_dict)
+        )
         probe_quick_source = dict(row)
         for trace_key in (
             "forecast_assist_v1",
@@ -3009,7 +3311,9 @@ class EntryService:
         ):
             row[trace_key] = compact_trace_mapping(row.get(trace_key))
         row.update(build_probe_quick_trace_fields(probe_quick_source))
+        _record_append_stage("decision_materialization", stage_started_at)
 
+        stage_started_at = time.perf_counter()
         runtime_rows = getattr(self.runtime, "latest_signal_by_symbol", None)
         if isinstance(runtime_rows, dict):
             runtime_symbol = str((row or {}).get("symbol", "") or "")
@@ -3017,6 +3321,43 @@ class EntryService:
             if not isinstance(runtime_row, dict):
                 runtime_row = {}
             for scalar_key in (
+                "state25_candidate_active_candidate_id",
+                "state25_candidate_policy_source",
+                "state25_candidate_rollout_phase",
+                "state25_candidate_binding_mode",
+                "state25_candidate_threshold_log_only_enabled",
+                "state25_candidate_threshold_symbol_scope_hit",
+                "state25_candidate_threshold_stage_scope_hit",
+                "state25_candidate_effective_entry_threshold",
+                "state25_candidate_entry_threshold_delta",
+                "state25_candidate_size_log_only_enabled",
+                "state25_candidate_size_symbol_scope_hit",
+                "state25_candidate_size_multiplier",
+                "state25_candidate_size_multiplier_delta",
+                "state25_candidate_size_min_multiplier",
+                "state25_candidate_size_max_multiplier",
+                "forecast_state25_overlay_mode",
+                "forecast_state25_overlay_enabled",
+                "forecast_state25_candidate_effective_entry_threshold",
+                "forecast_state25_candidate_entry_threshold_delta",
+                "forecast_state25_candidate_size_multiplier",
+                "forecast_state25_candidate_size_multiplier_delta",
+                "forecast_state25_candidate_wait_bias_action",
+                "forecast_state25_candidate_management_bias",
+                "forecast_state25_overlay_reason_summary",
+                "belief_action_hint_mode",
+                "belief_action_hint_enabled",
+                "belief_candidate_recommended_family",
+                "belief_candidate_supporting_label",
+                "belief_action_hint_confidence",
+                "belief_action_hint_reason_summary",
+                "barrier_action_hint_mode",
+                "barrier_action_hint_enabled",
+                "barrier_candidate_recommended_family",
+                "barrier_candidate_supporting_label",
+                "barrier_action_hint_confidence",
+                "barrier_action_hint_cost_hint",
+                "barrier_action_hint_reason_summary",
                 "semantic_shadow_available",
                 "semantic_shadow_reason",
                 "semantic_shadow_activation_state",
@@ -3035,6 +3376,85 @@ class EntryService:
                 "semantic_live_partial_weight",
                 "semantic_live_partial_live_applied",
                 "semantic_live_reason",
+                "entry_authority_contract_version",
+                "entry_authority_owner",
+                "entry_candidate_action_source",
+                "entry_candidate_action",
+                "entry_candidate_rejected_by",
+                "entry_authority_stage",
+                "entry_authority_threshold_owner",
+                "entry_authority_execution_owner",
+                "entry_authority_reason_summary",
+                "entry_candidate_bridge_contract_version",
+                "entry_candidate_bridge_baseline_no_action",
+                "entry_candidate_bridge_mode",
+                "entry_candidate_bridge_active_conflict",
+                "entry_candidate_bridge_conflict_selected",
+                "entry_candidate_bridge_effective_baseline_action",
+                "entry_candidate_bridge_conflict_kind",
+                "entry_candidate_bridge_available",
+                "entry_candidate_bridge_selected",
+                "entry_candidate_bridge_source",
+                "entry_candidate_bridge_action",
+                "entry_candidate_bridge_reason",
+                "entry_candidate_bridge_confidence",
+                "entry_candidate_bridge_candidate_count",
+                "entry_candidate_surface_family",
+                "entry_candidate_surface_state",
+                "active_action_conflict_detected",
+                "active_action_conflict_guard_eligible",
+                "active_action_conflict_guard_applied",
+                "active_action_conflict_resolution_state",
+                "active_action_conflict_kind",
+                "active_action_conflict_baseline_action",
+                "active_action_conflict_directional_action",
+                "active_action_conflict_directional_state",
+                "active_action_conflict_directional_bias",
+                "active_action_conflict_directional_owner_family",
+                "active_action_conflict_precedence_owner",
+                "active_action_conflict_up_bias_score",
+                "active_action_conflict_down_bias_score",
+                "active_action_conflict_bias_gap",
+                "active_action_conflict_warning_count",
+                "active_action_conflict_breakout_detected",
+                "active_action_conflict_breakout_direction",
+                "active_action_conflict_breakout_target",
+                "active_action_conflict_breakout_confidence",
+                "active_action_conflict_breakout_failure_risk",
+                "active_action_conflict_failure_code",
+                "active_action_conflict_failure_label",
+                "active_action_conflict_reason_summary",
+                "semantic_candidate_action",
+                "semantic_candidate_confidence",
+                "semantic_candidate_reason",
+                "shadow_candidate_action",
+                "shadow_candidate_confidence",
+                "shadow_candidate_reason",
+                "state25_candidate_action",
+                "state25_candidate_confidence",
+                "state25_candidate_reason",
+                "breakout_candidate_action",
+                "breakout_candidate_confidence",
+                "breakout_candidate_reason",
+                "breakout_candidate_source",
+                "breakout_candidate_action_target",
+                "breakout_candidate_direction",
+                "breakout_candidate_conflict_action",
+                "breakout_candidate_conflict_confidence",
+                "breakout_candidate_conflict_mode",
+                "breakout_candidate_surface_family",
+                "breakout_candidate_surface_state",
+                "countertrend_continuation_enabled",
+                "countertrend_continuation_state",
+                "countertrend_continuation_action",
+                "countertrend_continuation_confidence",
+                "countertrend_continuation_reason_summary",
+                "countertrend_continuation_warning_count",
+                "countertrend_continuation_surface_family",
+                "countertrend_continuation_surface_state",
+                "countertrend_candidate_action",
+                "countertrend_candidate_confidence",
+                "countertrend_candidate_reason",
                 "consumer_check_candidate",
                 "consumer_check_display_ready",
                 "consumer_check_entry_ready",
@@ -3044,40 +3464,177 @@ class EntryService:
                 "consumer_check_display_strength_level",
                 "consumer_check_display_score",
                 "consumer_check_display_repeat_count",
+                "execution_diff_original_action_side",
+                "execution_diff_guarded_action_side",
+                "execution_diff_promoted_action_side",
+                "execution_diff_final_action_side",
+                "execution_diff_changed",
+                "execution_diff_guard_applied",
+                "execution_diff_promotion_active",
+                "execution_diff_reason_keys",
+                "leg_id",
+                "leg_direction",
+                "leg_state",
+                "leg_transition_reason",
+                "checkpoint_id",
+                "checkpoint_type",
+                "checkpoint_index_in_leg",
+                "checkpoint_transition_reason",
             ):
                 if scalar_key in row:
                     runtime_row[scalar_key] = row.get(scalar_key)
             runtime_rows[runtime_symbol] = runtime_row
+        _record_append_stage("runtime_row_sync", stage_started_at)
 
-        self._store_runtime_snapshot(
-            runtime=self.runtime,
-            symbol=str((row or {}).get("symbol", "")),
-            key="entry_decision_context_v1",
-            payload=context_payload,
-        )
-        self._store_runtime_snapshot(
-            runtime=self.runtime,
-            symbol=str((row or {}).get("symbol", "")),
-            key="entry_decision_result_v1",
-            payload=decision_result.to_dict(),
-        )
-        for trace_key in (
-            "forecast_assist_v1",
-            "entry_default_side_gate_v1",
-            "entry_probe_plan_v1",
-            "edge_pair_law_v1",
-            "probe_candidate_v1",
-            "consumer_check_state_v1",
-        ):
-            trace_payload = row.get(trace_key, {})
-            if isinstance(trace_payload, dict) and trace_payload:
-                self._store_runtime_snapshot(
-                    runtime=self.runtime,
-                    symbol=str((row or {}).get("symbol", "")),
-                    key=str(trace_key),
-                    payload=trace_payload,
+        stage_started_at = time.perf_counter()
+        runtime_snapshot_mode = "full_runtime_snapshot_store"
+        runtime_snapshot_store_calls = 0
+        runtime_direct_sync_keys: list[str] = []
+        runtime_symbol = str((row or {}).get("symbol", "") or "")
+        if use_lean_materialization and isinstance(runtime_rows, dict) and runtime_symbol:
+            runtime_row = runtime_rows.get(runtime_symbol, {})
+            if not isinstance(runtime_row, dict):
+                runtime_row = {}
+            compact_context_snapshot = dict(row.get("entry_decision_context_v1", {}) or {})
+            compact_result_snapshot = dict(row.get("entry_decision_result_v1", {}) or {})
+            runtime_row["entry_decision_context_v1"] = compact_context_snapshot
+            runtime_row["entry_decision_result_v1"] = compact_result_snapshot
+            runtime_direct_sync_keys.extend(
+                [
+                    "entry_decision_context_v1",
+                    "entry_decision_result_v1",
+                ]
+            )
+            for trace_key in (
+                "entry_probe_plan_v1",
+                "edge_pair_law_v1",
+                "probe_candidate_v1",
+                "consumer_check_state_v1",
+                "execution_action_diff_v1",
+            ):
+                trace_payload = row.get(trace_key, {})
+                if isinstance(trace_payload, dict) and trace_payload:
+                    runtime_row[str(trace_key)] = dict(trace_payload)
+                    runtime_direct_sync_keys.append(str(trace_key))
+            runtime_rows[runtime_symbol] = runtime_row
+            runtime_snapshot_mode = "lean_no_action_direct_row"
+        else:
+            self._store_runtime_snapshot(
+                runtime=self.runtime,
+                symbol=runtime_symbol,
+                key="entry_decision_context_v1",
+                payload=context_payload,
+            )
+            runtime_snapshot_store_calls += 1
+            self._store_runtime_snapshot(
+                runtime=self.runtime,
+                symbol=runtime_symbol,
+                key="entry_decision_result_v1",
+                payload=(dict(compact_result_payload) if use_lean_materialization else decision_result_dict),
+            )
+            runtime_snapshot_store_calls += 1
+            for trace_key in (
+                "forecast_assist_v1",
+                "entry_default_side_gate_v1",
+                "entry_probe_plan_v1",
+                "edge_pair_law_v1",
+                "probe_candidate_v1",
+                "consumer_check_state_v1",
+                "execution_action_diff_v1",
+            ):
+                trace_payload = row.get(trace_key, {})
+                if isinstance(trace_payload, dict) and trace_payload:
+                    self._store_runtime_snapshot(
+                        runtime=self.runtime,
+                        symbol=runtime_symbol,
+                        key=str(trace_key),
+                        payload=trace_payload,
+                    )
+                    runtime_snapshot_store_calls += 1
+        _record_append_stage("runtime_snapshot_store", stage_started_at)
+        debug_writer = getattr(self.runtime, "_write_loop_debug", None)
+        debug_loop_count = int((((getattr(self.runtime, "loop_debug_state", {}) or {}).get("loop_count", 0)) or 0))
+        debug_detail = (
+            f"{str((row or {}).get('outcome', '') or '')}|{str((row or {}).get('blocked_by', '') or '')}"
+        )[:240]
+        if callable(debug_writer):
+            try:
+                debug_writer(
+                    loop_count=debug_loop_count,
+                    stage="entry_append_log_begin",
+                    symbol=str((row or {}).get("symbol", "") or ""),
+                    detail=debug_detail,
                 )
-        return dict(self.decision_recorder.append_entry_decision_log(row) or {})
+            except Exception:
+                pass
+        stage_started_at = time.perf_counter()
+        try:
+            appended_row = dict(self.decision_recorder.append_entry_decision_log(row) or {})
+        except Exception as exc:
+            if callable(debug_writer):
+                try:
+                    debug_writer(
+                        loop_count=debug_loop_count,
+                        stage="entry_append_log_error",
+                        symbol=str((row or {}).get("symbol", "") or ""),
+                        detail=str(exc)[:240],
+                    )
+                except Exception:
+                    pass
+            raise
+        _record_append_stage("recorder_append", stage_started_at)
+        try:
+            existing_append_profile: dict = {}
+            try:
+                runtime_rows = getattr(self.runtime, "latest_signal_by_symbol", None)
+                runtime_symbol = str((row or {}).get("symbol", "") or "")
+                if isinstance(runtime_rows, dict) and runtime_symbol:
+                    existing_append_profile = dict(
+                        ((runtime_rows.get(runtime_symbol, {}) or {}).get("entry_append_log_profile_v1", {}) or {})
+                    )
+            except Exception:
+                existing_append_profile = {}
+            self._store_runtime_snapshot(
+                runtime=self.runtime,
+                symbol=str((row or {}).get("symbol", "") or ""),
+                key="entry_append_log_profile_v1",
+                payload={
+                    "contract_version": "entry_append_log_profile_v1",
+                    "total_ms": round((time.perf_counter() - append_started_at) * 1000.0, 3),
+                    "stage_timings_ms": dict(append_stage_timings_ms),
+                    "recorder_stage_timings_ms": dict(appended_row.get("_append_stage_timings_ms", {}) or {}),
+                    "file_write_stage_timings_ms": dict(
+                        appended_row.get("_file_write_stage_timings_ms", {})
+                        or existing_append_profile.get("file_write_stage_timings_ms", {})
+                        or {}
+                    ),
+                    "detail_payload_stage_timings_ms": dict(
+                        appended_row.get("_detail_payload_stage_timings_ms", {})
+                        or existing_append_profile.get("detail_payload_stage_timings_ms", {})
+                        or {}
+                    ),
+                    "recorder_total_ms": float(appended_row.get("_append_total_ms", 0.0) or 0.0),
+                    "detail_record_mode": str((appended_row or {}).get("_detail_record_mode", "") or ""),
+                    "decision_row_key": str((appended_row or {}).get("decision_row_key", "") or ""),
+                    "runtime_snapshot_key": str((appended_row or {}).get("runtime_snapshot_key", "") or ""),
+                    "runtime_snapshot_mode": str(runtime_snapshot_mode),
+                    "runtime_snapshot_store_calls": int(runtime_snapshot_store_calls),
+                    "runtime_direct_sync_keys": list(runtime_direct_sync_keys),
+                },
+            )
+        except Exception:
+            pass
+        if callable(debug_writer):
+            try:
+                debug_writer(
+                    loop_count=debug_loop_count,
+                    stage="entry_append_log_done",
+                    symbol=str((row or {}).get("symbol", "") or ""),
+                    detail=debug_detail,
+                )
+            except Exception:
+                pass
+        return appended_row
     def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, scorer, buy_s, sell_s, entry_threshold):
         before_tickets: set[int] = set()
         after_tickets: set[int] = set()

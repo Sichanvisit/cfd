@@ -16,7 +16,10 @@ from backend.trading.engine.core.models import (
     TransitionForecast,
 )
 from backend.trading.engine.core.observe_confirm_router import (
+    _apply_barrier_suppression,
     _apply_forecast_modulation,
+    _apply_middle_sr_suppression,
+    _apply_outer_band_reversal_suppression,
     _confirm_floor,
     _probe_support_ready,
     route_observe_confirm,
@@ -1196,6 +1199,207 @@ def test_apply_forecast_modulation_keeps_upper_break_fail_confirm_when_near_read
     assert routed.metadata["forecast_upper_reject_relief_v1"]["applied"] is True
 
 
+def test_apply_forecast_modulation_keeps_btc_upper_break_fail_confirm_with_soft_symbol_relief():
+    snapshot = ObserveConfirmSnapshot(
+        state="CONFIRM",
+        action="SELL",
+        side="SELL",
+        confidence=0.79,
+        reason="upper_break_fail_confirm",
+        archetype_id="upper_reject_sell",
+        invalidation_id="upper_break_reclaim",
+        management_profile_id="reversal_profile",
+        metadata={
+            "symbol": "BTCUSD",
+            "box_zone": "ABOVE",
+            "bb20_zone": "UPPER_EDGE",
+            "edge_pair_law_v1": {
+                "context_label": "UPPER_EDGE",
+            },
+        },
+    )
+
+    routed = _apply_forecast_modulation(
+        snapshot,
+        transition_forecast_v1=TransitionForecast(
+            p_buy_confirm=0.09,
+            p_sell_confirm=0.118,
+            p_false_break=0.51,
+            p_reversal_success=0.24,
+            p_continuation_success=0.13,
+        ),
+        trade_management_forecast_v1=TradeManagementForecast(
+            p_continue_favor=0.10,
+            p_fail_now=0.41,
+            p_recover_after_pullback=0.12,
+            p_reach_tp1=0.18,
+            p_opposite_edge_reach=0.25,
+            p_better_reentry_if_cut=0.22,
+        ),
+        forecast_gap_metrics_v1={
+            "transition_side_separation": 0.10,
+            "transition_confirm_fake_gap": -0.20,
+            "wait_confirm_gap": -0.26,
+            "management_continue_fail_gap": -0.31,
+        },
+    )
+
+    assert routed.state == "CONFIRM"
+    assert routed.action == "SELL"
+    assert routed.side == "SELL"
+    assert routed.reason == "upper_break_fail_confirm"
+    assert routed.metadata["forecast_upper_reject_relief_v1"]["applied"] is True
+    assert routed.metadata["forecast_upper_reject_relief_v1"]["btc_soft_relief"] is True
+
+
+def test_apply_forecast_modulation_keeps_nas_clean_confirm_lower_rebound_with_soft_symbol_relief():
+    snapshot = ObserveConfirmSnapshot(
+        state="CONFIRM",
+        action="BUY",
+        side="BUY",
+        confidence=0.77,
+        reason="lower_rebound_confirm",
+        archetype_id="lower_hold_buy",
+        invalidation_id="lower_support_fail",
+        management_profile_id="support_hold_profile",
+        metadata={
+            "symbol": "NAS100",
+            "box_zone": "LOWER",
+            "bb20_zone": "MID",
+            "probe_candidate_v1": {
+                "symbol_probe_temperament_v1": {
+                    "scene_id": "nas_clean_confirm_probe",
+                }
+            },
+            "nas_clean_confirm_middle_anchor_relief": True,
+        },
+    )
+
+    routed = _apply_forecast_modulation(
+        snapshot,
+        transition_forecast_v1=TransitionForecast(
+            p_buy_confirm=0.112,
+            p_sell_confirm=0.07,
+            p_false_break=0.58,
+            p_reversal_success=0.26,
+            p_continuation_success=0.14,
+        ),
+        trade_management_forecast_v1=TradeManagementForecast(
+            p_continue_favor=0.11,
+            p_fail_now=0.39,
+            p_recover_after_pullback=0.14,
+            p_reach_tp1=0.19,
+            p_opposite_edge_reach=0.18,
+            p_better_reentry_if_cut=0.16,
+        ),
+        forecast_gap_metrics_v1={
+            "transition_side_separation": 0.12,
+            "transition_confirm_fake_gap": -0.18,
+            "wait_confirm_gap": -0.20,
+            "management_continue_fail_gap": -0.28,
+        },
+    )
+
+    assert routed.state == "CONFIRM"
+    assert routed.action == "BUY"
+    assert routed.side == "BUY"
+    assert routed.reason == "lower_rebound_confirm"
+    assert routed.metadata["forecast_nas_clean_confirm_relief_v1"]["applied"] is True
+
+
+def test_apply_forecast_modulation_keeps_nas_clean_probe_observe_with_live_like_metrics():
+    snapshot = ObserveConfirmSnapshot(
+        state="CONFIRM",
+        action="BUY",
+        side="BUY",
+        confidence=0.71,
+        reason="lower_rebound_probe_observe",
+        archetype_id="lower_hold_buy",
+        invalidation_id="lower_support_fail",
+        management_profile_id="support_hold_profile",
+        metadata={
+            "symbol": "NAS100",
+            "box_zone": "BELOW",
+            "bb20_zone": "LOWER_EDGE",
+        },
+    )
+
+    routed = _apply_forecast_modulation(
+        snapshot,
+        transition_forecast_v1=TransitionForecast(
+            p_buy_confirm=0.13739,
+            p_sell_confirm=0.05,
+            p_false_break=0.304105,
+            p_reversal_success=0.24,
+            p_continuation_success=0.12,
+        ),
+        trade_management_forecast_v1=TradeManagementForecast(
+            p_continue_favor=0.030038,
+            p_fail_now=0.349376,
+            p_recover_after_pullback=0.12,
+            p_reach_tp1=0.17,
+            p_opposite_edge_reach=0.20,
+            p_better_reentry_if_cut=0.16,
+        ),
+        forecast_gap_metrics_v1={
+            "transition_side_separation": 0.087,
+            "transition_confirm_fake_gap": -0.166715,
+            "wait_confirm_gap": -0.115603,
+            "management_continue_fail_gap": -0.256834,
+        },
+    )
+
+    assert routed.state == "CONFIRM"
+    assert routed.action == "BUY"
+    assert routed.side == "BUY"
+    assert routed.reason == "lower_rebound_probe_observe"
+    assert routed.metadata["forecast_nas_clean_confirm_relief_v1"]["applied"] is True
+    assert routed.metadata["forecast_nas_clean_confirm_relief_v1"]["probe_soft_relief"] is True
+
+
+def test_apply_barrier_suppression_relieves_nas_clean_lower_rebound_confirm():
+    snapshot = ObserveConfirmSnapshot(
+        state="CONFIRM",
+        action="BUY",
+        side="BUY",
+        confidence=0.76,
+        reason="lower_rebound_confirm",
+        archetype_id="lower_hold_buy",
+        invalidation_id="lower_support_fail",
+        management_profile_id="support_hold_profile",
+        metadata={
+            "symbol": "NAS100",
+            "box_zone": "BELOW",
+            "bb20_zone": "LOWER_EDGE",
+            "probe_candidate_v1": {
+                "symbol_probe_temperament_v1": {
+                    "scene_id": "nas_clean_confirm_probe",
+                }
+            },
+            "edge_pair_law_v1": {
+                "pair_gap": 0.22,
+            },
+        },
+    )
+
+    routed = _apply_barrier_suppression(
+        snapshot,
+        barrier_state_v1=BarrierState(
+            buy_barrier=0.77,
+            conflict_barrier=0.83,
+            middle_chop_barrier=0.90,
+            direction_policy_barrier=0.12,
+            liquidity_barrier=0.08,
+        ),
+    )
+
+    assert routed.state == "CONFIRM"
+    assert routed.action == "BUY"
+    assert routed.side == "BUY"
+    assert routed.metadata["barrier_relief_v1"]["applied"] is True
+    assert routed.metadata["barrier_relief_v1"]["reason"] == "nas_clean_lower_rebound"
+
+
 def test_observe_confirm_router_v2_barrier_can_suppress_confirm_into_directional_observe():
     position, response, state, energy = _lower_hold_buy_case()
 
@@ -1220,6 +1424,124 @@ def test_observe_confirm_router_v2_barrier_can_suppress_confirm_into_directional
     assert routed.invalidation_id == baseline.invalidation_id == "lower_support_fail"
     assert routed.management_profile_id == baseline.management_profile_id == "support_hold_profile"
     assert routed.metadata["blocked_reason"] == "buy_barrier_suppressed_confirm"
+
+
+def test_apply_middle_sr_suppression_relieves_btc_upper_break_override_context():
+    position, response, state, energy = _upper_reclaim_strength_case()
+    snapshot = ObserveConfirmSnapshot(
+        state="CONFIRM",
+        action="BUY",
+        side="BUY",
+        confidence=0.74,
+        reason="upper_reclaim_strength_confirm",
+        archetype_id="upper_break_buy",
+        invalidation_id="breakout_failure",
+        management_profile_id="breakout_hold_profile",
+        metadata={
+            "symbol": "BTCUSD",
+            "edge_pair_law_v1": {
+                "context_label": "UPPER_EDGE",
+                "winner_side": "BUY",
+                "pair_gap": 0.05,
+            },
+            "semantic_readiness_bridge_v1": {
+                "final": {
+                    "buy_support": 0.02,
+                }
+            },
+        },
+    )
+
+    routed = _apply_middle_sr_suppression(
+        snapshot,
+        position=position,
+        position_snapshot=summarize_position(position),
+        state=state,
+    )
+
+    assert routed.state == "CONFIRM"
+    assert routed.action == "BUY"
+    assert routed.metadata["middle_sr_anchor_guard_v1"]["exempted"] is True
+    assert routed.metadata["middle_sr_anchor_guard_v1"]["exemption_reason"] == "btc_upper_break_override_context"
+
+
+def test_apply_outer_band_suppression_relieves_btc_upper_reject_edge_context():
+    position = PositionVector(
+        x_box=0.92,
+        x_bb20=0.12,
+        x_bb44=0.02,
+        x_sr=0.18,
+        metadata={"symbol": "BTCUSD", "box_state": "UPPER", "bb_state": "MID"},
+    )
+    response = ResponseVector(
+        r_bb20_upper_reject=0.18,
+        r_box_upper_reject=0.10,
+        metadata={},
+    )
+    snapshot = ObserveConfirmSnapshot(
+        state="CONFIRM",
+        action="SELL",
+        side="SELL",
+        confidence=0.73,
+        reason="upper_reject_confirm",
+        archetype_id="upper_reject_sell",
+        invalidation_id="upper_break_reclaim",
+        management_profile_id="reversal_profile",
+        metadata={
+            "symbol": "BTCUSD",
+            "edge_pair_law_v1": {
+                "context_label": "UPPER_EDGE",
+                "pair_gap": 0.06,
+            },
+        },
+    )
+
+    routed = _apply_outer_band_reversal_suppression(
+        snapshot,
+        position=position,
+        response=response,
+        position_snapshot=summarize_position(position),
+    )
+
+    assert routed.state == "CONFIRM"
+    assert routed.action == "SELL"
+    assert routed.metadata["outer_band_reversal_guard_v1"]["exempted"] is True
+    assert routed.metadata["outer_band_reversal_guard_v1"]["exemption_reason"] == "btc_upper_reject_edge_context"
+
+
+def test_apply_barrier_suppression_relieves_nas_mixed_upper_reject_conflict():
+    snapshot = ObserveConfirmSnapshot(
+        state="CONFIRM",
+        action="SELL",
+        side="SELL",
+        confidence=0.71,
+        reason="conflict_box_lower_bb20_upper_upper_reject_confirm",
+        archetype_id="upper_reject_sell",
+        invalidation_id="upper_break_reclaim",
+        management_profile_id="reversal_profile",
+        metadata={
+            "symbol": "NAS100",
+            "edge_pair_law_v1": {
+                "pair_gap": 0.52,
+            },
+        },
+    )
+
+    routed = _apply_barrier_suppression(
+        snapshot,
+        barrier_state_v1=BarrierState(
+            sell_barrier=0.91,
+            conflict_barrier=0.96,
+            middle_chop_barrier=0.10,
+            direction_policy_barrier=0.08,
+            liquidity_barrier=0.05,
+        ),
+    )
+
+    assert routed.state == "CONFIRM"
+    assert routed.action == "SELL"
+    assert routed.metadata["barrier_relief_v1"]["applied"] is True
+    assert routed.metadata["barrier_relief_v1"]["reason"] == "nas_mixed_upper_reject_conflict"
 
 
 @pytest.mark.parametrize(

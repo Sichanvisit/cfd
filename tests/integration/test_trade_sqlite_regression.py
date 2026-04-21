@@ -157,3 +157,26 @@ def test_sync_keeps_existing_rows_when_csv_temporarily_broken(tmp_path: Path):
 
     assert changed is False
     assert len(after) == len(before)
+
+
+def test_open_trade_context_fast_path_and_patch(tmp_path: Path):
+    trade_csv, closed_csv = _build_fixture(tmp_path)
+    store = TradeSqliteStore(tmp_path / "trades.db", trade_csv, closed_csv)
+    assert store.sync_from_csv(force=True) is True
+
+    ctx = store.get_open_trade_context(1001)
+    assert isinstance(ctx, dict)
+    assert str(ctx.get("symbol", "")) == "NAS100"
+
+    patched = store.patch_open_trade_fields(
+        1001,
+        {
+            "exit_policy_stage": "continuation_hold_surface",
+            "exit_wait_bridge_status": "runner_preservation_active",
+        },
+    )
+
+    assert patched is True
+    ctx_after = store.get_open_trade_context(1001)
+    assert str(ctx_after.get("exit_policy_stage", "")) == "continuation_hold_surface"
+    assert str(ctx_after.get("exit_wait_bridge_status", "")) == "runner_preservation_active"

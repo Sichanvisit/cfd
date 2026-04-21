@@ -5,7 +5,11 @@ Entry setup detector reduced to a setup namer.
 from __future__ import annotations
 
 from backend.domain.decision_models import DecisionContext, SetupCandidate
-from backend.services.consumer_contract import resolve_consumer_handoff_payload, resolve_setup_mapping
+from backend.services.consumer_contract import (
+    resolve_consumer_handoff_payload,
+    resolve_consumer_observe_confirm_input,
+    resolve_setup_mapping,
+)
 
 
 class SetupDetector:
@@ -15,7 +19,16 @@ class SetupDetector:
 
     @staticmethod
     def _observe_confirm_shadow(context: DecisionContext) -> dict[str, object]:
-        return dict(resolve_consumer_handoff_payload(context).get("observe_confirm", {}) or {})
+        handoff = resolve_consumer_handoff_payload(
+            context,
+            market_mode=getattr(context, "market_mode", ""),
+            box_state=getattr(context, "box_state", ""),
+            bb_state=getattr(context, "bb_state", ""),
+        )
+        observe_confirm = handoff.get("observe_confirm") if isinstance(handoff, dict) else None
+        if isinstance(observe_confirm, dict):
+            return dict(observe_confirm)
+        return dict(resolve_consumer_observe_confirm_input(context) or {})
 
     @staticmethod
     def _matched(

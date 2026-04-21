@@ -155,6 +155,44 @@ def resolve_entry_energy_soft_block_policy_v1(
             or _to_float(forecast_assist.get("action_confirm_score", 0.0)) >= 0.12
         )
     )
+    nas_clean_confirm_energy_relief = bool(
+        _upper(symbol) == "NAS100"
+        and bool(probe_plan.get("ready_for_entry", False))
+        and str(probe_plan.get("symbol_scene_relief", "") or "") == "nas_clean_confirm_probe"
+        and _upper(probe_plan.get("intended_action", "")) in {"BUY", "SELL"}
+        and _upper(box_state) in {"LOWER", "LOWER_EDGE", "MIDDLE", "UPPER", "UPPER_EDGE", "BELOW", "ABOVE"}
+        and _upper(bb_state) in {"MID", "MIDDLE", "LOWER", "LOWER_EDGE", "UPPER", "UPPER_EDGE", "UNKNOWN", "BREAKDOWN", "BREAKOUT"}
+        and str(energy_soft_block_reason or "")
+        in {"forecast_gap_wait_bias", "forecast_wait_bias", "barrier_soft_block"}
+        and _to_float(energy_soft_block_strength) <= 0.70
+        and _to_float(probe_plan.get("candidate_support", 0.0)) >= 0.12
+        and _to_float(probe_plan.get("pair_gap", 0.0)) >= 0.17
+        and _to_float(probe_plan.get("action_confirm_score", 0.0)) >= 0.08
+        and _to_float(probe_plan.get("wait_confirm_gap", 0.0)) >= -0.21
+        and _to_float(probe_plan.get("continue_fail_gap", 0.0)) >= -0.28
+        and _to_float(probe_plan.get("same_side_barrier", 1.0), default=1.0) <= 0.58
+        and bool(probe_plan.get("near_confirm", False))
+    )
+    nas_clean_confirm_lower_rebound_energy_relief = bool(
+        _upper(symbol) == "NAS100"
+        and bool(probe_plan.get("ready_for_entry", False))
+        and str(probe_plan.get("symbol_scene_relief", "") or "") == "nas_clean_confirm_probe"
+        and _upper(probe_plan.get("intended_action", "")) == "BUY"
+        and str(shadow_reason or "") == "lower_rebound_probe_observe"
+        and _upper(box_state) in {"LOWER", "LOWER_EDGE", "BELOW", "MIDDLE"}
+        and _upper(bb_state) in {"MID", "MIDDLE", "LOWER", "LOWER_EDGE", "UNKNOWN", "BREAKDOWN"}
+        and str(energy_soft_block_reason or "")
+        in {"forecast_gap_wait_bias", "forecast_wait_bias", "barrier_soft_block"}
+        and _to_float(energy_soft_block_strength) <= 0.78
+        and _to_float(probe_plan.get("candidate_support", 0.0)) >= 0.60
+        and _to_float(probe_plan.get("pair_gap", 0.0)) >= 0.15
+        and _to_float(probe_plan.get("action_confirm_score", 0.0)) >= 0.13
+        and _to_float(probe_plan.get("confirm_fake_gap", 0.0)) >= -0.18
+        and _to_float(probe_plan.get("wait_confirm_gap", 0.0)) >= -0.13
+        and _to_float(probe_plan.get("continue_fail_gap", 0.0)) >= -0.27
+        and _to_float(probe_plan.get("same_side_barrier", 1.0), default=1.0) <= 0.60
+        and bool(probe_plan.get("near_confirm", False))
+    )
     relief_flags = [
         label
         for label, active in (
@@ -163,6 +201,8 @@ def resolve_entry_energy_soft_block_policy_v1(
             ("xau_second_support_energy_relief", xau_second_support_energy_relief),
             ("xau_upper_sell_probe_energy_relief", xau_upper_sell_probe_energy_relief),
             ("xau_upper_mixed_confirm_energy_relief", xau_upper_mixed_confirm_energy_relief),
+            ("nas_clean_confirm_energy_relief", nas_clean_confirm_energy_relief),
+            ("nas_clean_confirm_lower_rebound_energy_relief", nas_clean_confirm_lower_rebound_energy_relief),
         )
         if bool(active)
     ]
@@ -175,6 +215,8 @@ def resolve_entry_energy_soft_block_policy_v1(
             or xau_second_support_energy_relief
             or xau_upper_sell_probe_energy_relief
             or xau_upper_mixed_confirm_energy_relief
+            or nas_clean_confirm_energy_relief
+            or nas_clean_confirm_lower_rebound_energy_relief
         )
     )
     return {
@@ -188,6 +230,10 @@ def resolve_entry_energy_soft_block_policy_v1(
         "xau_second_support_energy_relief": bool(xau_second_support_energy_relief),
         "xau_upper_sell_probe_energy_relief": bool(xau_upper_sell_probe_energy_relief),
         "xau_upper_mixed_confirm_energy_relief": bool(xau_upper_mixed_confirm_energy_relief),
+        "nas_clean_confirm_energy_relief": bool(nas_clean_confirm_energy_relief),
+        "nas_clean_confirm_lower_rebound_energy_relief": bool(
+            nas_clean_confirm_lower_rebound_energy_relief
+        ),
         "relief_flags": relief_flags,
         "energy_soft_block_should_block": bool(energy_soft_block_should_block),
     }

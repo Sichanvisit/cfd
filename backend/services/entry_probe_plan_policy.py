@@ -309,6 +309,94 @@ def resolve_entry_probe_plan_v1(
     if xau_second_support_forecast_relief:
         forecast_support = True
 
+    nas_clean_confirm_forecast_relief = bool(
+        _upper(symbol) == "NAS100"
+        and active
+        and side_match
+        and default_side_aligned
+        and str(symbol_scene_relief or "") == "nas_clean_confirm_probe"
+        and intended_action == "BUY"
+        and near_confirm
+        and _upper(box_state) in {"LOWER", "LOWER_EDGE", "BELOW"}
+        and _upper(bb_state) in {"MID", "MIDDLE", "LOWER", "LOWER_EDGE"}
+        and pair_support
+        and belief_support
+        and barrier_support
+        and not forecast_support
+        and candidate_support >= 0.52
+        and pair_gap >= 0.04
+        and action_confirm_score >= 0.08
+        and confirm_fake_gap >= -0.30
+        and wait_confirm_gap >= -0.24
+        and continue_fail_gap >= -0.30
+        and same_side_barrier <= 0.56
+    )
+    if nas_clean_confirm_forecast_relief:
+        forecast_support = True
+
+    nas_clean_confirm_lower_rebound_buy_relief = bool(
+        _upper(symbol) == "NAS100"
+        and active
+        and side_match
+        and default_side_aligned
+        and str(symbol_scene_relief or "") == "nas_clean_confirm_probe"
+        and intended_action == "BUY"
+        and near_confirm
+        and _upper(box_state) in {"LOWER", "LOWER_EDGE", "BELOW"}
+        and _upper(bb_state) in {"LOWER", "LOWER_EDGE", "MID", "MIDDLE"}
+        and pair_support
+        and not forecast_support
+        and candidate_support >= 0.60
+        and pair_gap >= 0.15
+        and action_confirm_score >= 0.13
+        and confirm_fake_gap >= -0.18
+        and wait_confirm_gap >= -0.13
+        and continue_fail_gap >= -0.27
+        and same_side_barrier <= 0.60
+        and (
+            structural_relief_belief_support
+            or same_side_belief >= 0.02
+            or dominant_side == intended_action
+        )
+    )
+    if nas_clean_confirm_lower_rebound_buy_relief:
+        forecast_support = True
+        belief_support = True
+        barrier_support = True
+
+    conflict_local_upper_override = bool(default_side_gate.get("conflict_local_upper_override", False))
+    acting_side = _upper(default_side_gate.get("acting_side", ""))
+    winner_archetype = str(default_side_gate.get("winner_archetype", "") or "").lower()
+    winner_clear = bool(default_side_gate.get("winner_clear", False))
+    nas_clean_confirm_against_default_relief = bool(
+        _upper(symbol) == "NAS100"
+        and active
+        and side_match
+        and not default_side_aligned
+        and str(symbol_scene_relief or "") == "nas_clean_confirm_probe"
+        and intended_action == "SELL"
+        and conflict_local_upper_override
+        and acting_side == "SELL"
+        and winner_side == "SELL"
+        and winner_archetype == "upper_reject_sell"
+        and winner_clear
+        and _upper(box_state) in {"LOWER", "LOWER_EDGE", "BELOW"}
+        and _upper(bb_state) in {"UPPER", "UPPER_EDGE", "MID", "MIDDLE", "UNKNOWN"}
+        and pair_gap >= 0.22
+        and candidate_support >= 0.30
+        and action_confirm_score >= 0.04
+        and confirm_fake_gap >= -0.29
+        and wait_confirm_gap >= -0.27
+        and continue_fail_gap >= -0.32
+        and same_side_barrier <= 0.82
+    )
+    if nas_clean_confirm_against_default_relief:
+        default_side_aligned = True
+        pair_support = True
+        forecast_support = True
+        belief_support = True
+        barrier_support = True
+
     ready_for_entry = bool(
         active
         and side_match
@@ -377,6 +465,9 @@ def resolve_entry_probe_plan_v1(
         "structural_relief_persistence": float(structural_relief_persistence),
         "structural_relief_max_side_barrier": float(structural_relief_max_side_barrier),
         "symbol_scene_relief": str(symbol_scene_relief),
+        "nas_clean_confirm_forecast_relief": bool(nas_clean_confirm_forecast_relief),
+        "nas_clean_confirm_lower_rebound_buy_relief": bool(nas_clean_confirm_lower_rebound_buy_relief),
+        "nas_clean_confirm_against_default_relief": bool(nas_clean_confirm_against_default_relief),
         "symbol_probe_temperament_v1": dict(probe_temperament),
         "energy_relief_allowed": bool(
             ready_for_entry

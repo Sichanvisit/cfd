@@ -9,6 +9,85 @@ from backend.core.config import Config
 from backend.services.exit_profile_router import resolve_exit_profile
 
 
+def _ensure_pending_reverse_store(app) -> dict:
+    store = getattr(app, "pending_reverse_by_symbol", None)
+    if not isinstance(store, dict):
+        store = {}
+        setattr(app, "pending_reverse_by_symbol", store)
+    return store
+
+
+def _clear_pending_reverse(app, symbol: str) -> None:
+    _ensure_pending_reverse_store(app).pop(str(symbol), None)
+
+
+def _set_pending_reverse(app, *, symbol: str, action: str, score: float, reasons: list[str]) -> None:
+    ttl_sec = max(1.0, float(getattr(Config, "IMMEDIATE_REVERSE_PENDING_TTL_SEC", 20.0)))
+    now_s = time.time()
+    _ensure_pending_reverse_store(app)[str(symbol)] = {
+        "action": str(action or "").upper(),
+        "score": float(score or 0.0),
+        "reasons": list(reasons or []),
+        "created_at": now_s,
+        "expires_at": now_s + ttl_sec,
+    }
+
+
+def _get_pending_reverse(app, symbol: str) -> dict | None:
+    store = _ensure_pending_reverse_store(app)
+    symbol_key = str(symbol)
+    pending = store.get(symbol_key)
+    if not isinstance(pending, dict):
+        return None
+    expires_at = float(pending.get("expires_at", 0.0) or 0.0)
+    if expires_at > 0.0 and time.time() > expires_at:
+        store.pop(symbol_key, None)
+        return None
+    action = str(pending.get("action", "") or "").upper()
+    if action not in {"BUY", "SELL"}:
+        store.pop(symbol_key, None)
+        return None
+    return pending
+
+
+def _resolve_reverse_candidate(app, *, symbol: str, reverse_action, reverse_score, reverse_reasons) -> tuple[str, float, list[str], bool] | None:
+    if reverse_action:
+        _set_pending_reverse(
+            app,
+            symbol=symbol,
+            action=str(reverse_action),
+            score=float(reverse_score or 0.0),
+            reasons=list(reverse_reasons or []),
+        )
+        return str(reverse_action).upper(), float(reverse_score or 0.0), list(reverse_reasons or []), False
+    pending = _get_pending_reverse(app, symbol)
+    if not pending:
+        return None
+    return (
+        str(pending.get("action", "") or "").upper(),
+        float(pending.get("score", 0.0) or 0.0),
+        list(pending.get("reasons", []) or []),
+        True,
+    )
+
+
+def _get_managed_positions(app, symbol: str) -> list:
+    positions_now = app.broker.positions_get(symbol=symbol) or []
+    return [p for p in positions_now if int(getattr(p, "magic", 0) or 0) == int(Config.MAGIC_NUMBER)]
+
+
+def _wait_for_symbol_flat(app, symbol: str) -> list:
+    managed_positions = _get_managed_positions(app, symbol)
+    if not managed_positions:
+        return []
+    wait_sec = max(0.0, float(getattr(Config, "IMMEDIATE_REVERSE_FLAT_WAIT_SEC", 1.2)))
+    deadline = time.time() + wait_sec
+    while managed_positions and time.time() < deadline:
+        time.sleep(0.15)
+        managed_positions = _get_managed_positions(app, symbol)
+    return managed_positions
+
+
 def try_reverse_entry(
     app,
     *,
@@ -23,18 +102,25 @@ def try_reverse_entry(
     df_all,
     trade_logger,
 ):
-    if not reverse_action:
+    resolved_candidate = _resolve_reverse_candidate(
+        app,
+        symbol=symbol,
+        reverse_action=reverse_action,
+        reverse_score=reverse_score,
+        reverse_reasons=reverse_reasons,
+    )
+    if not resolved_candidate:
         return
+    reverse_action, reverse_score, reverse_reasons, _loaded_from_pending = resolved_candidate
     if not Config.ALLOW_IMMEDIATE_REVERSE:
         cooldown_ok = (time.time() - app.last_entry_time.get(symbol, 0)) > Config.ENTRY_COOLDOWN
         if not cooldown_ok:
             return
 
-    positions_now = app.broker.positions_get(symbol=symbol) or []
-    my_positions_now = [p for p in positions_now if p.magic == Config.MAGIC_NUMBER]
-    # Reverse entries should only happen after the current symbol thesis is fully cleared.
-    # If the symbol still has any open managed position, another immediate reverse tends to
-    # create duplicate whipsaw trades instead of a fresh confirmed reversal.
+    my_positions_now = _wait_for_symbol_flat(app, symbol)
+    # We still avoid opening a reverse order while our managed position is visibly alive,
+    # but we now give the just-closed thesis a short grace window and keep the reverse
+    # candidate alive for the next loops instead of dropping it immediately.
     if my_positions_now:
         return
     max_positions_for_symbol = int(Config.get_max_positions(symbol))
@@ -79,6 +165,7 @@ def try_reverse_entry(
                     "blocked": True,
                 }
             )
+            _clear_pending_reverse(app, symbol)
             return
     reverse_threshold = max(
         int(
@@ -110,6 +197,7 @@ def try_reverse_entry(
         ),
     )
     if int(final_reverse_score) < int(reverse_threshold):
+        _clear_pending_reverse(app, symbol)
         return
 
     app._append_ai_entry_trace(
@@ -131,6 +219,7 @@ def try_reverse_entry(
     if not ticket:
         return
 
+    _clear_pending_reverse(app, symbol)
     app.last_entry_time[symbol] = time.time()
     price = tick.ask if reverse_action == "BUY" else tick.bid
     contra_for_reverse = buy_s if reverse_action == "SELL" else sell_s
@@ -164,8 +253,9 @@ def try_reverse_entry(
         price,
         lot,
         reverse_scored_reasons[:3],
-        len(my_positions_now) + 1,
+        1,
         max_positions_for_symbol,
+        row=dict((app.latest_signal_by_symbol or {}).get(symbol, {}) or {}),
     )
     app.notify(msg)
     print(f"\n{msg}")

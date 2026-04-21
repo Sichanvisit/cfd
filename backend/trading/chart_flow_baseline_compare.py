@@ -330,7 +330,12 @@ def _build_shadow_row(source_row: dict, observe_payload: dict) -> dict:
     side = str(observe.get("side", "") or "").upper()
     reason = str(observe.get("reason", "") or "")
     probe_scene_id = _pick_probe_scene_id(source_row, observe)
-    scene_side = resolve_probe_scene_direction(probe_scene_id)
+    scene_side = resolve_probe_scene_direction(
+        probe_scene_id,
+        reason=reason,
+        side=side,
+        action=action,
+    )
     support_side = side or scene_side or str(edge_pair.get("winner_side", "") or "").upper()
     buy_support = _safe_float(final_readiness.get("buy_support"), 0.0)
     sell_support = _safe_float(final_readiness.get("sell_support"), 0.0)

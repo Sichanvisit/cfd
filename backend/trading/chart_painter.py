@@ -12,7 +12,11 @@ from collections import deque
 
 import pandas as pd
 from backend.services.context_classifier import ContextClassifier
-from backend.services.symbol_temperament import canonical_symbol, resolve_probe_scene_direction
+from backend.services.symbol_temperament import (
+    canonical_symbol,
+    resolve_probe_scene_direction,
+    resolve_probe_scene_policy_family,
+)
 from backend.trading.chart_flow_baseline_compare import generate_and_write_chart_flow_baseline_compare_reports
 from backend.trading.chart_flow_distribution import generate_and_write_chart_flow_distribution_report
 from backend.trading.chart_flow_rollout_status import generate_and_write_chart_flow_rollout_status
@@ -25,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 
 class Painter:
-    _FLOW_HISTORY_MAXLEN = 16
+    _FLOW_HISTORY_MAXLEN = 64
     _FLOW_HISTORY_RETENTION_SEC = 12 * 60 * 60
     _FLOW_SIGNAL_COMPACT_WINDOW_SEC = 2 * 60
     _FLOW_SIGNATURE_REPEAT_MIN_SEC = 6 * 60
@@ -799,12 +803,25 @@ class Painter:
 
     @classmethod
     def _flow_event_signature(cls, row: dict) -> str:
+        shadow_owner = str(row.get("flow_shadow_chart_event_ownership_v1", "") or "").upper().strip()
+        if shadow_owner == "SHADOW_DISPLAY":
+            return "|".join(
+                [
+                    "shadow_display",
+                    str(bool(row.get("flow_shadow_chart_event_emit_v1"))),
+                    str(row.get("flow_shadow_chart_event_emit_state_v1", "") or ""),
+                    str(row.get("flow_shadow_chart_event_emit_key_v1", "") or ""),
+                    str(row.get("flow_shadow_chart_event_final_kind_v1", "") or ""),
+                    str(row.get("flow_shadow_chart_event_emit_reason_v1", "") or ""),
+                ]
+            )
         observe = cls._coerce_dict(row.get("observe_confirm_v2"))
         observe_meta = cls._coerce_dict(observe.get("metadata"))
         edge_pair = cls._coerce_dict(row.get("edge_pair_law_v1") or observe_meta.get("edge_pair_law_v1"))
         entry = cls._coerce_dict(row.get("entry_decision_result_v1"))
         exit_wait = cls._coerce_dict(row.get("exit_wait_state_v1"))
         consumer_check = cls._coerce_dict(row.get("consumer_check_state_v1"))
+        continuation_overlay = cls._coerce_dict(row.get("directional_continuation_overlay_v1"))
         observe_action = str(observe.get("action") or row.get("observe_action") or "")
         observe_side = str(observe.get("side") or row.get("observe_side") or "")
         observe_reason = str(observe.get("reason") or row.get("observe_reason") or "")
@@ -828,29 +845,76 @@ class Painter:
                 str(consumer_check.get("check_stage", "")),
                 str(consumer_check.get("chart_event_kind_hint", "")),
                 str(consumer_check.get("chart_display_mode", "")),
+                str(row.get("chart_event_kind_hint", "")),
+                str(row.get("chart_event_reason_hint", "")),
+                str(continuation_overlay.get("overlay_enabled", "")),
+                str(continuation_overlay.get("overlay_direction", "")),
+                str(continuation_overlay.get("overlay_event_kind_hint", "")),
+                str(continuation_overlay.get("overlay_candidate_key", "")),
+                str(continuation_overlay.get("overlay_selection_state", "")),
             ]
         )
+
+    @classmethod
+    def _resolve_explicit_chart_event_hint(cls, row: dict) -> tuple[str, str, str] | None:
+        shadow_owner = str(row.get("flow_shadow_chart_event_ownership_v1", "") or "").upper().strip()
+        if shadow_owner == "SHADOW_DISPLAY" and not bool(row.get("flow_shadow_chart_event_emit_v1")):
+            return None
+        event_kind = str(
+            row.get("flow_shadow_chart_event_final_kind_v1")
+            or row.get("chart_event_kind_hint")
+            or ""
+        ).upper().strip()
+        if event_kind not in {
+            "BUY_WATCH",
+            "SELL_WATCH",
+            "BUY_WAIT",
+            "SELL_WAIT",
+            "BUY_BLOCKED",
+            "SELL_BLOCKED",
+            "BUY_PROBE",
+            "SELL_PROBE",
+            "BUY_READY",
+            "SELL_READY",
+            "WAIT",
+        }:
+            return None
+        if event_kind.startswith("BUY_"):
+            side = "BUY"
+        elif event_kind.startswith("SELL_"):
+            side = "SELL"
+        else:
+            side = ""
+        reason = str(
+            row.get("flow_shadow_chart_event_emit_reason_v1")
+            or row.get("chart_event_reason_hint")
+            or row.get("flow_shadow_chart_event_override_reason_v1")
+            or ""
+        ).strip()
+        return (event_kind, side, reason or event_kind.lower())
 
     @classmethod
     def _resolve_consumer_check_event_kind(cls, row: dict) -> tuple[str, str, str] | None:
         consumer_check = cls._coerce_dict(row.get("consumer_check_state_v1"))
         if not consumer_check:
             return None
-        if not bool(consumer_check.get("check_display_ready", False)):
+        check_display_ready = bool(consumer_check.get("check_display_ready", False))
+        check_candidate = bool(consumer_check.get("check_candidate", False))
+        if not check_display_ready and not check_candidate:
             return None
-        side = str(consumer_check.get("check_side", "") or "").upper()
-        if side not in {"BUY", "SELL"}:
-            return None
-        stage = str(consumer_check.get("check_stage", "") or "").upper()
         reason = str(
             consumer_check.get("check_reason", "")
             or consumer_check.get("semantic_origin_reason", "")
             or consumer_check.get("entry_block_reason", "")
             or ""
         )
+        side = str(consumer_check.get("check_side", "") or "").upper()
         event_kind_hint = str(consumer_check.get("chart_event_kind_hint", "") or "").upper().strip()
+        stage = str(consumer_check.get("check_stage", "") or "").upper()
         if event_kind_hint == "WAIT":
             return ("WAIT", "", reason or "wait")
+        if side not in {"BUY", "SELL"}:
+            return None
         if bool(consumer_check.get("entry_ready", False)) or stage == "READY":
             return (f"{side}_READY", side, reason)
         if stage == "PROBE":
@@ -863,22 +927,117 @@ class Painter:
 
     @classmethod
     def _consumer_check_hidden_flow_suppressed(cls, row: dict) -> bool:
+        shadow_owner = str(row.get("flow_shadow_chart_event_ownership_v1", "") or "").strip().upper()
+        if shadow_owner == "SHADOW_DISPLAY":
+            if bool(row.get("flow_shadow_chart_event_emit_v1")):
+                return False
+            consumer_check = cls._coerce_dict(row.get("consumer_check_state_v1"))
+            if (
+                bool(consumer_check.get("check_display_ready", False) or consumer_check.get("check_candidate", False))
+                and str(consumer_check.get("check_side", "") or "").strip().upper() in {"BUY", "SELL"}
+                and str(consumer_check.get("check_stage", "") or "").strip().upper()
+                in {"OBSERVE", "BLOCKED", "PROBE", "READY"}
+            ):
+                return False
+            return True
+        explicit_chart_hint = str(row.get("chart_event_kind_hint", "") or "").strip().upper()
+        overlay = cls._coerce_dict(row.get("directional_continuation_overlay_v1"))
+        overlay_enabled = bool(overlay.get("overlay_enabled", False))
+        overlay_event_kind_hint = str(overlay.get("overlay_event_kind_hint", "") or "").strip().upper()
+        if explicit_chart_hint in {"BUY_WATCH", "SELL_WATCH", "BUY_WAIT", "SELL_WAIT", "BUY_PROBE", "SELL_PROBE"}:
+            return False
+        if overlay_enabled and overlay_event_kind_hint in {"BUY_WATCH", "SELL_WATCH", "BUY_WAIT", "SELL_WAIT", "BUY_PROBE", "SELL_PROBE"}:
+            return False
         consumer_check = cls._coerce_dict(row.get("consumer_check_state_v1"))
         if not consumer_check:
             return False
         if bool(consumer_check.get("check_display_ready", False)):
             return False
+        if (
+            bool(consumer_check.get("check_candidate", False))
+            and str(consumer_check.get("check_side", "") or "").strip().upper() in {"BUY", "SELL"}
+            and str(consumer_check.get("check_stage", "") or "").strip().upper() in {"OBSERVE", "BLOCKED", "PROBE", "READY"}
+        ):
+            return False
         modifier_primary_reason = str(consumer_check.get("modifier_primary_reason", "") or "").strip().lower()
+        if modifier_primary_reason in {
+            "balanced_conflict_wait_hide_without_probe",
+            "btc_sell_middle_anchor_wait_hide_without_probe",
+            "btc_lower_rebound_forecast_wait_hide_without_probe",
+            "nas_upper_break_fail_wait_hide_without_probe",
+            "nas_upper_reject_wait_hide_without_probe",
+            "nas_sell_middle_anchor_wait_hide_without_probe",
+            "nas_upper_reclaim_wait_hide_without_probe",
+            "xau_upper_reclaim_wait_hide_without_probe",
+            "sell_outer_band_wait_hide_without_probe",
+            "structural_wait_hide_without_probe",
+        }:
+            return True
+        check_reason = str(consumer_check.get("check_reason", "") or "").strip().lower()
+        check_side = str(consumer_check.get("check_side", "") or "").strip().upper()
+        check_stage = str(consumer_check.get("check_stage", "") or "").strip().upper()
+        action_none_reason = str(row.get("action_none_reason", "") or "").strip().lower()
+        probe_scene_id = str(row.get("probe_scene_id", "") or "").strip()
         return bool(
-            modifier_primary_reason in {
-                "btc_lower_rebound_forecast_wait_hide_without_probe",
-                "nas_upper_break_fail_wait_hide_without_probe",
-                "nas_upper_reject_wait_hide_without_probe",
-                "nas_sell_middle_anchor_wait_hide_without_probe",
-                "nas_upper_reclaim_wait_hide_without_probe",
-                "sell_outer_band_wait_hide_without_probe",
-            }
+            check_reason.startswith("conflict_box_")
+            and action_none_reason == "observe_state_wait"
+            and not probe_scene_id
+            and not check_side
+            and check_stage in {"", "NONE"}
         )
+
+    @classmethod
+    def _resolve_directional_continuation_overlay_event_kind(
+        cls,
+        row: dict,
+    ) -> tuple[str, str, str] | None:
+        overlay = cls._coerce_dict(row.get("directional_continuation_overlay_v1"))
+        if not overlay or not bool(overlay.get("overlay_enabled", False)):
+            return None
+        event_kind = str(overlay.get("overlay_event_kind_hint", "") or "").upper().strip()
+        side = str(overlay.get("overlay_side", "") or "").upper().strip()
+        if event_kind not in {"BUY_WATCH", "SELL_WATCH"} or side not in {"BUY", "SELL"}:
+            return None
+        reason = str(
+            overlay.get("overlay_reason", "")
+            or overlay.get("overlay_summary_ko", "")
+            or overlay.get("overlay_reason_ko", "")
+            or ""
+        ).strip()
+        return (event_kind, side, reason or event_kind.lower())
+
+    @classmethod
+    def _entry_terminal_event_conflicts_with_canonical_row(
+        cls,
+        row: dict,
+        *,
+        entry_action: str,
+        continuation_overlay_event: tuple[str, str, str] | None = None,
+        consumer_check_event: tuple[str, str, str] | None = None,
+    ) -> bool:
+        entry_action_u = str(entry_action or "").upper().strip()
+        if entry_action_u not in {"BUY", "SELL"}:
+            return False
+        execution_diff = cls._coerce_dict(row.get("execution_action_diff_v1"))
+        execution_final = str(
+            row.get("execution_diff_final_action_side")
+            or execution_diff.get("final_action_side")
+            or ""
+        ).upper().strip()
+        if execution_final in {"BUY", "SELL", "SKIP"} and execution_final != entry_action_u:
+            return True
+        for event in (continuation_overlay_event, consumer_check_event):
+            if not isinstance(event, tuple) or len(event) < 2:
+                continue
+            event_kind = str(event[0] or "").upper().strip()
+            event_side = str(event[1] or "").upper().strip()
+            if (
+                event_side in {"BUY", "SELL"}
+                and event_side != entry_action_u
+                and event_kind.endswith(("_WATCH", "_WAIT", "_PROBE", "_READY"))
+            ):
+                return True
+        return False
 
     @classmethod
     def _resolve_flow_event_kind(cls, symbol: str, row: dict) -> tuple[str, str, str]:
@@ -914,10 +1073,21 @@ class Painter:
         probe_plan_ready = bool(row.get("probe_plan_ready"))
         blocked_by = str(row.get("blocked_by", "") or "").strip().lower()
         action_none_reason = str(row.get("action_none_reason", "") or "").strip().lower()
+        continuation_overlay_event = cls._resolve_directional_continuation_overlay_event_kind(row)
+        consumer_check_event = cls._resolve_consumer_check_event_kind(row)
 
         entry_outcome = str(entry.get("outcome", "") or "").lower()
         entry_action = str(entry.get("action", "") or "").upper()
-        if entry_outcome == "entered" and entry_action in {"BUY", "SELL"}:
+        if (
+            entry_outcome == "entered"
+            and entry_action in {"BUY", "SELL"}
+            and not cls._entry_terminal_event_conflicts_with_canonical_row(
+                row,
+                entry_action=entry_action,
+                continuation_overlay_event=continuation_overlay_event,
+                consumer_check_event=consumer_check_event,
+            )
+        ):
             return (f"ENTER_{entry_action}", entry_action, str(entry.get("core_reason", "") or entry.get("reason", "") or ""))
 
         exit_state = str(exit_wait.get("state", "") or "").upper()
@@ -930,7 +1100,16 @@ class Painter:
         if exit_state in {"HOLD", "GREEN_CLOSE", "ACTIVE"}:
             return ("HOLD", "", str(exit_wait.get("reason", "") or ""))
 
-        consumer_check_event = cls._resolve_consumer_check_event_kind(row)
+        explicit_chart_event = cls._resolve_explicit_chart_event_hint(row)
+        if explicit_chart_event is not None:
+            return explicit_chart_event
+
+        if continuation_overlay_event is not None:
+            if consumer_check_event is None:
+                return continuation_overlay_event
+            consumer_kind = str(consumer_check_event[0] or "").upper()
+            if consumer_kind in {"WAIT", "BUY_WAIT", "SELL_WAIT", "BUY_BLOCKED", "SELL_BLOCKED", "BUY_PROBE", "SELL_PROBE"}:
+                return continuation_overlay_event
         if consumer_check_event is not None:
             return consumer_check_event
 
@@ -1050,15 +1229,21 @@ class Painter:
         if (
             action == "WAIT"
             and side == "BUY"
-            and probe_scene_id == "xau_second_support_buy_probe"
+            and cls._is_lower_rebound_buy_probe_family(
+                probe_scene_id=probe_scene_id,
+                reason=reason,
+                side=side,
+                action=action,
+            )
             and bb_state
             not in {
                 str(item).strip().upper()
-                for item in cls._symbol_override_dict(
-                    symbol,
-                    "painter",
-                    "scene_allow",
-                    "xau_second_support_buy_probe",
+                for item in cls._probe_scene_allow_config(
+                    symbol=symbol,
+                    probe_scene_id=probe_scene_id,
+                    reason=reason,
+                    side=side,
+                    action=action,
                 ).get("base_allowed_bb_states", ["LOWER_EDGE", "BREAKDOWN"])
                 if str(item).strip()
             }
@@ -1067,15 +1252,21 @@ class Painter:
         if (
             action == "WAIT"
             and side == "SELL"
-            and probe_scene_id == "xau_upper_sell_probe"
+            and cls._is_upper_reject_sell_probe_family(
+                probe_scene_id=probe_scene_id,
+                reason=reason,
+                side=side,
+                action=action,
+            )
             and box_state
             not in {
                 str(item).strip().upper()
-                for item in cls._symbol_override_dict(
-                    symbol,
-                    "painter",
-                    "scene_allow",
-                    "xau_upper_sell_probe",
+                for item in cls._probe_scene_allow_config(
+                    symbol=symbol,
+                    probe_scene_id=probe_scene_id,
+                    reason=reason,
+                    side=side,
+                    action=action,
                 ).get("allowed_box_states", ["UPPER", "UPPER_EDGE", "ABOVE", "LOWER", "LOWER_EDGE", "BELOW", "MIDDLE"])
                 if str(item).strip()
             }
@@ -1157,6 +1348,122 @@ class Painter:
         return None
 
     @classmethod
+    def _resolve_probe_scene_side(
+        cls,
+        *,
+        probe_scene_id: str,
+        reason: str = "",
+        side: str = "",
+        action: str = "",
+    ) -> str:
+        return resolve_probe_scene_direction(
+            probe_scene_id,
+            reason=reason,
+            side=side,
+            action=action,
+        )
+
+    @classmethod
+    def _resolve_probe_scene_family(
+        cls,
+        *,
+        probe_scene_id: str,
+        reason: str = "",
+        side: str = "",
+        action: str = "",
+    ) -> str:
+        return resolve_probe_scene_policy_family(
+            probe_scene_id,
+            reason=reason,
+            side=side,
+            action=action,
+        )
+
+    @classmethod
+    def _probe_scene_allow_config(
+        cls,
+        *,
+        symbol: str,
+        probe_scene_id: str,
+        reason: str = "",
+        side: str = "",
+        action: str = "",
+    ) -> dict:
+        family = cls._resolve_probe_scene_family(
+            probe_scene_id=probe_scene_id,
+            reason=reason,
+            side=side,
+            action=action,
+        )
+        merged = {}
+        if family:
+            merged.update(cls._symbol_override_dict(symbol, "painter", "scene_allow", family))
+        if probe_scene_id:
+            merged.update(cls._symbol_override_dict(symbol, "painter", "scene_allow", probe_scene_id))
+        return merged
+
+    @classmethod
+    def _probe_scene_allow_enabled(
+        cls,
+        *,
+        symbol: str,
+        probe_scene_id: str,
+        reason: str = "",
+        side: str = "",
+        action: str = "",
+        default: bool = True,
+    ) -> bool:
+        scene_cfg = cls._probe_scene_allow_config(
+            symbol=symbol,
+            probe_scene_id=probe_scene_id,
+            reason=reason,
+            side=side,
+            action=action,
+        )
+        value = scene_cfg.get("enabled", default)
+        return bool(default if value is None else value)
+
+    @classmethod
+    def _is_upper_reject_sell_probe_family(
+        cls,
+        *,
+        probe_scene_id: str,
+        reason: str,
+        side: str = "",
+        action: str = "",
+    ) -> bool:
+        reason_n = str(reason or "").strip().lower()
+        scene_side = cls._resolve_probe_scene_side(
+            probe_scene_id=probe_scene_id,
+            reason=reason,
+            side=side,
+            action=action,
+        )
+        return scene_side == "SELL" and reason_n in {
+            "upper_reject_probe_observe",
+            "outer_band_reversal_support_required_observe",
+            "middle_sr_anchor_required_observe",
+        }
+
+    @classmethod
+    def _is_lower_rebound_buy_probe_family(
+        cls,
+        *,
+        probe_scene_id: str,
+        reason: str,
+        side: str = "",
+        action: str = "",
+    ) -> bool:
+        reason_n = str(reason or "").strip().lower()
+        scene_side = cls._resolve_probe_scene_side(
+            probe_scene_id=probe_scene_id,
+            reason=reason,
+            side=side,
+            action=action,
+        )
+        return scene_side == "BUY" and reason_n == "lower_rebound_probe_observe"
+
+    @classmethod
     def _resolve_flow_observe_side(
         cls,
         *,
@@ -1181,7 +1488,11 @@ class Painter:
                 return "BUY"
 
         if cls._flow_translation_scene_side_fallback_enabled():
-            scene_side = resolve_probe_scene_direction(probe_scene_id)
+            scene_side = cls._resolve_probe_scene_side(
+                probe_scene_id=probe_scene_id,
+                reason=reason,
+                side=side_u,
+            )
             if scene_side in {"BUY", "SELL"}:
                 return scene_side
 
@@ -1212,7 +1523,14 @@ class Painter:
         if not is_probe_visual:
             return False
 
-        scene_side = resolve_probe_scene_direction(probe_scene_id)
+        scene_side = cls._resolve_probe_scene_side(
+            probe_scene_id=probe_scene_id,
+            reason=reason,
+        )
+        scene_family = cls._resolve_probe_scene_family(
+            probe_scene_id=probe_scene_id,
+            reason=reason,
+        )
         probe_active = bool(probe_plan_active or probe_candidate_active)
         if not probe_active or not pd.notna(probe_candidate_support):
             return False
@@ -1221,7 +1539,18 @@ class Painter:
         quick_state = str(quick_trace_state or "").strip().upper()
         neutral_block_guards = cls._flow_translation_neutral_block_guards()
         blocked_quick_states = cls._flow_probe_blocked_quick_states()
-        scene_cfg = cls._symbol_override_dict(symbol, "painter", "scene_allow", probe_scene_id)
+        scene_cfg = cls._probe_scene_allow_config(
+            symbol=symbol,
+            probe_scene_id=probe_scene_id,
+            reason=reason,
+            side=scene_side,
+        )
+        scene_enabled = cls._probe_scene_allow_enabled(
+            symbol=symbol,
+            probe_scene_id=probe_scene_id,
+            reason=reason,
+            side=scene_side,
+        )
 
         if blocked_guard in neutral_block_guards:
             return False
@@ -1231,8 +1560,8 @@ class Painter:
         if reason in {"upper_reject_probe_observe", "outer_band_reversal_support_required_observe", "middle_sr_anchor_required_observe"}:
             upper_context_ok = box_state in {"UPPER", "UPPER_EDGE", "ABOVE"}
             if scene_side == "SELL":
-                if probe_scene_id == "xau_upper_sell_probe":
-                    if not cls._symbol_override_flag(symbol, "painter", "scene_allow", probe_scene_id, default=True):
+                if scene_cfg:
+                    if not scene_enabled:
                         return False
                     extended_bb_states = {
                         str(item).strip().upper()
@@ -1271,8 +1600,8 @@ class Painter:
 
         if reason == "lower_rebound_probe_observe":
             lower_context_ok = box_state in {"LOWER", "LOWER_EDGE", "BELOW"}
-            if probe_scene_id in {"btc_lower_buy_conservative_probe", "nas_clean_confirm_probe"}:
-                if not cls._symbol_override_flag(symbol, "painter", "scene_allow", probe_scene_id, default=True):
+            if scene_cfg:
+                if not scene_enabled:
                     return False
                 extra_bb_states = {
                     str(item).strip().upper()
@@ -1281,7 +1610,7 @@ class Painter:
                 }
                 lower_context_ok = lower_context_ok or bb_state in extra_bb_states
             xau_second_support_relief = bool(meta.get("xau_second_support_probe_relief"))
-            if probe_scene_id == "xau_second_support_buy_probe" and xau_second_support_relief:
+            if scene_family == "lower_second_support" and xau_second_support_relief:
                 relief_cfg = cls._symbol_override_dict(
                     symbol,
                     "painter",
@@ -1312,8 +1641,8 @@ class Painter:
                 and (not pd.notna(probe_pair_gap) or probe_pair_gap >= min_pair_gap)
                 and lower_context_ok
             )
-            if probe_scene_id == "xau_second_support_buy_probe":
-                if not cls._symbol_override_flag(symbol, "painter", "scene_allow", probe_scene_id, default=True):
+            if "base_allowed_bb_states" in scene_cfg:
+                if not scene_enabled:
                     return False
                 base_allowed_bb_states = {
                     str(item).strip().upper()
@@ -1474,6 +1803,7 @@ class Painter:
     def _flow_event_signal_score(cls, row: dict, event_kind: str, side: str = "") -> float:
         observe = cls._coerce_dict(row.get("observe_confirm_v2"))
         observe_meta = cls._coerce_dict(observe.get("metadata"))
+        continuation_overlay = cls._coerce_dict(row.get("directional_continuation_overlay_v1"))
         signal_side = cls._flow_event_signal_side(row, event_kind, side)
         try:
             confidence = float(pd.to_numeric(observe.get("confidence"), errors="coerce"))
@@ -1502,6 +1832,11 @@ class Painter:
             score = max(score, float(confidence))
         if pd.notna(candidate_support):
             score = max(score, float(candidate_support))
+        overlay_kind = str(continuation_overlay.get("overlay_event_kind_hint", "") or "").upper().strip()
+        overlay_score = cls._policy_float(continuation_overlay.get("overlay_score"), default=float("nan"))
+        if bool(continuation_overlay.get("overlay_enabled", False)) and overlay_kind == str(event_kind or "").upper():
+            if pd.notna(overlay_score):
+                score = max(score, float(overlay_score))
         if pd.notna(pair_gap):
             score += float(pair_gap) * cls._flow_strength_value("pair_gap_weight", default=0.35)
         quick_trace_state = str(row.get("quick_trace_state", "") or "").upper()
@@ -1541,6 +1876,18 @@ class Painter:
         side: str = "",
     ) -> int | None:
         consumer_check = cls._coerce_dict(row.get("consumer_check_state_v1"))
+        continuation_overlay = cls._coerce_dict(row.get("directional_continuation_overlay_v1"))
+        overlay_kind = str(continuation_overlay.get("overlay_event_kind_hint", "") or "").upper().strip()
+        overlay_side = str(continuation_overlay.get("overlay_side", "") or "").upper().strip()
+        signal_side = cls._flow_event_signal_side(row, event_kind, side)
+        if (
+            bool(continuation_overlay.get("overlay_enabled", False))
+            and overlay_kind == str(event_kind or "").upper()
+            and (not overlay_side or not signal_side or overlay_side == signal_side)
+        ):
+            overlay_score = cls._policy_float(continuation_overlay.get("overlay_score"), default=float("nan"))
+            if pd.notna(overlay_score) and overlay_score > 0.0:
+                return cls._flow_event_strength_level(score=float(overlay_score))
         if not consumer_check:
             return None
         resolved = cls._resolve_consumer_check_event_kind(row)
@@ -1549,7 +1896,6 @@ class Painter:
         expected_kind, expected_side, _expected_reason = resolved
         if str(expected_kind or "").upper() != str(event_kind or "").upper():
             return None
-        signal_side = cls._flow_event_signal_side(row, event_kind, side)
         if expected_side and signal_side and str(expected_side or "").upper() != str(signal_side or "").upper():
             return None
         level = int(consumer_check.get("display_strength_level", 0) or 0)
@@ -1564,6 +1910,18 @@ class Painter:
         side: str = "",
     ) -> float | None:
         consumer_check = cls._coerce_dict(row.get("consumer_check_state_v1"))
+        continuation_overlay = cls._coerce_dict(row.get("directional_continuation_overlay_v1"))
+        overlay_kind = str(continuation_overlay.get("overlay_event_kind_hint", "") or "").upper().strip()
+        overlay_side = str(continuation_overlay.get("overlay_side", "") or "").upper().strip()
+        signal_side = cls._flow_event_signal_side(row, event_kind, side)
+        if (
+            bool(continuation_overlay.get("overlay_enabled", False))
+            and overlay_kind == str(event_kind or "").upper()
+            and (not overlay_side or not signal_side or overlay_side == signal_side)
+        ):
+            overlay_score = cls._policy_float(continuation_overlay.get("overlay_score"), default=float("nan"))
+            if pd.notna(overlay_score) and overlay_score > 0.0:
+                return float(max(0.0, min(1.0, overlay_score)))
         if not consumer_check:
             return None
         resolved = cls._resolve_consumer_check_event_kind(row)
@@ -1572,7 +1930,6 @@ class Painter:
         expected_kind, expected_side, _expected_reason = resolved
         if str(expected_kind or "").upper() != str(event_kind or "").upper():
             return None
-        signal_side = cls._flow_event_signal_side(row, event_kind, side)
         if expected_side and signal_side and str(expected_side or "").upper() != str(signal_side or "").upper():
             return None
         score = cls._policy_float(consumer_check.get("display_score"), default=float("nan"))
@@ -1589,6 +1946,21 @@ class Painter:
         side: str = "",
     ) -> int | None:
         consumer_check = cls._coerce_dict(row.get("consumer_check_state_v1"))
+        continuation_overlay = cls._coerce_dict(row.get("directional_continuation_overlay_v1"))
+        overlay_kind = str(continuation_overlay.get("overlay_event_kind_hint", "") or "").upper().strip()
+        overlay_side = str(continuation_overlay.get("overlay_side", "") or "").upper().strip()
+        signal_side = cls._flow_event_signal_side(row, event_kind, side)
+        if (
+            bool(continuation_overlay.get("overlay_enabled", False))
+            and overlay_kind == str(event_kind or "").upper()
+            and (not overlay_side or not signal_side or overlay_side == signal_side)
+        ):
+            try:
+                repeat_count = int(pd.to_numeric(continuation_overlay.get("overlay_repeat_count"), errors="coerce"))
+            except Exception:
+                repeat_count = 0
+            if repeat_count > 0:
+                return max(0, int(repeat_count))
         if not consumer_check:
             return None
         resolved = cls._resolve_consumer_check_event_kind(row)
@@ -1597,7 +1969,6 @@ class Painter:
         expected_kind, expected_side, _expected_reason = resolved
         if str(expected_kind or "").upper() != str(event_kind or "").upper():
             return None
-        signal_side = cls._flow_event_signal_side(row, event_kind, side)
         if expected_side and signal_side and str(expected_side or "").upper() != str(signal_side or "").upper():
             return None
         try:
@@ -1941,6 +2312,158 @@ class Painter:
             history[-1] = event_payload
             return
         history.append(event_payload)
+
+    @classmethod
+    def _runtime_row_flow_event_ts(cls, row: dict) -> int:
+        if not isinstance(row, dict):
+            return 0
+        for key in ("signal_bar_ts",):
+            try:
+                value = int(row.get(key, 0) or 0)
+            except Exception:
+                value = 0
+            if value > 0:
+                return value
+        runtime_generated = row.get("runtime_snapshot_generated_ts")
+        try:
+            if runtime_generated not in (None, ""):
+                value = int(float(runtime_generated))
+                if value > 0:
+                    return value
+        except Exception:
+            pass
+        try:
+            text = str(row.get("time", "") or "").strip()
+            if text:
+                return int(pd.Timestamp(text).timestamp())
+        except Exception:
+            pass
+        return int(time.time())
+
+    @classmethod
+    def _runtime_row_flow_event_price(cls, row: dict, *, side: str = "", event_kind: str = "") -> float:
+        if not isinstance(row, dict):
+            return 0.0
+        side_u = str(side or "").upper().strip()
+        event_kind_u = str(event_kind or "").upper().strip()
+        candidates = []
+        if side_u == "BUY" or event_kind_u.startswith("BUY_"):
+            candidates.extend((row.get("ask"), row.get("live_ask"), row.get("live_price")))
+        elif side_u == "SELL" or event_kind_u.startswith("SELL_"):
+            candidates.extend((row.get("bid"), row.get("live_bid"), row.get("live_price")))
+        candidates.extend((row.get("current_close"), row.get("live_price"), row.get("bid"), row.get("ask")))
+        for value in candidates:
+            try:
+                price = float(pd.to_numeric(value, errors="coerce"))
+            except Exception:
+                price = float("nan")
+            if pd.notna(price) and price > 0:
+                return float(price)
+        return 0.0
+
+    def sync_flow_history_from_runtime_row(self, symbol: str, row: dict) -> None:
+        if not isinstance(row, dict):
+            return
+        safe_symbol = str(symbol or "").upper().strip()
+        if not safe_symbol:
+            return
+        self._load_flow_history_if_needed(safe_symbol)
+        suppressed = self._consumer_check_hidden_flow_suppressed(row)
+        event_kind, side, reason = self._resolve_flow_event_kind(safe_symbol, row)
+        if suppressed:
+            overlay = self._coerce_dict(row.get("directional_continuation_overlay_v1"))
+            selection_state = str(
+                row.get("directional_continuation_overlay_selection_state")
+                or overlay.get("overlay_selection_state")
+                or ""
+            ).upper()
+            unresolved_selection = selection_state in {
+                "LOW_ALIGNMENT",
+                "DIRECTION_TIE",
+                "NO_DIRECTIONAL_CANDIDATE",
+                "NO_CANDIDATE",
+            }
+            if not unresolved_selection:
+                return
+            event_kind = "WAIT"
+            side = ""
+            reason = str(
+                row.get("action_none_reason")
+                or row.get("consumer_check_reason")
+                or row.get("observe_reason")
+                or "directional_signal_unresolved"
+            ).strip()
+        event_ts = self._runtime_row_flow_event_ts(row)
+        event_score = self._flow_event_signal_score(row, event_kind, side=side)
+        event_level = self._flow_event_consumer_display_level(
+            row,
+            event_kind,
+            side=side,
+        ) or self._flow_event_strength_level(score=event_score)
+        event_display_score = self._flow_event_consumer_display_score(
+            row,
+            event_kind,
+            side=side,
+        )
+        if event_display_score is None:
+            event_display_score = self._flow_event_default_display_score(
+                event_kind,
+                level=event_level,
+                score=event_score,
+            )
+        event_repeat_count = self._flow_event_consumer_repeat_count(
+            row,
+            event_kind,
+            side=side,
+        )
+        event_repeat_count = self._flow_event_repeat_count(
+            event_kind,
+            display_score=float(event_display_score),
+            explicit_repeat_count=event_repeat_count,
+        )
+        event_score = max(
+            float(event_score),
+            self._flow_event_min_score_for_level(event_level),
+        )
+        event_price = self._runtime_row_flow_event_price(row, side=side, event_kind=event_kind)
+        history = self._flow_history_by_symbol.setdefault(safe_symbol, deque(maxlen=self._FLOW_HISTORY_MAXLEN))
+        signature = self._flow_event_signature(row)
+        last_signature = self._last_flow_signature_by_symbol.get(safe_symbol, "")
+        if signature == last_signature and not self._should_keep_repeated_signature_event(history[-1] if history else None, event_kind, event_ts):
+            persisted_signature = ""
+            try:
+                filepath = self._flow_history_filepath(safe_symbol)
+                if filepath and os.path.exists(filepath):
+                    with open(filepath, "r", encoding="utf-8") as handle:
+                        payload = json.loads(handle.read())
+                    if isinstance(payload, dict):
+                        persisted_signature = str(payload.get("last_signature", "") or "")
+            except Exception:
+                persisted_signature = ""
+            if persisted_signature != signature:
+                self._persist_flow_history(safe_symbol)
+            return
+        event_payload = {
+            "ts": int(event_ts),
+            "price": float(event_price),
+            "event_kind": str(event_kind),
+            "side": str(side),
+            "reason": str(reason),
+            "blocked_by": str(row.get("blocked_by", "") or ""),
+            "action_none_reason": str(row.get("action_none_reason", "") or ""),
+            "priority": int(self._flow_event_priority(event_kind)),
+            "score": float(event_score),
+            "display_score": float(event_display_score),
+            "repeat_count": int(event_repeat_count),
+            "level": int(event_level),
+            "box_state": str(row.get("box_state", "") or ""),
+            "bb_state": str(row.get("bb_state", "") or ""),
+            "probe_scene_id": str(row.get("probe_scene_id", "") or ""),
+            "my_position_count": float(pd.to_numeric(row.get("my_position_count"), errors="coerce") or 0.0),
+        }
+        self._push_flow_event_payload(history, event_payload)
+        self._last_flow_signature_by_symbol[safe_symbol] = signature
+        self._persist_flow_history(safe_symbol)
 
     def _record_flow_event(self, symbol: str, row: dict, df_1m, tick) -> None:
         if not isinstance(row, dict):

@@ -41,6 +41,24 @@ from backend.core.trade_constants import (
     TRADE_RETCODE_DONE,
 )
 from backend.services.exit_wait_taxonomy_contract import build_exit_wait_taxonomy_v1
+from backend.services.context_state_builder import build_context_state_v12
+from backend.services.directional_continuation_chart_overlay import (
+    build_directional_continuation_chart_overlay_flat_fields_v1,
+    build_directional_continuation_chart_overlay_state,
+)
+from backend.services.directional_continuation_learning_candidate import (
+    build_directional_continuation_learning_candidates,
+)
+from backend.services.directional_continuation_accuracy_tracker import (
+    build_directional_continuation_accuracy_flat_fields_v1,
+    update_directional_continuation_accuracy_tracker,
+)
+from backend.services.htf_trend_cache import HtfTrendCache
+from backend.services.previous_box_calculator import PreviousBoxCalculator
+from backend.services.state25_context_bridge import (
+    build_state25_candidate_context_bridge_flat_fields_v1,
+    build_state25_candidate_context_bridge_v1,
+)
 from backend.trading.chart_painter import Painter
 from backend.trading.scorer import Scorer
 from backend.trading.symbol_resolver import SymbolResolver
@@ -52,6 +70,273 @@ from backend.services.storage_compaction import (
     RUNTIME_STATUS_DETAIL_SCHEMA_VERSION,
     compact_runtime_signal_row,
     resolve_runtime_status_detail_path,
+)
+from backend.services.runtime_recycle import (
+    build_runtime_recycle_state,
+    build_runtime_recycle_drift_v1,
+    build_runtime_recycle_health_v1,
+    export_runtime_recycle_state,
+)
+from backend.services.teacher_pattern_active_candidate_runtime import (
+    build_state25_candidate_size_surface_v1,
+    build_state25_candidate_threshold_surface_v1,
+    build_state25_candidate_weight_surface_v1,
+    load_state25_candidate_runtime_state,
+)
+from backend.services.runtime_signal_surface import (
+    build_legacy_raw_score_surface_v1,
+    build_position_energy_surface_v1,
+    enrich_runtime_signal_surface_v1,
+)
+from backend.services.runtime_signal_wiring_audit import generate_and_write_runtime_signal_wiring_audit
+from backend.services.ca2_r0_stability_audit import generate_and_write_ca2_r0_stability_audit
+from backend.services.ca2_session_split_audit import generate_and_write_ca2_session_split_audit
+from backend.services.session_bucket_helper import (
+    build_runtime_row_session_bucket_surface_v1,
+    build_session_bucket_contract_v1,
+)
+from backend.services.session_direction_annotation_contract import (
+    build_session_direction_annotation_contract_v1,
+)
+from backend.services.should_have_done_contract import build_should_have_done_contract_v1
+from backend.services.should_have_done_candidate_summary import (
+    generate_and_write_should_have_done_candidate_summary,
+)
+from backend.services.canonical_surface_builder import (
+    attach_canonical_surface_fields_v1,
+    build_canonical_surface_contract_v1,
+    generate_and_write_canonical_surface_summary_v1,
+)
+from backend.services.session_aware_annotation_accuracy import (
+    build_session_aware_annotation_accuracy_contract_v1,
+    generate_and_write_session_aware_annotation_accuracy_v1,
+)
+from backend.services.session_bias_shadow_report import (
+    attach_session_bias_shadow_fields_v1,
+    build_session_bias_shadow_contract_v1,
+    generate_and_write_session_bias_shadow_report_v1,
+)
+from backend.services.state_strength_s0_stability_guard import (
+    generate_and_write_state_strength_s0_stability_report_v1,
+)
+from backend.services.state_polarity_d0_stability_guard import (
+    generate_and_write_state_polarity_d0_stability_report_v1,
+)
+from backend.services.state_polarity_slot_vocabulary_contract import (
+    build_state_polarity_slot_vocabulary_contract_v1,
+    generate_and_write_state_polarity_slot_vocabulary_summary_v1,
+)
+from backend.services.rejection_split_rule_contract import (
+    build_rejection_split_rule_contract_v1,
+    generate_and_write_rejection_split_rule_summary_v1,
+)
+from backend.services.continuation_stage_contract import (
+    build_continuation_stage_contract_v1,
+    generate_and_write_continuation_stage_summary_v1,
+)
+from backend.services.location_context_contract import (
+    build_location_context_contract_v1,
+    generate_and_write_location_context_summary_v1,
+)
+from backend.services.tempo_profile_contract import (
+    build_tempo_profile_contract_v1,
+    generate_and_write_tempo_profile_summary_v1,
+)
+from backend.services.ambiguity_modifier_contract import (
+    build_ambiguity_modifier_contract_v1,
+    generate_and_write_ambiguity_modifier_summary_v1,
+)
+from backend.services.xau_pilot_mapping_contract import (
+    build_xau_pilot_mapping_contract_v1,
+    generate_and_write_xau_pilot_mapping_summary_v1,
+)
+from backend.services.nas_pilot_mapping_contract import (
+    build_nas_pilot_mapping_contract_v1,
+    generate_and_write_nas_pilot_mapping_summary_v1,
+)
+from backend.services.btc_pilot_mapping_contract import (
+    build_btc_pilot_mapping_contract_v1,
+    generate_and_write_btc_pilot_mapping_summary_v1,
+)
+from backend.services.xau_readonly_surface_contract import (
+    attach_xau_readonly_surface_fields_v1,
+    build_xau_readonly_surface_contract_v1,
+    generate_and_write_xau_readonly_surface_summary_v1,
+)
+from backend.services.nas_readonly_surface_contract import (
+    attach_nas_readonly_surface_fields_v1,
+    build_nas_readonly_surface_contract_v1,
+    generate_and_write_nas_readonly_surface_summary_v1,
+)
+from backend.services.btc_readonly_surface_contract import (
+    attach_btc_readonly_surface_fields_v1,
+    build_btc_readonly_surface_contract_v1,
+    generate_and_write_btc_readonly_surface_summary_v1,
+)
+from backend.services.xau_decomposition_validation import (
+    attach_xau_decomposition_validation_fields_v1,
+    build_xau_decomposition_validation_contract_v1,
+    generate_and_write_xau_decomposition_validation_summary_v1,
+)
+from backend.services.xau_refined_gate_timebox_audit import (
+    attach_xau_refined_gate_timebox_audit_fields_v1,
+    build_xau_refined_gate_timebox_audit_contract_v1,
+    generate_and_write_xau_refined_gate_timebox_audit_summary_v1,
+)
+from backend.services.state_flow_f0_chain_alignment_audit import (
+    attach_state_flow_f0_chain_alignment_fields_v1,
+    build_state_flow_f0_chain_alignment_contract_v1,
+    generate_and_write_state_flow_f0_chain_alignment_summary_v1,
+)
+from backend.services.flow_structure_gate_contract import (
+    attach_flow_structure_gate_fields_v1,
+    build_flow_structure_gate_contract_v1,
+    generate_and_write_flow_structure_gate_summary_v1,
+)
+from backend.services.aggregate_directional_flow_metrics_contract import (
+    attach_aggregate_directional_flow_metrics_fields_v1,
+    build_aggregate_directional_flow_metrics_contract_v1,
+    generate_and_write_aggregate_directional_flow_metrics_summary_v1,
+)
+from backend.services.retained_window_flow_calibration_contract import (
+    attach_retained_window_flow_calibration_fields_v1,
+    build_retained_window_flow_calibration_contract_v1,
+    generate_and_write_retained_window_flow_calibration_summary_v1,
+)
+from backend.services.flow_threshold_provisional_band_contract import (
+    attach_flow_threshold_provisional_band_fields_v1,
+    build_flow_threshold_provisional_band_contract_v1,
+    generate_and_write_flow_threshold_provisional_band_summary_v1,
+)
+from backend.services.exact_pilot_match_bonus_contract import (
+    attach_exact_pilot_match_bonus_fields_v1,
+    build_exact_pilot_match_bonus_contract_v1,
+    generate_and_write_exact_pilot_match_bonus_summary_v1,
+)
+from backend.services.flow_support_state_contract import (
+    attach_flow_support_state_fields_v1,
+    build_flow_support_state_contract_v1,
+    generate_and_write_flow_support_state_summary_v1,
+)
+from backend.services.flow_chain_shadow_comparison_contract import (
+    attach_flow_chain_shadow_comparison_fields_v1,
+    build_flow_chain_shadow_comparison_contract_v1,
+    generate_and_write_flow_chain_shadow_comparison_summary_v1,
+)
+from backend.services.flow_candidate_improvement_review_contract import (
+    attach_flow_candidate_improvement_review_fields_v1,
+    build_flow_candidate_improvement_review_contract_v1,
+    generate_and_write_flow_candidate_improvement_review_summary_v1,
+)
+from backend.services.nas_btc_hard_opposed_truth_audit import (
+    attach_nas_btc_hard_opposed_truth_audit_fields_v1,
+    build_nas_btc_hard_opposed_truth_audit_contract_v1,
+    generate_and_write_nas_btc_hard_opposed_truth_audit_summary_v1,
+)
+from backend.services.bounded_calibration_candidate_contract import (
+    attach_bounded_calibration_candidate_fields_v1,
+    build_bounded_calibration_candidate_contract_v1,
+    generate_and_write_bounded_calibration_candidate_summary_v1,
+)
+from backend.services.bounded_candidate_shadow_apply_contract import (
+    attach_bounded_candidate_shadow_apply_fields_v1,
+    build_bounded_candidate_shadow_apply_contract_v1,
+    generate_and_write_bounded_candidate_shadow_apply_summary_v1,
+)
+from backend.services.bounded_candidate_evaluation_dashboard_contract import (
+    attach_bounded_candidate_evaluation_dashboard_fields_v1,
+    build_bounded_candidate_evaluation_dashboard_contract_v1,
+    generate_and_write_bounded_candidate_evaluation_dashboard_summary_v1,
+)
+from backend.services.bounded_candidate_lifecycle_feedback_loop_contract import (
+    attach_bounded_candidate_lifecycle_feedback_loop_fields_v1,
+    build_bounded_candidate_lifecycle_feedback_loop_contract_v1,
+    generate_and_write_bounded_candidate_lifecycle_feedback_loop_summary_v1,
+)
+from backend.services.bounded_candidate_patch_memory_loop_contract import (
+    attach_recent_rollback_memory_fields_v1,
+    attach_bounded_candidate_patch_memory_loop_fields_v1,
+    build_bounded_candidate_patch_memory_loop_contract_v1,
+    generate_and_write_bounded_candidate_patch_memory_loop_summary_v1,
+)
+from backend.services.flow_shadow_display_surface import (
+    attach_flow_shadow_display_surface_fields_v1,
+    build_flow_shadow_display_surface_contract_v1,
+    generate_and_write_flow_shadow_display_surface_summary_v1,
+)
+from backend.services.nas_decomposition_validation import (
+    attach_nas_decomposition_validation_fields_v1,
+    build_nas_decomposition_validation_contract_v1,
+    generate_and_write_nas_decomposition_validation_summary_v1,
+)
+from backend.services.btc_decomposition_validation import (
+    attach_btc_decomposition_validation_fields_v1,
+    build_btc_decomposition_validation_contract_v1,
+    generate_and_write_btc_decomposition_validation_summary_v1,
+)
+from backend.services.state_slot_commonization_judge import (
+    build_state_slot_commonization_judge_contract_v1,
+    generate_and_write_state_slot_commonization_judge_summary_v1,
+)
+from backend.services.state_slot_execution_interface_bridge import (
+    attach_state_slot_execution_interface_bridge_fields_v1,
+    build_state_slot_execution_interface_bridge_contract_v1,
+    generate_and_write_state_slot_execution_interface_bridge_summary_v1,
+)
+from backend.services.state_slot_symbol_extension_surface import (
+    attach_state_slot_symbol_extension_surface_fields_v1,
+    build_state_slot_symbol_extension_surface_contract_v1,
+    generate_and_write_state_slot_symbol_extension_surface_summary_v1,
+)
+from backend.services.state_slot_position_lifecycle_policy import (
+    attach_state_slot_position_lifecycle_policy_fields_v1,
+    build_state_slot_position_lifecycle_policy_contract_v1,
+    generate_and_write_state_slot_position_lifecycle_policy_summary_v1,
+)
+from backend.services.execution_policy_shadow_audit import (
+    attach_execution_policy_shadow_audit_fields_v1,
+    build_execution_policy_shadow_audit_contract_v1,
+    generate_and_write_execution_policy_shadow_audit_summary_v1,
+)
+from backend.services.bounded_lifecycle_canary import (
+    attach_bounded_lifecycle_canary_fields_v1,
+    build_bounded_lifecycle_canary_contract_v1,
+    generate_and_write_bounded_lifecycle_canary_summary_v1,
+)
+from backend.services.state_strength_profile_contract import (
+    attach_state_strength_profile_fields_v1,
+    build_state_strength_profile_contract_v1,
+    generate_and_write_state_strength_summary_v1,
+)
+from backend.services.local_structure_profile_contract import (
+    attach_local_structure_profile_fields_v1,
+    build_local_structure_profile_contract_v1,
+    generate_and_write_local_structure_summary_v1,
+)
+from backend.services.runtime_readonly_surface import (
+    attach_runtime_readonly_surface_fields_v1,
+    build_runtime_readonly_surface_contract_v1,
+    generate_and_write_runtime_readonly_surface_summary_v1,
+)
+from backend.services.state_structure_dominance_profile import (
+    attach_state_structure_dominance_fields_v1,
+    build_state_structure_dominance_contract_v1,
+    generate_and_write_state_structure_dominance_summary_v1,
+)
+from backend.services.dominance_validation_profile import (
+    attach_dominance_validation_fields_v1,
+    build_dominance_validation_contract_v1,
+    generate_and_write_dominance_validation_summary_v1,
+)
+from backend.services.dominance_accuracy_shadow import (
+    attach_dominance_accuracy_shadow_fields_v1,
+    build_dominance_accuracy_shadow_contract_v1,
+    generate_and_write_dominance_accuracy_shadow_reports_v1,
+)
+from backend.services.symbol_specific_state_strength_calibration import (
+    attach_symbol_specific_state_strength_calibration_fields_v1,
+    build_symbol_specific_state_strength_calibration_contract_v1,
+    generate_and_write_symbol_specific_state_strength_calibration_summary_v1,
 )
 from backend.services.strategy_service import StrategyService
 from backend.app.trading_application_runner import run_trading_application
@@ -67,6 +352,307 @@ from backend.app.trading_application_reasoning import (
 
 logger = logging.getLogger(__name__)
 KST = ZoneInfo("Asia/Seoul")
+
+_MICRO_STRUCTURE_VERSION = "micro_structure_v1"
+_MICRO_REQUIRED_BAR_COLUMNS = ("open", "high", "low", "close")
+_MICRO_VOLUME_COLUMNS = ("real_volume", "tick_volume", "volume")
+_MICRO_GAP_OPEN_KEYS = (
+    "gap_anchor_open",
+    "session_open",
+    "session_open_price",
+    "current_session_open",
+    "day_open",
+)
+_MICRO_GAP_PREV_CLOSE_KEYS = (
+    "gap_anchor_previous_close",
+    "previous_session_close",
+    "session_previous_close",
+    "prev_session_close",
+)
+
+
+def _micro_to_float(value, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _micro_clamp01(value: float) -> float:
+    return max(0.0, min(1.0, float(value)))
+
+
+def _micro_safe_div(numerator: float, denominator: float, *, default: float = 0.0) -> float:
+    denom = abs(float(denominator))
+    if denom <= 1e-9:
+        return float(default)
+    return float(numerator) / denom
+
+
+def _micro_default_snapshot(
+    *,
+    lookback: int,
+    baseline_lookback: int,
+    data_state: str,
+    anchor_state: str,
+) -> dict:
+    return {
+        "version": _MICRO_STRUCTURE_VERSION,
+        "lookback_bars": int(lookback),
+        "baseline_lookback_bars": int(baseline_lookback),
+        "window_size": 0,
+        "data_state": str(data_state),
+        "anchor_state": str(anchor_state),
+        "body_size_pct_20": 0.0,
+        "upper_wick_ratio_20": 0.0,
+        "lower_wick_ratio_20": 0.0,
+        "doji_ratio_20": 0.0,
+        "same_color_run_current": 0,
+        "same_color_run_max_20": 0,
+        "bull_ratio_20": 0.0,
+        "bear_ratio_20": 0.0,
+        "direction_run_stats": {
+            "current": 0,
+            "max_20": 0,
+            "bull_ratio_20": 0.0,
+            "bear_ratio_20": 0.0,
+        },
+        "range_compression_ratio_20": 0.0,
+        "volume_source": "none",
+        "volume_burst_ratio_20": 0.0,
+        "volume_burst_decay_20": 0.0,
+        "swing_high_retest_count_20": 0,
+        "swing_low_retest_count_20": 0,
+        "gap_fill_progress": None,
+    }
+
+
+def _micro_series_sign(value: float) -> int:
+    if value > 1e-9:
+        return 1
+    if value < -1e-9:
+        return -1
+    return 0
+
+
+def _micro_run_stats(opens: pd.Series, closes: pd.Series) -> tuple[int, int, float, float]:
+    signs = [_micro_series_sign(float(close) - float(open_)) for open_, close in zip(opens.tolist(), closes.tolist())]
+    window_size = max(len(signs), 1)
+    bull_ratio = sum(1 for sign in signs if sign > 0) / window_size
+    bear_ratio = sum(1 for sign in signs if sign < 0) / window_size
+
+    current_run = 0
+    current_sign = signs[-1] if signs else 0
+    if current_sign != 0:
+        for sign in reversed(signs):
+            if sign == current_sign:
+                current_run += 1
+            else:
+                break
+
+    max_run = 0
+    active_sign = 0
+    active_len = 0
+    for sign in signs:
+        if sign == 0:
+            active_sign = 0
+            active_len = 0
+            continue
+        if sign == active_sign:
+            active_len += 1
+        else:
+            active_sign = sign
+            active_len = 1
+        max_run = max(max_run, active_len)
+
+    return int(current_run), int(max_run), float(bull_ratio), float(bear_ratio)
+
+
+def _micro_select_volume_series(df: pd.DataFrame) -> tuple[pd.Series, str]:
+    for column in _MICRO_VOLUME_COLUMNS:
+        if column not in df.columns:
+            continue
+        series = pd.to_numeric(df[column], errors="coerce").fillna(0.0)
+        if float(series.abs().sum()) > 0.0:
+            return series.astype(float), str(column)
+    return pd.Series([0.0] * len(df), index=df.index, dtype=float), "none"
+
+
+def _micro_retest_count(series: pd.Series, *, tolerance: float, high_side: bool) -> int:
+    if series.empty:
+        return 0
+    pivot = float(series.max() if high_side else series.min())
+    hits = int(sum(1 for value in series.tolist() if abs(float(value) - pivot) <= tolerance))
+    return max(0, hits - 1)
+
+
+def _micro_gap_fill_progress(*, current_price: float, gap_open: float, previous_close: float) -> tuple[float | None, str]:
+    gap_size = float(gap_open) - float(previous_close)
+    if abs(gap_size) <= 1e-9:
+        return 1.0, "NO_GAP"
+    if gap_size > 0.0:
+        progress = _micro_safe_div(float(gap_open) - float(current_price), float(gap_open) - float(previous_close), default=0.0)
+    else:
+        progress = _micro_safe_div(float(current_price) - float(gap_open), float(previous_close) - float(gap_open), default=0.0)
+    return _micro_clamp01(progress), "READY"
+
+
+def _collect_owned_position_counts(positions, *, magic_number: int) -> tuple[dict[str, int], int, int]:
+    counts_by_symbol: dict[str, int] = {}
+    total_open_positions = 0
+    owned_open_positions = 0
+    for raw_position in list(positions or []):
+        total_open_positions += 1
+        try:
+            magic = int(getattr(raw_position, "magic", 0) or 0)
+        except Exception:
+            magic = 0
+        if magic != int(magic_number):
+            continue
+        owned_open_positions += 1
+        symbol = str(getattr(raw_position, "symbol", "") or "").upper().strip()
+        if symbol:
+            counts_by_symbol[symbol] = int(counts_by_symbol.get(symbol, 0) or 0) + 1
+    return counts_by_symbol, int(total_open_positions), int(owned_open_positions)
+
+
+def _normalize_runtime_signal_position_counts(
+    latest_signal_by_symbol: dict[str, dict] | None,
+    *,
+    positions,
+    magic_number: int,
+) -> tuple[dict[str, dict], dict[str, int], int, int]:
+    counts_by_symbol, total_open_positions, owned_open_positions = _collect_owned_position_counts(
+        positions,
+        magic_number=int(magic_number),
+    )
+    normalized_rows: dict[str, dict] = {}
+    for symbol, raw_row in dict(latest_signal_by_symbol or {}).items():
+        if not isinstance(raw_row, dict):
+            continue
+        symbol_key = str(symbol or "").upper().strip()
+        normalized_row = dict(raw_row)
+        normalized_row["my_position_count"] = int(counts_by_symbol.get(symbol_key, 0) or 0)
+        normalized_rows[str(symbol)] = normalized_row
+    return normalized_rows, counts_by_symbol, total_open_positions, owned_open_positions
+
+
+_RUNTIME_SIGNAL_DOWNSTREAM_DERIVED_PREFIXES = (
+    "directional_continuation_accuracy_",
+    "canonical_",
+    "session_bias_",
+    "state_strength_",
+    "local_structure_",
+    "few_candle_",
+    "consumer_veto_",
+    "runtime_readonly_surface_",
+    "state_structure_dominance_",
+    "dominance_",
+    "symbol_specific_state_strength_",
+    "symbol_state_strength_",
+    "xau_",
+    "nas_",
+    "btc_",
+    "state_slot_execution_interface_bridge_",
+    "state_slot_symbol_extension_",
+    "common_state_",
+    "state_slot_position_lifecycle_policy_",
+    "execution_policy_shadow_audit_",
+    "bounded_lifecycle_canary_",
+    "xau_refined_gate_timebox_audit_",
+    "state_flow_f0_chain_alignment_",
+    "flow_structure_gate_",
+    "aggregate_",
+    "retained_window_",
+    "flow_threshold_",
+    "provisional_flow_",
+    "boosted_provisional_",
+    "exact_pilot_match_",
+    "pilot_match_bonus_",
+    "flow_support_",
+    "flow_chain_shadow_",
+    "flow_candidate_",
+    "nas_btc_hard_opposed_truth_audit_",
+    "recent_rollback_memory_",
+    "bounded_calibration_candidate_",
+    "bounded_candidate_",
+    "flow_shadow_",
+    "flow_persistence_",
+    "flow_min_",
+)
+
+_RUNTIME_SIGNAL_DOWNSTREAM_DERIVED_EXACT_KEYS = {
+    "breakout_hold_quality_v1",
+    "body_drive_state_v1",
+    "local_continuation_discount_v1",
+    "would_override_caution_v1",
+    "common_vocabulary_compatibility_v1",
+    "state_slot_bridge_state_v1",
+    "bridge_source_slot_v1",
+    "entry_bias_v1",
+    "hold_bias_v1",
+    "add_bias_v1",
+    "reduce_bias_v1",
+    "exit_bias_v1",
+    "state_slot_execution_bridge_reason_summary_v1",
+    "state_slot_lifecycle_policy_state_v1",
+    "state_slot_execution_policy_source_v1",
+    "entry_policy_v1",
+    "hold_policy_v1",
+    "add_policy_v1",
+    "reduce_policy_v1",
+    "exit_policy_v1",
+    "state_slot_lifecycle_policy_reason_summary_v1",
+    "lifecycle_policy_alignment_state_v1",
+    "entry_delay_conflict_flag_v1",
+    "hold_support_alignment_v1",
+    "reduce_exit_pressure_alignment_v1",
+    "execution_policy_shadow_error_type_v1",
+    "execution_policy_shadow_reason_summary_v1",
+}
+
+
+def _reset_runtime_signal_downstream_derived_fields(
+    rows_by_symbol: dict[str, dict] | None,
+) -> dict[str, dict]:
+    normalized_rows: dict[str, dict] = {}
+    for symbol, raw_row in dict(rows_by_symbol or {}).items():
+        if not isinstance(raw_row, dict):
+            continue
+        row = dict(raw_row)
+        stale_keys = [
+            str(key)
+            for key in row.keys()
+            if str(key) in _RUNTIME_SIGNAL_DOWNSTREAM_DERIVED_EXACT_KEYS
+            or str(key).startswith(_RUNTIME_SIGNAL_DOWNSTREAM_DERIVED_PREFIXES)
+        ]
+        for key in stale_keys:
+            row.pop(key, None)
+        normalized_rows[str(symbol)] = row
+    return normalized_rows
+
+
+def _runtime_signal_wiring_audit_artifact_write_allowed(
+    rows_by_symbol: dict[str, dict] | None,
+    symbols,
+) -> bool:
+    expected_symbols: set[str] = set()
+    if isinstance(symbols, dict):
+        raw_symbols = symbols.values()
+    else:
+        raw_symbols = symbols or []
+    for raw_symbol in list(raw_symbols or []):
+        symbol = str(raw_symbol or "").upper().strip()
+        if symbol:
+            expected_symbols.add(symbol)
+    present_symbols = {
+        str(symbol or "").upper().strip()
+        for symbol, row in dict(rows_by_symbol or {}).items()
+        if str(symbol or "").strip() and isinstance(row, dict) and row
+    }
+    if not expected_symbols:
+        return bool(present_symbols)
+    return expected_symbols.issubset(present_symbols)
 
 
 class TradingApplication:
@@ -110,13 +696,18 @@ class TradingApplication:
         self.notifier = notifier_client or TelegramNotifierAdapter()
         self.observability = observability or FileObservabilityAdapter()
         self.last_entry_time = {}
+        self.pending_reverse_by_symbol = {}
+        self.runtime_reverse_alert_state_by_symbol = {}
+        self.runtime_wait_alert_state_by_symbol = {}
         self.latest_regime_by_symbol = {}
         self.latest_signal_by_symbol = {}
+        self._htf_trend_cache = HtfTrendCache(broker=self.broker)
+        self._previous_box_calculator = PreviousBoxCalculator()
         self.project_root = Path(__file__).resolve().parents[2]
         self.ai_model_path = self.project_root / "models" / "ai_models.joblib"
         self.ai_model_mtime = None
         self.ai_last_check_at = 0.0
-        self.ai_runtime = self._load_ai_runtime(self.ai_model_path)
+        self.ai_runtime = self._load_ai_runtime(self.ai_model_path) if bool(getattr(Config, "AI_RUNTIME_ENABLED", True)) else None
         self.semantic_model_dir = self.project_root / "models" / "semantic_v1"
         self.semantic_model_signature = tuple()
         self.semantic_last_check_at = 0.0
@@ -178,7 +769,65 @@ class TradingApplication:
         self.last_order_comment_by_symbol = {}
         self.order_block_until_by_symbol = {}
         self.order_block_reason_by_symbol = {}
+        self.runtime_recycle_state = build_runtime_recycle_state(
+            mode=getattr(Config, "RUNTIME_RECYCLE_MODE", "log_only"),
+            interval_sec=int(getattr(Config, "RUNTIME_RECYCLE_INTERVAL_SEC", 3600) or 0),
+            flat_grace_sec=int(getattr(Config, "RUNTIME_RECYCLE_FLAT_GRACE_SEC", 30) or 0),
+            post_order_grace_sec=int(getattr(Config, "RUNTIME_RECYCLE_POST_ORDER_GRACE_SEC", 90) or 0),
+        )
+        self.runtime_recent_summary_cache = {}
+        self.runtime_recent_default_window_cache = {}
+        self.runtime_recycle_health_state = build_runtime_recycle_health_v1(
+            recent_runtime_summary={},
+            default_recent_window={},
+            latest_signal_by_symbol={},
+            signal_stale_sec=int(getattr(Config, "RUNTIME_RECYCLE_SIGNAL_STALE_SEC", 900) or 900),
+        )
+        self.runtime_recycle_drift_state = build_runtime_recycle_drift_v1(
+            recent_runtime_summary={},
+            default_recent_window={},
+            latest_signal_by_symbol={},
+            min_rows=int(getattr(Config, "RUNTIME_RECYCLE_DRIFT_MIN_ROWS", 40) or 40),
+            stage_dominance_threshold=float(getattr(Config, "RUNTIME_RECYCLE_DRIFT_STAGE_DOMINANCE", 0.85) or 0.85),
+            block_dominance_threshold=float(getattr(Config, "RUNTIME_RECYCLE_DRIFT_BLOCK_DOMINANCE", 0.85) or 0.85),
+            decision_dominance_threshold=float(getattr(Config, "RUNTIME_RECYCLE_DRIFT_DECISION_DOMINANCE", 0.90) or 0.90),
+            min_signal_count=int(getattr(Config, "RUNTIME_RECYCLE_DRIFT_SIGNAL_MIN_COUNT", 2) or 2),
+        )
+        self.state25_active_candidate_state_path = (
+            self.project_root
+            / "models"
+            / "teacher_pattern_state25_candidates"
+            / "active_candidate_state.json"
+        )
+        self.state25_candidate_runtime_state = load_state25_candidate_runtime_state(
+            self.state25_active_candidate_state_path
+        )
         self.ai_entry_traces = []
+        self.directional_continuation_accuracy_report_v1 = {}
+        self.runtime_signal_wiring_audit_report_v1 = {}
+        self.ca2_session_split_report_v1 = {}
+        self.should_have_done_candidate_report_v1 = {}
+        self.canonical_surface_report_v1 = {}
+        self.session_aware_annotation_accuracy_report_v1 = {}
+        self.session_bias_shadow_report_v1 = {}
+        self.symbol_specific_state_strength_calibration_report_v1 = {}
+        self.state_flow_f0_chain_alignment_report_v1 = {}
+        self.flow_structure_gate_report_v1 = {}
+        self.aggregate_directional_flow_metrics_report_v1 = {}
+        self.retained_window_flow_calibration_report_v1 = {}
+        self.flow_threshold_provisional_band_report_v1 = {}
+        self.exact_pilot_match_bonus_report_v1 = {}
+        self.flow_support_state_report_v1 = {}
+        self.flow_chain_shadow_comparison_report_v1 = {}
+        self.flow_candidate_improvement_review_report_v1 = {}
+        self.nas_btc_hard_opposed_truth_audit_report_v1 = {}
+        self.bounded_calibration_candidate_report_v1 = {}
+        self.bounded_candidate_shadow_apply_report_v1 = {}
+        self.bounded_candidate_evaluation_dashboard_report_v1 = {}
+        self.bounded_candidate_lifecycle_feedback_loop_report_v1 = {}
+        self.bounded_candidate_patch_memory_loop_report_v1 = {}
+        self.flow_shadow_display_surface_report_v1 = {}
+        self.directional_continuation_candidates_cache_v1 = []
         self.loop_debug_state = {}
         if self.ai_runtime and self.ai_model_path.exists():
             self.ai_model_mtime = self.ai_model_path.stat().st_mtime
@@ -202,16 +851,191 @@ class TradingApplication:
         except Exception:
             return
 
-    def format_entry_message(self, symbol, action, score, price, lot, reasons, pos_count, max_pos):
-        return self.notifier.format_entry_message(symbol, action, score, price, lot, reasons, pos_count, max_pos)
+    def format_entry_message(self, symbol, action, score, price, lot, reasons, pos_count, max_pos, row: dict | None = None):
+        return self.notifier.format_entry_message(
+            symbol,
+            action,
+            score,
+            price,
+            lot,
+            reasons,
+            pos_count,
+            max_pos,
+            row=row,
+        )
 
-    def format_exit_message(self, symbol, profit, points, entry_price, exit_price):
-        return self.notifier.format_exit_message(symbol, profit, points, entry_price, exit_price)
+    def format_exit_message(
+        self,
+        symbol,
+        profit,
+        points,
+        entry_price,
+        exit_price,
+        exit_reason: str | None = None,
+        review_context: dict | None = None,
+    ):
+        return self.notifier.format_exit_message(
+            symbol,
+            profit,
+            points,
+            entry_price,
+            exit_price,
+            exit_reason=exit_reason,
+            review_context=review_context,
+        )
+
+    def format_wait_message(
+        self,
+        symbol,
+        action,
+        price,
+        pos_count,
+        max_pos,
+        reason: str | None = None,
+        row: dict | None = None,
+    ):
+        return self.notifier.format_wait_message(
+            symbol,
+            action,
+            price,
+            pos_count,
+            max_pos,
+            reason=reason,
+            row=row,
+        )
+
+    def build_wait_message_signature(
+        self,
+        symbol,
+        action,
+        reason: str | None = None,
+        row: dict | None = None,
+    ) -> str:
+        return self.notifier.build_wait_message_signature(
+            symbol,
+            action,
+            reason=reason,
+            row=row,
+        )
+
+    def format_reverse_message(
+        self,
+        symbol,
+        action,
+        score,
+        price,
+        reasons,
+        pos_count,
+        max_pos,
+        pending: bool = False,
+        row: dict | None = None,
+    ):
+        return self.notifier.format_reverse_message(
+            symbol,
+            action,
+            score,
+            price,
+            reasons,
+            pos_count,
+            max_pos,
+            pending=pending,
+            row=row,
+        )
+
+    def build_reverse_message_signature(
+        self,
+        symbol,
+        action,
+        score,
+        reasons,
+        pending: bool = False,
+    ) -> str:
+        return self.notifier.build_reverse_message_signature(
+            symbol,
+            action,
+            score,
+            reasons,
+            pending=pending,
+        )
+
+    def should_notify_wait_message(self, symbol: str, signature: str) -> bool:
+        signature_text = str(signature or "").strip()
+        if not signature_text:
+            return False
+        now_ts = float(time.time())
+        cooldown_sec = float(getattr(Config, "RUNTIME_WAIT_ALERT_COOLDOWN_SEC", 180.0) or 180.0)
+        symbol_key = str(symbol or "").upper().strip()
+        state = {}
+        if isinstance(self.runtime_wait_alert_state_by_symbol, dict):
+            state = dict(self.runtime_wait_alert_state_by_symbol.get(symbol_key, {}) or {})
+        last_signature = str(state.get("signature", "") or "")
+        last_sent_ts = float(state.get("last_sent_ts", 0.0) or 0.0)
+        if last_signature == signature_text and (now_ts - last_sent_ts) < cooldown_sec:
+            return False
+        if not isinstance(self.runtime_wait_alert_state_by_symbol, dict):
+            self.runtime_wait_alert_state_by_symbol = {}
+        self.runtime_wait_alert_state_by_symbol[symbol_key] = {
+            "signature": signature_text,
+            "last_sent_ts": float(now_ts),
+        }
+        return True
+
+    def should_notify_reverse_message(self, symbol: str, signature: str) -> bool:
+        signature_text = str(signature or "").strip()
+        if not signature_text:
+            return False
+        now_ts = float(time.time())
+        cooldown_sec = float(getattr(Config, "RUNTIME_REVERSE_ALERT_COOLDOWN_SEC", 120.0) or 120.0)
+        symbol_key = str(symbol or "").upper().strip()
+        state = {}
+        if isinstance(self.runtime_reverse_alert_state_by_symbol, dict):
+            state = dict(self.runtime_reverse_alert_state_by_symbol.get(symbol_key, {}) or {})
+        last_signature = str(state.get("signature", "") or "")
+        last_sent_ts = float(state.get("last_sent_ts", 0.0) or 0.0)
+        if last_signature == signature_text and (now_ts - last_sent_ts) < cooldown_sec:
+            return False
+        if not isinstance(self.runtime_reverse_alert_state_by_symbol, dict):
+            self.runtime_reverse_alert_state_by_symbol = {}
+        self.runtime_reverse_alert_state_by_symbol[symbol_key] = {
+            "signature": signature_text,
+            "last_sent_ts": float(now_ts),
+        }
+        return True
 
     def _append_ai_entry_trace(self, trace: dict):
         try:
             if not isinstance(trace, dict):
                 return
+            trace = self._normalize_execution_diff_surface_fields(trace)
+            nested_execution_diff = trace.get("execution_action_diff_v1")
+            if not isinstance(nested_execution_diff, dict):
+                original_side = str(trace.get("execution_diff_original_action_side", "") or "").strip().upper()
+                guarded_side = str(trace.get("execution_diff_guarded_action_side", "") or "").strip().upper()
+                promoted_side = str(trace.get("execution_diff_promoted_action_side", "") or "").strip().upper()
+                final_side = str(trace.get("execution_diff_final_action_side", "") or "").strip().upper()
+                changed = bool(trace.get("execution_diff_changed", False))
+                if any((original_side, guarded_side, promoted_side, final_side, changed)):
+                    if not original_side:
+                        original_side = "NONE"
+                    if not guarded_side:
+                        guarded_side = "SKIP" if bool(trace.get("execution_diff_guard_applied", False)) else original_side
+                    if not promoted_side:
+                        promoted_side = "NONE"
+                    if not final_side:
+                        final_side = "SKIP" if changed else "NONE"
+                    nested_execution_diff = {
+                        "contract_version": "execution_action_diff_v1",
+                        "original_action_side": original_side,
+                        "guarded_action_side": guarded_side,
+                        "promoted_action_side": promoted_side,
+                        "final_action_side": final_side,
+                        "action_changed": changed,
+                        "guard_applied": bool(trace.get("execution_diff_guard_applied", False)),
+                        "promotion_active": bool(trace.get("execution_diff_promotion_active", False)),
+                        "action_change_reason_keys": list(trace.get("execution_diff_reason_keys", []) or []),
+                    }
+                    trace["execution_action_diff_v1"] = dict(nested_execution_diff)
+                    trace = self._normalize_execution_diff_surface_fields(trace)
             row = {
                 "time": datetime.now(KST).isoformat(timespec="seconds"),
                 "symbol": str(trace.get("symbol", "")),
@@ -254,12 +1078,74 @@ class TradingApplication:
                 "entry_quality": (
                     None if trace.get("entry_quality") is None else float(trace.get("entry_quality"))
                 ),
+                "execution_diff_original_action_side": str(
+                    trace.get("execution_diff_original_action_side", "")
+                ),
+                "execution_diff_guarded_action_side": str(
+                    trace.get("execution_diff_guarded_action_side", "")
+                ),
+                "execution_diff_promoted_action_side": str(
+                    trace.get("execution_diff_promoted_action_side", "")
+                ),
+                "execution_diff_final_action_side": str(
+                    trace.get("execution_diff_final_action_side", "")
+                ),
+                "execution_diff_changed": bool(trace.get("execution_diff_changed", False)),
+                "execution_diff_guard_applied": bool(
+                    trace.get("execution_diff_guard_applied", False)
+                ),
+                "execution_diff_promotion_active": bool(
+                    trace.get("execution_diff_promotion_active", False)
+                ),
+                "execution_diff_reason_keys": list(
+                    trace.get("execution_diff_reason_keys", []) or []
+                ),
+                "execution_diff_guard_reason_summary": str(
+                    trace.get("execution_diff_guard_reason_summary", "")
+                ),
+                "execution_diff_promotion_reason": str(
+                    trace.get("execution_diff_promotion_reason", "")
+                ),
+                "execution_diff_promotion_suppressed_reason": str(
+                    trace.get("execution_diff_promotion_suppressed_reason", "")
+                ),
             }
+            if isinstance(trace.get("execution_action_diff_v1"), dict) and trace.get("execution_action_diff_v1"):
+                row["execution_action_diff_v1"] = dict(trace.get("execution_action_diff_v1", {}) or {})
             self.ai_entry_traces.append(row)
             if len(self.ai_entry_traces) > 80:
                 self.ai_entry_traces = self.ai_entry_traces[-80:]
         except Exception:
             pass
+
+    def _export_pending_reverse_by_symbol(self) -> dict[str, dict]:
+        exported: dict[str, dict] = {}
+        store = getattr(self, "pending_reverse_by_symbol", {})
+        if not isinstance(store, dict):
+            return exported
+        now_ts = float(time.time())
+        for raw_symbol, raw_payload in store.items():
+            payload = dict(raw_payload or {}) if isinstance(raw_payload, dict) else {}
+            symbol = str(raw_symbol or "").upper().strip()
+            action = str(payload.get("action", "") or "").upper().strip()
+            if not symbol or action not in {"BUY", "SELL"}:
+                continue
+            created_at = float(payload.get("created_at", 0.0) or 0.0)
+            expires_at = float(payload.get("expires_at", 0.0) or 0.0)
+            reasons = [
+                str(reason).strip()
+                for reason in list(payload.get("reasons", []) or [])
+                if str(reason).strip()
+            ]
+            exported[symbol] = {
+                "action": action,
+                "score": float(payload.get("score", 0.0) or 0.0),
+                "reasons": reasons[:3],
+                "reason_count": len(reasons),
+                "age_sec": max(0, int(now_ts - created_at)) if created_at > 0.0 else 0,
+                "expires_in_sec": max(0, int(expires_at - now_ts)) if expires_at > 0.0 else 0,
+            }
+        return exported
 
     # Public bridge for services to avoid depending on private methods.
     def append_ai_entry_trace(self, trace: dict):
@@ -267,6 +1153,9 @@ class TradingApplication:
 
     @staticmethod
     def _load_ai_runtime(model_path: Path):
+        if not bool(getattr(Config, "AI_RUNTIME_ENABLED", True)):
+            logger.info("AI runtime disabled by config; skipping model load: %s", model_path)
+            return None
         if not model_path.exists():
             logger.info("AI model not found: %s", model_path)
             return None
@@ -1714,6 +2603,11 @@ class TradingApplication:
             return
         self.ai_last_check_at = now
 
+        if not bool(getattr(Config, "AI_RUNTIME_ENABLED", True)):
+            self.ai_runtime = None
+            self.ai_model_mtime = None
+            return
+
         if not self.ai_model_path.exists():
             self.ai_runtime = None
             self.ai_model_mtime = None
@@ -1982,6 +2876,149 @@ class TradingApplication:
     def entry_indicator_snapshot(symbol, scorer, df_all):
         return TradingApplication._entry_indicator_snapshot(symbol, scorer, df_all)
 
+    @staticmethod
+    def build_micro_structure_v1_from_ohlcv(
+        df,
+        *,
+        metadata=None,
+        lookback: int = 20,
+        baseline_lookback: int = 50,
+        doji_body_ratio_threshold: float = 0.10,
+        retest_tolerance_ratio: float = 0.15,
+    ):
+        snapshot = _micro_default_snapshot(
+            lookback=lookback,
+            baseline_lookback=baseline_lookback,
+            data_state="NO_DATA",
+            anchor_state="UNAVAILABLE",
+        )
+        if df is None or len(df) == 0:
+            return snapshot
+
+        missing_columns = [column for column in _MICRO_REQUIRED_BAR_COLUMNS if column not in df.columns]
+        if missing_columns:
+            snapshot["data_state"] = "MISSING_COLUMNS"
+            return snapshot
+
+        md = dict(metadata or {})
+        window_size = min(len(df), max(int(lookback), 1))
+        snapshot["window_size"] = int(window_size)
+        snapshot["data_state"] = "READY" if len(df) >= int(lookback) else "INSUFFICIENT_BARS"
+        recent = df.tail(window_size).copy()
+
+        opens = pd.to_numeric(recent["open"], errors="coerce").fillna(0.0).astype(float)
+        highs = pd.to_numeric(recent["high"], errors="coerce").fillna(0.0).astype(float)
+        lows = pd.to_numeric(recent["low"], errors="coerce").fillna(0.0).astype(float)
+        closes = pd.to_numeric(recent["close"], errors="coerce").fillna(0.0).astype(float)
+
+        total_ranges = (highs - lows).clip(lower=0.0)
+        safe_ranges = total_ranges.mask(total_ranges <= 1e-9, 1e-9)
+        bodies = (closes - opens).abs()
+        upper_wicks = (highs - pd.concat([opens, closes], axis=1).max(axis=1)).clip(lower=0.0)
+        lower_wicks = (pd.concat([opens, closes], axis=1).min(axis=1) - lows).clip(lower=0.0)
+        close_scale = closes.abs().mask(closes.abs() <= 1e-9, 1e-9)
+
+        body_size_pct_20 = float((bodies / close_scale).mean())
+        upper_wick_ratio_20 = float((upper_wicks / safe_ranges).mean())
+        lower_wick_ratio_20 = float((lower_wicks / safe_ranges).mean())
+        doji_ratio_20 = float(((bodies / safe_ranges) <= float(doji_body_ratio_threshold)).mean())
+
+        current_run, max_run, bull_ratio, bear_ratio = _micro_run_stats(opens, closes)
+
+        if len(df) >= int(window_size) * 2:
+            baseline = df.iloc[-(int(window_size) * 2): -int(window_size)].copy()
+        else:
+            baseline = df.tail(min(len(df), max(int(baseline_lookback), int(window_size)))).copy()
+        base_highs = pd.to_numeric(baseline["high"], errors="coerce").fillna(0.0).astype(float)
+        base_lows = pd.to_numeric(baseline["low"], errors="coerce").fillna(0.0).astype(float)
+        recent_span = float(highs.max() - lows.min()) if not highs.empty else 0.0
+        baseline_span = float(base_highs.max() - base_lows.min()) if not base_highs.empty else 0.0
+        if baseline_span <= 1e-9:
+            baseline_span = _micro_to_float(md.get("recent_range_mean"), recent_span)
+        range_compression_ratio_20 = _micro_clamp01(1.0 - _micro_safe_div(recent_span, baseline_span, default=1.0))
+
+        volume_series, volume_source = _micro_select_volume_series(recent)
+        volume_baseline = float(volume_series.mean()) if not volume_series.empty else 0.0
+        peak_volume = float(volume_series.max()) if not volume_series.empty else 0.0
+        current_volume = float(volume_series.iloc[-1]) if not volume_series.empty else 0.0
+        volume_burst_ratio_20 = _micro_safe_div(peak_volume, volume_baseline, default=0.0)
+        volume_burst_decay_20 = 0.0
+        if peak_volume > max(volume_baseline, 1e-9):
+            volume_burst_decay_20 = _micro_clamp01(1.0 - _micro_safe_div(current_volume, peak_volume, default=1.0))
+
+        mean_range = float(total_ranges.mean()) if not total_ranges.empty else 0.0
+        median_close = float(closes.abs().median()) if not closes.empty else 0.0
+        tolerance = max(mean_range * float(retest_tolerance_ratio), median_close * 0.0005, 1e-9)
+        swing_high_retest_count_20 = _micro_retest_count(highs, tolerance=tolerance, high_side=True)
+        swing_low_retest_count_20 = _micro_retest_count(lows, tolerance=tolerance, high_side=False)
+
+        gap_open = None
+        previous_session_close = None
+        for key in _MICRO_GAP_OPEN_KEYS:
+            if md.get(key) is not None:
+                gap_open = _micro_to_float(md.get(key))
+                break
+        for key in _MICRO_GAP_PREV_CLOSE_KEYS:
+            if md.get(key) is not None:
+                previous_session_close = _micro_to_float(md.get(key))
+                break
+
+        gap_fill_progress = None
+        anchor_state = "MISSING_GAP_ANCHOR"
+        current_price = float(closes.iloc[-1]) if not closes.empty else 0.0
+        if gap_open is not None and previous_session_close is not None:
+            gap_fill_progress, anchor_state = _micro_gap_fill_progress(
+                current_price=current_price,
+                gap_open=gap_open,
+                previous_close=previous_session_close,
+            )
+
+        snapshot.update(
+            {
+                "anchor_state": str(anchor_state),
+                "body_size_pct_20": float(body_size_pct_20),
+                "upper_wick_ratio_20": float(upper_wick_ratio_20),
+                "lower_wick_ratio_20": float(lower_wick_ratio_20),
+                "doji_ratio_20": float(doji_ratio_20),
+                "same_color_run_current": int(current_run),
+                "same_color_run_max_20": int(max_run),
+                "bull_ratio_20": float(bull_ratio),
+                "bear_ratio_20": float(bear_ratio),
+                "direction_run_stats": {
+                    "current": int(current_run),
+                    "max_20": int(max_run),
+                    "bull_ratio_20": float(bull_ratio),
+                    "bear_ratio_20": float(bear_ratio),
+                },
+                "range_compression_ratio_20": float(range_compression_ratio_20),
+                "volume_source": str(volume_source),
+                "volume_burst_ratio_20": float(volume_burst_ratio_20),
+                "volume_burst_decay_20": float(volume_burst_decay_20),
+                "swing_high_retest_count_20": int(swing_high_retest_count_20),
+                "swing_low_retest_count_20": int(swing_low_retest_count_20),
+                "gap_fill_progress": None if gap_fill_progress is None else float(gap_fill_progress),
+            }
+        )
+        return snapshot
+
+    @staticmethod
+    def build_micro_structure_v1(df, *, metadata=None, lookback: int = 20, baseline_lookback: int = 50):
+        return TradingApplication.build_micro_structure_v1_from_ohlcv(
+            df,
+            metadata=metadata,
+            lookback=lookback,
+            baseline_lookback=baseline_lookback,
+        )
+
+    def fetch_micro_structure_v1(self, symbol, *, metadata=None, count: int = 50):
+        df = self.fetch_data(symbol, TIMEFRAME_M1, count=max(int(count), 20))
+        return self.build_micro_structure_v1_from_ohlcv(
+            df,
+            metadata=metadata,
+            lookback=20,
+            baseline_lookback=max(int(count), 50),
+        )
+
     def fetch_data(self, symbol, tf_const, count=300):
         for _ in range(3):
             rates = self.broker.copy_rates_from_pos(symbol, tf_const, 0, count)
@@ -1991,6 +3028,384 @@ class TradingApplication:
                 return df
             time.sleep(0.1)
         return None
+
+    @staticmethod
+    def _resolve_runtime_context_current_price(runtime_row: dict | None) -> float | None:
+        row = dict(runtime_row or {})
+        for key in (
+            "current_price",
+            "live_price",
+            "price",
+            "close",
+            "current_close",
+            "last_price",
+            "entry_price",
+        ):
+            try:
+                value = row.get(key)
+                if value in (None, ""):
+                    continue
+                return float(value)
+            except Exception:
+                continue
+        return None
+
+    @staticmethod
+    def _extract_runtime_share_state(runtime_row: dict | None) -> dict:
+        row = dict(runtime_row or {})
+        share_state: dict[str, object] = {}
+        for key in (
+            "cluster_share_global",
+            "cluster_share_symbol",
+            "cluster_share_symbol_band",
+            "share_context_label_ko",
+        ):
+            value = row.get(key)
+            if value not in (None, ""):
+                share_state[str(key)] = value
+        return share_state
+
+    def _build_runtime_market_price_snapshot(self, symbol: str) -> dict[str, float]:
+        snapshot: dict[str, float] = {}
+        symbol_key = str(symbol or "").upper().strip()
+        if not symbol_key:
+            return snapshot
+        if hasattr(self.broker, "copy_rates_from_pos"):
+            try:
+                frame_m1 = self.fetch_data(symbol_key, TIMEFRAME_M1, count=3)
+            except Exception:
+                frame_m1 = None
+            if frame_m1 is not None and not frame_m1.empty and "close" in frame_m1.columns:
+                try:
+                    snapshot["current_close"] = float(frame_m1["close"].iloc[-1])
+                except Exception:
+                    pass
+        if hasattr(self.broker, "symbol_info_tick"):
+            try:
+                tick = self.broker.symbol_info_tick(symbol_key)
+            except Exception:
+                tick = None
+            if tick:
+                try:
+                    bid = float(getattr(tick, "bid", 0.0) or 0.0)
+                except Exception:
+                    bid = 0.0
+                try:
+                    ask = float(getattr(tick, "ask", 0.0) or 0.0)
+                except Exception:
+                    ask = 0.0
+                if bid > 0.0:
+                    snapshot["bid"] = float(bid)
+                if ask > 0.0:
+                    snapshot["ask"] = float(ask)
+                if ask > 0.0 and bid > 0.0:
+                    snapshot["live_price"] = float((ask + bid) / 2.0)
+                elif ask > 0.0:
+                    snapshot["live_price"] = float(ask)
+                elif bid > 0.0:
+                    snapshot["live_price"] = float(bid)
+        return snapshot
+
+    def _attach_directional_continuation_accuracy_surface_fields(
+        self,
+        rows: dict[str, dict] | None,
+        report: dict | None,
+    ) -> dict[str, dict]:
+        enriched_rows: dict[str, dict] = {}
+        report_map = dict(report or {})
+        for raw_symbol, raw_row in dict(rows or {}).items():
+            row = dict(raw_row or {}) if isinstance(raw_row, dict) else {}
+            symbol = str(raw_symbol or row.get("symbol", "") or "").upper().strip()
+            direction = str(row.get("directional_continuation_overlay_direction", "") or "").upper().strip()
+            if symbol and direction in {"UP", "DOWN"}:
+                row.update(
+                    build_directional_continuation_accuracy_flat_fields_v1(
+                        report_map,
+                        symbol=symbol,
+                        direction=direction,
+                    )
+                )
+            row = self._normalize_execution_diff_surface_fields(row)
+            enriched_rows[symbol or str(raw_symbol)] = row
+        return enriched_rows
+
+    def _attach_single_directional_continuation_accuracy_surface_fields(
+        self,
+        row: dict | None,
+        report: dict | None = None,
+    ) -> dict:
+        payload = dict(row or {})
+        symbol = str(payload.get("symbol", "") or "").upper().strip()
+        direction = str(payload.get("directional_continuation_overlay_direction", "") or "").upper().strip()
+        report_map = dict(report or getattr(self, "directional_continuation_accuracy_report_v1", {}) or {})
+        if symbol and direction in {"UP", "DOWN"} and report_map:
+            payload.update(
+                build_directional_continuation_accuracy_flat_fields_v1(
+                    report_map,
+                    symbol=symbol,
+                    direction=direction,
+                )
+            )
+        return payload
+
+    @staticmethod
+    def _normalize_execution_diff_surface_fields(row: dict | None) -> dict:
+        payload = dict(row or {})
+        nested = payload.get("execution_action_diff_v1")
+        if not isinstance(nested, dict):
+            return payload
+        def _missing(value):
+            return value is None or value == "" or value == [] or value == {}
+        field_map = {
+            "execution_diff_original_action_side": "original_action_side",
+            "execution_diff_guarded_action_side": "guarded_action_side",
+            "execution_diff_promoted_action_side": "promoted_action_side",
+            "execution_diff_final_action_side": "final_action_side",
+            "execution_diff_changed": "action_changed",
+            "execution_diff_guard_applied": "guard_applied",
+            "execution_diff_promotion_active": "promotion_active",
+            "execution_diff_reason_keys": "action_change_reason_keys",
+            "execution_diff_guard_reason_summary": "guard_reason_summary",
+            "execution_diff_promotion_reason": "promotion_reason",
+            "execution_diff_promotion_suppressed_reason": "promotion_suppressed_reason",
+        }
+        always_surface_text_fields = {
+            "execution_diff_guard_reason_summary",
+            "execution_diff_promotion_reason",
+            "execution_diff_promotion_suppressed_reason",
+        }
+        for flat_key, nested_key in field_map.items():
+            if _missing(payload.get(flat_key)):
+                value = nested.get(nested_key)
+                if flat_key in always_surface_text_fields:
+                    if value in (None, [], {}):
+                        value = ""
+                    payload[flat_key] = value
+                elif not _missing(value):
+                    payload[flat_key] = value
+        return payload
+
+    def _hydrate_execution_diff_surface_fields(self, symbol: str, row: dict | None) -> dict:
+        payload = dict(row or {})
+        source_candidates: list[dict] = []
+        previous_rows = getattr(self, "latest_signal_by_symbol", None)
+        if isinstance(previous_rows, dict):
+            previous_row = previous_rows.get(str(symbol), {})
+            if isinstance(previous_row, dict):
+                source_candidates.append(dict(previous_row))
+        trace_rows = getattr(self, "ai_entry_traces", None)
+        if isinstance(trace_rows, list):
+            for trace in reversed(trace_rows):
+                if not isinstance(trace, dict):
+                    continue
+                if str(trace.get("symbol", "") or "").upper().strip() != str(symbol).upper().strip():
+                    continue
+                source_candidates.append(dict(trace))
+                break
+
+        def _has_execution_diff_surface(candidate: dict) -> bool:
+            if not isinstance(candidate, dict):
+                return False
+            if isinstance(candidate.get("execution_action_diff_v1"), dict) and candidate.get("execution_action_diff_v1"):
+                return True
+            return any(
+                candidate.get(key) not in (None, "", [], {})
+                for key in (
+                    "execution_diff_original_action_side",
+                    "execution_diff_guarded_action_side",
+                    "execution_diff_promoted_action_side",
+                    "execution_diff_final_action_side",
+                    "execution_diff_changed",
+                )
+            )
+
+        if not _has_execution_diff_surface(payload):
+            for candidate in source_candidates:
+                if not _has_execution_diff_surface(candidate):
+                    continue
+                if isinstance(candidate.get("execution_action_diff_v1"), dict) and candidate.get("execution_action_diff_v1"):
+                    payload["execution_action_diff_v1"] = dict(candidate.get("execution_action_diff_v1", {}) or {})
+                for key in (
+                    "execution_diff_original_action_side",
+                    "execution_diff_guarded_action_side",
+                    "execution_diff_promoted_action_side",
+                    "execution_diff_final_action_side",
+                    "execution_diff_changed",
+                    "execution_diff_guard_applied",
+                    "execution_diff_promotion_active",
+                    "execution_diff_reason_keys",
+                    "execution_diff_guard_reason_summary",
+                    "execution_diff_promotion_reason",
+                    "execution_diff_promotion_suppressed_reason",
+                ):
+                    if payload.get(key) in (None, "", [], {}):
+                        value = candidate.get(key)
+                        if value not in (None, "", [], {}):
+                            payload[key] = value
+                break
+        return self._normalize_execution_diff_surface_fields(payload)
+
+    def _enrich_runtime_signal_row_with_state_context(
+        self,
+        symbol: str,
+        runtime_row: dict | None,
+        *,
+        continuation_candidates: list[dict] | None = None,
+    ) -> dict:
+        row = dict(runtime_row or {})
+        symbol_key = str(symbol or row.get("symbol", "") or "").upper().strip()
+        if not symbol_key:
+            return row
+
+        row.update(self._build_runtime_market_price_snapshot(symbol_key))
+        session_bucket_surface = build_runtime_row_session_bucket_surface_v1(row)
+        htf_state: dict = {}
+        previous_box_state: dict = {}
+        share_state = self._extract_runtime_share_state(row)
+
+        if hasattr(self.broker, "copy_rates_from_pos"):
+            try:
+                htf_state = self._htf_trend_cache.build_htf_state_v1(symbol_key)
+            except Exception:
+                logger.exception("Failed to build HTF state v1 for %s", symbol_key)
+            try:
+                frame_15m = self.fetch_data(symbol_key, TIMEFRAME_M15, count=80)
+                previous_box_state = self._previous_box_calculator.calculate(
+                    frame_15m,
+                    symbol=symbol_key,
+                    current_price=self._resolve_runtime_context_current_price(row),
+                    proxy_state=row,
+                )
+            except Exception:
+                logger.exception("Failed to build previous box state v1 for %s", symbol_key)
+
+        try:
+            context_state = build_context_state_v12(
+                symbol=symbol_key,
+                consumer_check_side=row.get("consumer_check_side"),
+                htf_state=htf_state,
+                previous_box_state=previous_box_state,
+                share_state=share_state,
+                proxy_state=row,
+            )
+        except Exception:
+            logger.exception("Failed to build context state v1.2 for %s", symbol_key)
+            return row
+
+        enriched = dict(row)
+        enriched["session_bucket_surface_v1"] = dict(session_bucket_surface)
+        enriched["session_bucket_v1"] = str(session_bucket_surface.get("session_bucket", "") or "")
+        enriched["session_bucket_timestamp_source_v1"] = str(
+            session_bucket_surface.get("timestamp_source", "") or ""
+        )
+        enriched.update(context_state)
+        bridge_input_row = dict(enriched)
+        bridge_input_row["state25_candidate_runtime_v1"] = dict(
+            getattr(self, "state25_candidate_runtime_state", {}) or {}
+        )
+        bridge_payload = build_state25_candidate_context_bridge_v1(bridge_input_row)
+        enriched["state25_candidate_context_bridge_v1"] = bridge_payload
+        enriched.update(build_state25_candidate_context_bridge_flat_fields_v1(bridge_payload))
+        previous_overlay_state = dict(
+            (
+                (
+                    getattr(self, "latest_signal_by_symbol", {}) or {}
+                ).get(symbol_key, {}) or {}
+            ).get("directional_continuation_overlay_v1", {}) or {}
+        )
+        try:
+            continuation_overlay = build_directional_continuation_chart_overlay_state(
+                symbol_key,
+                enriched,
+                continuation_candidates=continuation_candidates,
+                previous_overlay_state=previous_overlay_state,
+            )
+        except TypeError:
+            continuation_overlay = build_directional_continuation_chart_overlay_state(
+                symbol_key,
+                enriched,
+                continuation_candidates=continuation_candidates,
+            )
+        enriched["directional_continuation_overlay_v1"] = continuation_overlay
+        enriched.update(build_directional_continuation_chart_overlay_flat_fields_v1(continuation_overlay))
+        if bool(continuation_overlay.get("overlay_enabled", False)):
+            enriched["chart_event_kind_hint"] = str(
+                continuation_overlay.get("overlay_event_kind_hint", "") or ""
+            ).upper()
+            enriched["chart_event_reason_hint"] = str(
+                continuation_overlay.get("overlay_reason", "")
+                or continuation_overlay.get("overlay_summary_ko", "")
+                or ""
+            )
+        else:
+            enriched["chart_event_kind_hint"] = ""
+            enriched["chart_event_reason_hint"] = ""
+        enriched = self._hydrate_execution_diff_surface_fields(symbol_key, enriched)
+        enriched = self._attach_single_directional_continuation_accuracy_surface_fields(enriched)
+        return enriched
+
+    def _enrich_runtime_signal_rows_with_state_context(self, rows: dict[str, dict] | None) -> dict[str, dict]:
+        enriched_rows: dict[str, dict] = {}
+        try:
+            continuation_candidates = build_directional_continuation_learning_candidates()
+        except Exception:
+            logger.exception("Failed to build directional continuation learning candidates for runtime rows")
+            continuation_candidates = []
+        self.directional_continuation_candidates_cache_v1 = list(continuation_candidates or [])
+        for symbol, runtime_row in dict(rows or {}).items():
+            if not isinstance(runtime_row, dict):
+                continue
+            enriched_rows[str(symbol)] = self._enrich_runtime_signal_row_with_state_context(
+                str(symbol),
+                runtime_row,
+                continuation_candidates=continuation_candidates,
+            )
+        return enriched_rows
+
+    def build_chart_painter_runtime_row(
+        self,
+        symbol: str,
+        runtime_row: dict | None,
+        *,
+        continuation_candidates: list[dict] | None = None,
+    ) -> dict:
+        return self.build_entry_runtime_signal_row(
+            symbol,
+            runtime_row,
+            continuation_candidates=continuation_candidates,
+        )
+
+    def build_entry_runtime_signal_row(
+        self,
+        symbol: str,
+        runtime_row: dict | None,
+        *,
+        continuation_candidates: list[dict] | None = None,
+    ) -> dict:
+        row = dict(runtime_row or {})
+        try:
+            if continuation_candidates is None:
+                cached_candidates = getattr(self, "directional_continuation_candidates_cache_v1", None)
+                if isinstance(cached_candidates, list) and cached_candidates:
+                    continuation_candidates = list(cached_candidates)
+                else:
+                    try:
+                        continuation_candidates = build_directional_continuation_learning_candidates()
+                    except Exception:
+                        logger.exception(
+                            "Failed to build directional continuation learning candidates for entry row %s",
+                            symbol,
+                        )
+                        continuation_candidates = []
+                    self.directional_continuation_candidates_cache_v1 = list(continuation_candidates or [])
+            return self._enrich_runtime_signal_row_with_state_context(
+                str(symbol),
+                row,
+                continuation_candidates=continuation_candidates,
+            )
+        except Exception:
+            logger.exception("Failed to build entry runtime row for %s", symbol)
+            return row
 
     def execute_order(self, symbol, action, lot):
         if not hasattr(self, "last_order_retcode_by_symbol") or not isinstance(self.last_order_retcode_by_symbol, dict):
@@ -2304,33 +3719,82 @@ class TradingApplication:
             logger.exception("Failed to calculate sniper indicators: %s", exc)
             return {"rsi": 50, "bb_up": 0, "bb_dn": 0}
 
-    @staticmethod
-    def print_dashboard(symbol, buy_s, sell_s, rsi, pos_count, active, reason, entry_threshold):
+    def print_dashboard(self, symbol, buy_s, sell_s, rsi, pos_count, active, reason, entry_threshold):
         os.system("cls" if os.name == "nt" else "clear")
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        buy_bar = "#" * min(int(buy_s / 25), 20)
-        sell_bar = "#" * min(int(sell_s / 25), 20)
         rsi_status = "OVERBOUGHT" if rsi > 70 else ("OVERSOLD" if rsi < 30 else "NEUTRAL")
         market_status = "ACTIVE" if active else "INACTIVE"
+        runtime_row = {}
+        if isinstance(self.latest_signal_by_symbol, dict):
+            runtime_row = dict(self.latest_signal_by_symbol.get(symbol, {}) or {})
+        if not runtime_row:
+            runtime_row = {
+                "symbol": str(symbol),
+                "is_active": bool(active),
+                "inactive_reason": str(reason or ""),
+                "buy_score": int(buy_s),
+                "sell_score": int(sell_s),
+                "entry_threshold": int(entry_threshold),
+                "my_position_count": int(pos_count),
+            }
+        position_surface = build_position_energy_surface_v1(runtime_row)
+        legacy_surface = build_legacy_raw_score_surface_v1(runtime_row)
+        summary = dict(position_surface.get("summary", {}) or {})
+        location = dict(position_surface.get("location", {}) or {})
+        position = dict(position_surface.get("position", {}) or {})
+        energy = dict(position_surface.get("energy", {}) or {})
+        observe = dict(position_surface.get("observe", {}) or {})
+        readiness = dict(position_surface.get("readiness", {}) or {})
+        legacy_summary = dict(legacy_surface.get("summary", {}) or {})
 
-        print("=" * 64)
-        print("AUTO TRADING SYSTEM".center(64))
-        print("=" * 64)
+        print("=" * 92)
+        print("AUTO TRADING SYSTEM".center(92))
+        print("=" * 92)
         print(f"Time: {now}")
-        print(f"Symbol: {symbol} | Market: {market_status} | Reason: {reason}")
-        print("-" * 64)
-        print(f"BUY  : [{buy_bar:20}] {buy_s:>4}")
-        print(f"SELL : [{sell_bar:20}] {sell_s:>4}")
+        print(
+            f"Symbol: {symbol} | Market: {market_status} | Mode: {position_surface.get('market_mode', '-') or '-'}"
+            f" | Policy: {position_surface.get('direction_policy', '-') or '-'}"
+        )
+        print(
+            f"Location: BOX={location.get('box_zone', '-') or '-'} / BB20={location.get('bb20_zone', '-') or '-'}"
+            f" / BB44={location.get('bb44_zone', '-') or '-'}"
+            f" | Position: {position.get('primary_label', '-') or '-'}"
+        )
+        print(
+            f"Energy : lower {float(energy.get('lower_position_force', 0.0) or 0.0):.2f}"
+            f" / upper {float(energy.get('upper_position_force', 0.0) or 0.0):.2f}"
+            f" / middle {float(energy.get('middle_neutrality', 0.0) or 0.0):.2f}"
+            f" | Bias: {summary.get('energy_bias', '-') or '-'}"
+        )
+        print(
+            f"Observe: {observe.get('action', '-') or '-'} {observe.get('side', '')}".rstrip()
+            + f" | Reason: {observe.get('reason', reason) or reason or '-'}"
+        )
+        print(
+            f"Ready  : state={summary.get('decision_state', '-') or '-'}"
+            f" / display={bool(readiness.get('display_ready', False))}"
+            f" / entry={bool(readiness.get('entry_ready', False))}"
+            f" / stage={readiness.get('consumer_stage', '-') or '-'}"
+        )
+        state_reason = summary.get("state_reason", "") or "-"
+        print(f"Reason : {state_reason}")
+        if readiness.get("wait_policy_state") or readiness.get("wait_policy_reason"):
+            print(
+                f"Wait   : {readiness.get('wait_policy_state', '-') or '-'}"
+                f" | {readiness.get('wait_policy_reason', '-') or '-'}"
+            )
+        print(
+            f"Legacy : BUY {legacy_surface.get('buy_score', 0):>4}"
+            f" / SELL {legacy_surface.get('sell_score', 0):>4}"
+            f" / WAIT {legacy_surface.get('wait_score', 0):>4}"
+            f" / TH {legacy_surface.get('entry_threshold', 0):>4}"
+            f" | raw={legacy_summary.get('dominant_side', '-') or '-'}"
+            f" ({legacy_summary.get('threshold_state', '-') or '-'})"
+        )
+        print("-" * 92)
         print(f"RSI  : {rsi:.1f} ({rsi_status})")
         print(f"Positions: {pos_count}/{Config.MAX_POSITIONS}")
-
-        if active:
-            if buy_s >= entry_threshold:
-                print("Signal pending: BUY")
-            elif sell_s >= entry_threshold:
-                print("Signal pending: SELL")
-
-        print("=" * 64)
+        print("=" * 92)
         print("Press Ctrl+C to stop")
 
     @staticmethod
@@ -2575,15 +4039,550 @@ class TradingApplication:
                 return str(obj)
 
             self.runtime_status_path.parent.mkdir(parents=True, exist_ok=True)
+            live_positions = []
+            try:
+                live_positions = self.broker.positions_get() or []
+            except Exception:
+                logger.exception("Failed to collect live positions before runtime status export")
+            normalized_signal_rows, _, total_open_positions, owned_open_positions = (
+                _normalize_runtime_signal_position_counts(
+                    self.latest_signal_by_symbol,
+                    positions=live_positions,
+                    magic_number=int(getattr(Config, "MAGIC_NUMBER", 0)),
+                )
+            )
+            context_enriched_signal_rows = self._enrich_runtime_signal_rows_with_state_context(
+                normalized_signal_rows
+            )
+            context_enriched_signal_rows = _reset_runtime_signal_downstream_derived_fields(
+                context_enriched_signal_rows
+            )
+            continuation_accuracy_report = update_directional_continuation_accuracy_tracker(
+                context_enriched_signal_rows
+            )
+            self.directional_continuation_accuracy_report_v1 = dict(
+                continuation_accuracy_report or {}
+            )
+            context_enriched_signal_rows = self._attach_directional_continuation_accuracy_surface_fields(
+                context_enriched_signal_rows,
+                continuation_accuracy_report,
+            )
+            context_enriched_signal_rows = attach_canonical_surface_fields_v1(context_enriched_signal_rows)
+            self.latest_signal_by_symbol = context_enriched_signal_rows
+            runtime_signal_wiring_audit = generate_and_write_runtime_signal_wiring_audit(
+                self.latest_signal_by_symbol,
+                ai_entry_traces=self.ai_entry_traces,
+                accuracy_report=continuation_accuracy_report,
+                write_artifacts=False,
+            )
+            self.runtime_signal_wiring_audit_report_v1 = dict(runtime_signal_wiring_audit or {})
+            ca2_r0_stability_report = generate_and_write_ca2_r0_stability_audit(
+                runtime_signal_wiring_audit,
+                accuracy_report=continuation_accuracy_report,
+            )
+            self.ca2_r0_stability_report_v1 = dict(ca2_r0_stability_report or {})
+            ca2_session_split_report = generate_and_write_ca2_session_split_audit(
+                ai_entry_traces=self.ai_entry_traces,
+            )
+            self.ca2_session_split_report_v1 = dict(ca2_session_split_report or {})
+            should_have_done_candidate_report = generate_and_write_should_have_done_candidate_summary(
+                latest_signal_by_symbol=self.latest_signal_by_symbol,
+                ai_entry_traces=self.ai_entry_traces,
+            )
+            self.should_have_done_candidate_report_v1 = dict(should_have_done_candidate_report or {})
+            canonical_surface_report = generate_and_write_canonical_surface_summary_v1(
+                self.latest_signal_by_symbol,
+            )
+            self.canonical_surface_report_v1 = dict(canonical_surface_report or {})
+            session_aware_annotation_accuracy_report = generate_and_write_session_aware_annotation_accuracy_v1(
+                session_split_report=ca2_session_split_report,
+                should_have_done_report=should_have_done_candidate_report,
+                canonical_surface_report=canonical_surface_report,
+            )
+            self.session_aware_annotation_accuracy_report_v1 = dict(
+                session_aware_annotation_accuracy_report or {}
+            )
+            context_enriched_signal_rows = attach_session_bias_shadow_fields_v1(
+                context_enriched_signal_rows,
+                session_aware_annotation_accuracy_report=session_aware_annotation_accuracy_report,
+            )
+            self.latest_signal_by_symbol = context_enriched_signal_rows
+            session_bias_shadow_report = generate_and_write_session_bias_shadow_report_v1(
+                self.latest_signal_by_symbol,
+                session_aware_annotation_accuracy_report=session_aware_annotation_accuracy_report,
+            )
+            self.session_bias_shadow_report_v1 = dict(session_bias_shadow_report or {})
+            context_enriched_signal_rows = attach_state_strength_profile_fields_v1(context_enriched_signal_rows)
+            self.latest_signal_by_symbol = context_enriched_signal_rows
+            state_strength_summary_report = generate_and_write_state_strength_summary_v1(
+                self.latest_signal_by_symbol,
+            )
+            self.state_strength_summary_report_v1 = dict(state_strength_summary_report or {})
+            context_enriched_signal_rows = attach_local_structure_profile_fields_v1(context_enriched_signal_rows)
+            self.latest_signal_by_symbol = context_enriched_signal_rows
+            local_structure_summary_report = generate_and_write_local_structure_summary_v1(
+                self.latest_signal_by_symbol,
+            )
+            self.local_structure_summary_report_v1 = dict(local_structure_summary_report or {})
+            context_enriched_signal_rows = attach_runtime_readonly_surface_fields_v1(context_enriched_signal_rows)
+            self.latest_signal_by_symbol = context_enriched_signal_rows
+            runtime_readonly_surface_report = generate_and_write_runtime_readonly_surface_summary_v1(
+                self.latest_signal_by_symbol,
+            )
+            self.runtime_readonly_surface_report_v1 = dict(runtime_readonly_surface_report or {})
+            context_enriched_signal_rows = attach_state_structure_dominance_fields_v1(context_enriched_signal_rows)
+            self.latest_signal_by_symbol = context_enriched_signal_rows
+            state_structure_dominance_report = generate_and_write_state_structure_dominance_summary_v1(
+                self.latest_signal_by_symbol,
+            )
+            self.state_structure_dominance_report_v1 = dict(state_structure_dominance_report or {})
+            context_enriched_signal_rows = attach_dominance_validation_fields_v1(context_enriched_signal_rows)
+            self.latest_signal_by_symbol = context_enriched_signal_rows
+            dominance_validation_report = generate_and_write_dominance_validation_summary_v1(
+                self.latest_signal_by_symbol,
+            )
+            self.dominance_validation_report_v1 = dict(dominance_validation_report or {})
+            context_enriched_signal_rows = attach_dominance_accuracy_shadow_fields_v1(context_enriched_signal_rows)
+            self.latest_signal_by_symbol = context_enriched_signal_rows
+            dominance_accuracy_shadow_report = generate_and_write_dominance_accuracy_shadow_reports_v1(
+                self.latest_signal_by_symbol,
+            )
+            self.dominance_accuracy_shadow_report_v1 = dict(dominance_accuracy_shadow_report or {})
+            context_enriched_signal_rows = attach_symbol_specific_state_strength_calibration_fields_v1(
+                context_enriched_signal_rows
+            )
+            self.latest_signal_by_symbol = context_enriched_signal_rows
+            symbol_specific_state_strength_calibration_report = (
+                generate_and_write_symbol_specific_state_strength_calibration_summary_v1(
+                    self.latest_signal_by_symbol,
+                )
+            )
+            self.symbol_specific_state_strength_calibration_report_v1 = dict(
+                symbol_specific_state_strength_calibration_report or {}
+            )
+            context_enriched_signal_rows = attach_xau_readonly_surface_fields_v1(context_enriched_signal_rows)
+            self.latest_signal_by_symbol = context_enriched_signal_rows
+            xau_readonly_surface_report = generate_and_write_xau_readonly_surface_summary_v1(
+                self.latest_signal_by_symbol,
+            )
+            self.xau_readonly_surface_report_v1 = dict(xau_readonly_surface_report or {})
+            context_enriched_signal_rows = attach_xau_decomposition_validation_fields_v1(context_enriched_signal_rows)
+            self.latest_signal_by_symbol = context_enriched_signal_rows
+            xau_decomposition_validation_report = generate_and_write_xau_decomposition_validation_summary_v1(
+                self.latest_signal_by_symbol,
+            )
+            self.xau_decomposition_validation_report_v1 = dict(xau_decomposition_validation_report or {})
+            state_slot_commonization_judge_report = generate_and_write_state_slot_commonization_judge_summary_v1(
+                xau_pilot_mapping_report={
+                    "contract": build_xau_pilot_mapping_contract_v1(),
+                    "summary": {},
+                },
+                xau_readonly_surface_report=xau_readonly_surface_report,
+                xau_decomposition_validation_report=xau_decomposition_validation_report,
+            )
+            self.state_slot_commonization_judge_report_v1 = dict(state_slot_commonization_judge_report or {})
+            context_enriched_signal_rows = attach_state_slot_execution_interface_bridge_fields_v1(
+                context_enriched_signal_rows
+            )
+            self.latest_signal_by_symbol = context_enriched_signal_rows
+            state_slot_execution_interface_bridge_report = (
+                generate_and_write_state_slot_execution_interface_bridge_summary_v1(
+                    self.latest_signal_by_symbol,
+                )
+            )
+            self.state_slot_execution_interface_bridge_report_v1 = dict(
+                state_slot_execution_interface_bridge_report or {}
+            )
+            context_enriched_signal_rows = attach_state_slot_symbol_extension_surface_fields_v1(
+                context_enriched_signal_rows,
+                state_slot_commonization_judge_report=state_slot_commonization_judge_report,
+            )
+            self.latest_signal_by_symbol = context_enriched_signal_rows
+            state_slot_symbol_extension_surface_report = (
+                generate_and_write_state_slot_symbol_extension_surface_summary_v1(
+                    self.latest_signal_by_symbol,
+                    state_slot_commonization_judge_report=state_slot_commonization_judge_report,
+                )
+            )
+            self.state_slot_symbol_extension_surface_report_v1 = dict(
+                state_slot_symbol_extension_surface_report or {}
+            )
+            context_enriched_signal_rows = attach_nas_readonly_surface_fields_v1(context_enriched_signal_rows)
+            self.latest_signal_by_symbol = context_enriched_signal_rows
+            nas_readonly_surface_report = generate_and_write_nas_readonly_surface_summary_v1(
+                self.latest_signal_by_symbol,
+            )
+            self.nas_readonly_surface_report_v1 = dict(nas_readonly_surface_report or {})
+            context_enriched_signal_rows = attach_nas_decomposition_validation_fields_v1(context_enriched_signal_rows)
+            self.latest_signal_by_symbol = context_enriched_signal_rows
+            nas_decomposition_validation_report = generate_and_write_nas_decomposition_validation_summary_v1(
+                self.latest_signal_by_symbol,
+            )
+            self.nas_decomposition_validation_report_v1 = dict(nas_decomposition_validation_report or {})
+            context_enriched_signal_rows = attach_btc_readonly_surface_fields_v1(context_enriched_signal_rows)
+            self.latest_signal_by_symbol = context_enriched_signal_rows
+            btc_readonly_surface_report = generate_and_write_btc_readonly_surface_summary_v1(
+                self.latest_signal_by_symbol,
+            )
+            self.btc_readonly_surface_report_v1 = dict(btc_readonly_surface_report or {})
+            context_enriched_signal_rows = attach_btc_decomposition_validation_fields_v1(context_enriched_signal_rows)
+            self.latest_signal_by_symbol = context_enriched_signal_rows
+            btc_decomposition_validation_report = generate_and_write_btc_decomposition_validation_summary_v1(
+                self.latest_signal_by_symbol,
+            )
+            self.btc_decomposition_validation_report_v1 = dict(btc_decomposition_validation_report or {})
+            context_enriched_signal_rows = attach_state_slot_position_lifecycle_policy_fields_v1(
+                context_enriched_signal_rows
+            )
+            self.latest_signal_by_symbol = context_enriched_signal_rows
+            state_slot_position_lifecycle_policy_report = (
+                generate_and_write_state_slot_position_lifecycle_policy_summary_v1(
+                    self.latest_signal_by_symbol,
+                )
+            )
+            self.state_slot_position_lifecycle_policy_report_v1 = dict(
+                state_slot_position_lifecycle_policy_report or {}
+            )
+            context_enriched_signal_rows = attach_execution_policy_shadow_audit_fields_v1(
+                context_enriched_signal_rows
+            )
+            self.latest_signal_by_symbol = context_enriched_signal_rows
+            execution_policy_shadow_audit_report = generate_and_write_execution_policy_shadow_audit_summary_v1(
+                self.latest_signal_by_symbol,
+            )
+            self.execution_policy_shadow_audit_report_v1 = dict(
+                execution_policy_shadow_audit_report or {}
+            )
+            context_enriched_signal_rows = attach_bounded_lifecycle_canary_fields_v1(
+                context_enriched_signal_rows
+            )
+            self.latest_signal_by_symbol = context_enriched_signal_rows
+            bounded_lifecycle_canary_report = generate_and_write_bounded_lifecycle_canary_summary_v1(
+                self.latest_signal_by_symbol,
+            )
+            self.bounded_lifecycle_canary_report_v1 = dict(
+                bounded_lifecycle_canary_report or {}
+            )
+            context_enriched_signal_rows = attach_xau_refined_gate_timebox_audit_fields_v1(
+                context_enriched_signal_rows
+            )
+            self.latest_signal_by_symbol = context_enriched_signal_rows
+            xau_refined_gate_timebox_audit_report = (
+                generate_and_write_xau_refined_gate_timebox_audit_summary_v1(
+                    self.latest_signal_by_symbol,
+                )
+            )
+            self.xau_refined_gate_timebox_audit_report_v1 = dict(
+                xau_refined_gate_timebox_audit_report or {}
+            )
+            context_enriched_signal_rows = attach_state_flow_f0_chain_alignment_fields_v1(
+                context_enriched_signal_rows
+            )
+            self.latest_signal_by_symbol = context_enriched_signal_rows
+            state_flow_f0_chain_alignment_report = (
+                generate_and_write_state_flow_f0_chain_alignment_summary_v1(
+                    self.latest_signal_by_symbol,
+                )
+            )
+            self.state_flow_f0_chain_alignment_report_v1 = dict(
+                state_flow_f0_chain_alignment_report or {}
+            )
+            context_enriched_signal_rows = attach_flow_structure_gate_fields_v1(
+                context_enriched_signal_rows
+            )
+            self.latest_signal_by_symbol = context_enriched_signal_rows
+            flow_structure_gate_report = generate_and_write_flow_structure_gate_summary_v1(
+                self.latest_signal_by_symbol,
+            )
+            self.flow_structure_gate_report_v1 = dict(flow_structure_gate_report or {})
+            context_enriched_signal_rows = attach_aggregate_directional_flow_metrics_fields_v1(
+                context_enriched_signal_rows
+            )
+            self.latest_signal_by_symbol = context_enriched_signal_rows
+            aggregate_directional_flow_metrics_report = (
+                generate_and_write_aggregate_directional_flow_metrics_summary_v1(
+                    self.latest_signal_by_symbol,
+                )
+            )
+            self.aggregate_directional_flow_metrics_report_v1 = dict(
+                aggregate_directional_flow_metrics_report or {}
+            )
+            context_enriched_signal_rows = attach_retained_window_flow_calibration_fields_v1(
+                context_enriched_signal_rows
+            )
+            self.latest_signal_by_symbol = context_enriched_signal_rows
+            retained_window_flow_calibration_report = (
+                generate_and_write_retained_window_flow_calibration_summary_v1(
+                    self.latest_signal_by_symbol,
+                )
+            )
+            self.retained_window_flow_calibration_report_v1 = dict(
+                retained_window_flow_calibration_report or {}
+            )
+            context_enriched_signal_rows = attach_flow_threshold_provisional_band_fields_v1(
+                context_enriched_signal_rows
+            )
+            self.latest_signal_by_symbol = context_enriched_signal_rows
+            flow_threshold_provisional_band_report = (
+                generate_and_write_flow_threshold_provisional_band_summary_v1(
+                    self.latest_signal_by_symbol,
+                )
+            )
+            self.flow_threshold_provisional_band_report_v1 = dict(
+                flow_threshold_provisional_band_report or {}
+            )
+            context_enriched_signal_rows = attach_exact_pilot_match_bonus_fields_v1(
+                context_enriched_signal_rows
+            )
+            self.latest_signal_by_symbol = context_enriched_signal_rows
+            exact_pilot_match_bonus_report = (
+                generate_and_write_exact_pilot_match_bonus_summary_v1(
+                    self.latest_signal_by_symbol,
+                )
+            )
+            self.exact_pilot_match_bonus_report_v1 = dict(
+                exact_pilot_match_bonus_report or {}
+            )
+            context_enriched_signal_rows = attach_flow_support_state_fields_v1(
+                context_enriched_signal_rows
+            )
+            self.latest_signal_by_symbol = context_enriched_signal_rows
+            flow_support_state_report = generate_and_write_flow_support_state_summary_v1(
+                self.latest_signal_by_symbol,
+            )
+            self.flow_support_state_report_v1 = dict(
+                flow_support_state_report or {}
+            )
+            context_enriched_signal_rows = attach_flow_chain_shadow_comparison_fields_v1(
+                context_enriched_signal_rows
+            )
+            self.latest_signal_by_symbol = context_enriched_signal_rows
+            flow_chain_shadow_comparison_report = generate_and_write_flow_chain_shadow_comparison_summary_v1(
+                self.latest_signal_by_symbol,
+            )
+            self.flow_chain_shadow_comparison_report_v1 = dict(
+                flow_chain_shadow_comparison_report or {}
+            )
+            context_enriched_signal_rows = attach_flow_candidate_improvement_review_fields_v1(
+                context_enriched_signal_rows
+            )
+            self.latest_signal_by_symbol = context_enriched_signal_rows
+            flow_candidate_improvement_review_report = (
+                generate_and_write_flow_candidate_improvement_review_summary_v1(
+                    self.latest_signal_by_symbol,
+                )
+            )
+            self.flow_candidate_improvement_review_report_v1 = dict(
+                flow_candidate_improvement_review_report or {}
+            )
+            context_enriched_signal_rows = attach_nas_btc_hard_opposed_truth_audit_fields_v1(
+                context_enriched_signal_rows
+            )
+            self.latest_signal_by_symbol = context_enriched_signal_rows
+            nas_btc_hard_opposed_truth_audit_report = (
+                generate_and_write_nas_btc_hard_opposed_truth_audit_summary_v1(
+                    self.latest_signal_by_symbol,
+                )
+            )
+            self.nas_btc_hard_opposed_truth_audit_report_v1 = dict(
+                nas_btc_hard_opposed_truth_audit_report or {}
+            )
+            context_enriched_signal_rows = attach_recent_rollback_memory_fields_v1(
+                context_enriched_signal_rows
+            )
+            context_enriched_signal_rows = attach_bounded_calibration_candidate_fields_v1(
+                context_enriched_signal_rows
+            )
+            context_enriched_signal_rows = attach_bounded_candidate_shadow_apply_fields_v1(
+                context_enriched_signal_rows
+            )
+            context_enriched_signal_rows = attach_bounded_candidate_evaluation_dashboard_fields_v1(
+                context_enriched_signal_rows
+            )
+            context_enriched_signal_rows = attach_bounded_candidate_lifecycle_feedback_loop_fields_v1(
+                context_enriched_signal_rows
+            )
+            context_enriched_signal_rows = attach_bounded_candidate_patch_memory_loop_fields_v1(
+                context_enriched_signal_rows
+            )
+            context_enriched_signal_rows = attach_flow_shadow_display_surface_fields_v1(
+                context_enriched_signal_rows
+            )
+            self.latest_signal_by_symbol = context_enriched_signal_rows
+            bounded_calibration_candidate_report = (
+                generate_and_write_bounded_calibration_candidate_summary_v1(
+                    self.latest_signal_by_symbol,
+                )
+            )
+            self.bounded_calibration_candidate_report_v1 = dict(
+                bounded_calibration_candidate_report or {}
+            )
+            bounded_candidate_shadow_apply_report = (
+                generate_and_write_bounded_candidate_shadow_apply_summary_v1(
+                    self.latest_signal_by_symbol,
+                )
+            )
+            self.bounded_candidate_shadow_apply_report_v1 = dict(
+                bounded_candidate_shadow_apply_report or {}
+            )
+            bounded_candidate_evaluation_dashboard_report = (
+                generate_and_write_bounded_candidate_evaluation_dashboard_summary_v1(
+                    self.latest_signal_by_symbol,
+                )
+            )
+            self.bounded_candidate_evaluation_dashboard_report_v1 = dict(
+                bounded_candidate_evaluation_dashboard_report or {}
+            )
+            bounded_candidate_lifecycle_feedback_loop_report = (
+                generate_and_write_bounded_candidate_lifecycle_feedback_loop_summary_v1(
+                    self.latest_signal_by_symbol,
+                )
+            )
+            self.bounded_candidate_lifecycle_feedback_loop_report_v1 = dict(
+                bounded_candidate_lifecycle_feedback_loop_report or {}
+            )
+            bounded_candidate_patch_memory_loop_report = (
+                generate_and_write_bounded_candidate_patch_memory_loop_summary_v1(
+                    self.latest_signal_by_symbol,
+                )
+            )
+            self.bounded_candidate_patch_memory_loop_report_v1 = dict(
+                bounded_candidate_patch_memory_loop_report or {}
+            )
+            flow_shadow_display_surface_report = (
+                generate_and_write_flow_shadow_display_surface_summary_v1(
+                    self.latest_signal_by_symbol,
+                )
+            )
+            self.flow_shadow_display_surface_report_v1 = dict(
+                flow_shadow_display_surface_report or {}
+            )
+            # Flow history sync consumes the final rows, including late chart-event ownership fields.
+            flow_history_sync_hook = getattr(self, "runtime_flow_history_sync_hook", None)
+            if callable(flow_history_sync_hook):
+                try:
+                    flow_history_sync_hook(self.latest_signal_by_symbol)
+                except Exception:
+                    logger.exception("Failed to sync flow history before runtime wiring audit")
+            runtime_signal_wiring_audit = generate_and_write_runtime_signal_wiring_audit(
+                self.latest_signal_by_symbol,
+                ai_entry_traces=self.ai_entry_traces,
+                accuracy_report=continuation_accuracy_report,
+                write_artifacts=_runtime_signal_wiring_audit_artifact_write_allowed(
+                    self.latest_signal_by_symbol,
+                    symbols,
+                ),
+            )
+            self.runtime_signal_wiring_audit_report_v1 = dict(runtime_signal_wiring_audit or {})
+            ca2_r0_stability_report = generate_and_write_ca2_r0_stability_audit(
+                runtime_signal_wiring_audit,
+                accuracy_report=continuation_accuracy_report,
+            )
+            self.ca2_r0_stability_report_v1 = dict(ca2_r0_stability_report or {})
+            state_strength_s0_stability_report = generate_and_write_state_strength_s0_stability_report_v1(
+                runtime_signal_wiring_audit_report=runtime_signal_wiring_audit,
+                ca2_r0_stability_report=ca2_r0_stability_report,
+                ca2_session_split_report=ca2_session_split_report,
+                should_have_done_report=should_have_done_candidate_report,
+                canonical_surface_report=canonical_surface_report,
+                session_bias_shadow_report=session_bias_shadow_report,
+            )
+            self.state_strength_s0_stability_report_v1 = dict(state_strength_s0_stability_report or {})
+            state_polarity_d0_stability_report = generate_and_write_state_polarity_d0_stability_report_v1(
+                runtime_signal_wiring_audit_report=runtime_signal_wiring_audit,
+                ca2_r0_stability_report=ca2_r0_stability_report,
+                should_have_done_report=should_have_done_candidate_report,
+                canonical_surface_report=canonical_surface_report,
+                state_structure_dominance_report=state_structure_dominance_report,
+                dominance_accuracy_report={
+                    "summary": dict(
+                        (dominance_accuracy_shadow_report or {}).get("accuracy_summary", {})
+                        if isinstance((dominance_accuracy_shadow_report or {}).get("accuracy_summary", {}), dict)
+                        else {}
+                    ),
+                    "artifact_paths": dict(
+                        (dominance_accuracy_shadow_report or {}).get("artifact_paths", {})
+                        if isinstance((dominance_accuracy_shadow_report or {}).get("artifact_paths", {}), dict)
+                        else {}
+                    ),
+                },
+                symbol_specific_state_strength_calibration_report=symbol_specific_state_strength_calibration_report,
+            )
+            self.state_polarity_d0_stability_report_v1 = dict(state_polarity_d0_stability_report or {})
+            state_polarity_slot_vocabulary_report = generate_and_write_state_polarity_slot_vocabulary_summary_v1()
+            self.state_polarity_slot_vocabulary_report_v1 = dict(state_polarity_slot_vocabulary_report or {})
+            rejection_split_rule_report = generate_and_write_rejection_split_rule_summary_v1()
+            self.rejection_split_rule_report_v1 = dict(rejection_split_rule_report or {})
+            continuation_stage_report = generate_and_write_continuation_stage_summary_v1()
+            self.continuation_stage_report_v1 = dict(continuation_stage_report or {})
+            location_context_report = generate_and_write_location_context_summary_v1()
+            self.location_context_report_v1 = dict(location_context_report or {})
+            tempo_profile_report = generate_and_write_tempo_profile_summary_v1()
+            self.tempo_profile_report_v1 = dict(tempo_profile_report or {})
+            ambiguity_modifier_report = generate_and_write_ambiguity_modifier_summary_v1()
+            self.ambiguity_modifier_report_v1 = dict(ambiguity_modifier_report or {})
+            xau_pilot_mapping_report = generate_and_write_xau_pilot_mapping_summary_v1()
+            self.xau_pilot_mapping_report_v1 = dict(xau_pilot_mapping_report or {})
+            nas_pilot_mapping_report = generate_and_write_nas_pilot_mapping_summary_v1()
+            self.nas_pilot_mapping_report_v1 = dict(nas_pilot_mapping_report or {})
+            btc_pilot_mapping_report = generate_and_write_btc_pilot_mapping_summary_v1()
+            self.btc_pilot_mapping_report_v1 = dict(btc_pilot_mapping_report or {})
+            normalized_runtime_recycle_state = dict(getattr(self, "runtime_recycle_state", {}) or {})
+            normalized_runtime_recycle_state["last_open_positions_count"] = int(total_open_positions)
+            normalized_runtime_recycle_state["last_owned_open_positions_count"] = int(owned_open_positions)
+            self.runtime_recycle_state = normalized_runtime_recycle_state
             recent_runtime_diagnostics = self._build_recent_runtime_diagnostics()
             recent_runtime_summary, default_recent_window = self._build_recent_runtime_summary(recent_runtime_diagnostics)
             recent_exit_runtime_diagnostics = self._build_recent_exit_runtime_diagnostics()
             recent_exit_runtime_summary, default_recent_exit_window = self._build_recent_exit_runtime_summary(
                 recent_exit_runtime_diagnostics
             )
+            runtime_recycle_health = build_runtime_recycle_health_v1(
+                recent_runtime_summary=recent_runtime_summary,
+                default_recent_window=default_recent_window,
+                latest_signal_by_symbol=self.latest_signal_by_symbol,
+                now_ts=time.time(),
+                signal_stale_sec=int(getattr(Config, "RUNTIME_RECYCLE_SIGNAL_STALE_SEC", 900) or 900),
+            )
+            runtime_recycle_drift = build_runtime_recycle_drift_v1(
+                recent_runtime_summary=recent_runtime_summary,
+                default_recent_window=default_recent_window,
+                latest_signal_by_symbol=self.latest_signal_by_symbol,
+                now_ts=time.time(),
+                min_rows=int(getattr(Config, "RUNTIME_RECYCLE_DRIFT_MIN_ROWS", 40) or 40),
+                stage_dominance_threshold=float(
+                    getattr(Config, "RUNTIME_RECYCLE_DRIFT_STAGE_DOMINANCE", 0.85) or 0.85
+                ),
+                block_dominance_threshold=float(
+                    getattr(Config, "RUNTIME_RECYCLE_DRIFT_BLOCK_DOMINANCE", 0.85) or 0.85
+                ),
+                decision_dominance_threshold=float(
+                    getattr(Config, "RUNTIME_RECYCLE_DRIFT_DECISION_DOMINANCE", 0.90) or 0.90
+                ),
+                min_signal_count=int(getattr(Config, "RUNTIME_RECYCLE_DRIFT_SIGNAL_MIN_COUNT", 2) or 2),
+            )
+            self.runtime_recent_summary_cache = dict(recent_runtime_summary or {})
+            self.runtime_recent_default_window_cache = dict(default_recent_window or {})
+            self.runtime_recycle_health_state = dict(runtime_recycle_health or {})
+            self.runtime_recycle_drift_state = dict(runtime_recycle_drift or {})
+            state25_candidate_runtime_state = dict(
+                getattr(self, "state25_candidate_runtime_state", {}) or {}
+            )
+            state25_candidate_threshold_surface = build_state25_candidate_threshold_surface_v1(
+                state25_candidate_runtime_state,
+                baseline_entry_threshold=entry_threshold,
+            )
+            state25_candidate_size_surface = build_state25_candidate_size_surface_v1(
+                state25_candidate_runtime_state
+            )
+            state25_candidate_weight_surface = build_state25_candidate_weight_surface_v1(
+                state25_candidate_runtime_state
+            )
             semantic_shadow_runtime_export = self._semantic_shadow_runtime_export()
+            payload_updated_at = datetime.now(KST).isoformat(timespec="seconds")
             payload = {
-                "updated_at": datetime.now(KST).isoformat(timespec="seconds"),
+                "updated_at": payload_updated_at,
+                "generated_at": payload_updated_at,
                 "loop_count": int(loop_count),
                 "symbols": list(symbols.values()) if isinstance(symbols, dict) else [],
                 "entry_threshold": int(entry_threshold),
@@ -2595,6 +4594,7 @@ class TradingApplication:
                 "ai_loaded": bool(self.ai_runtime),
                 "semantic_shadow_loaded": bool(self.semantic_shadow_runtime),
                 "ai_config": {
+                    "runtime_enabled": bool(getattr(Config, "AI_RUNTIME_ENABLED", True)),
                     "entry_threshold_prob": float(Config.AI_ENTRY_THRESHOLD),
                     "entry_weight": int(Config.AI_ENTRY_WEIGHT),
                     "entry_filter_enabled": bool(Config.AI_USE_ENTRY_FILTER),
@@ -2677,6 +4677,655 @@ class TradingApplication:
                 "recent_exit_runtime_diagnostics": recent_exit_runtime_diagnostics,
                 "recent_runtime_summary": recent_runtime_summary,
                 "recent_runtime_diagnostics": recent_runtime_diagnostics,
+                "runtime_recycle_health_v1": runtime_recycle_health,
+                "runtime_recycle_drift_v1": runtime_recycle_drift,
+                "directional_continuation_accuracy_summary_v1": dict(
+                    (continuation_accuracy_report or {}).get("summary", {})
+                    if isinstance((continuation_accuracy_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "directional_continuation_accuracy_artifact_paths": dict(
+                    (continuation_accuracy_report or {}).get("artifact_paths", {})
+                    if isinstance((continuation_accuracy_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "runtime_signal_wiring_audit_summary_v1": dict(
+                    (runtime_signal_wiring_audit or {}).get("summary", {})
+                    if isinstance((runtime_signal_wiring_audit or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "runtime_signal_wiring_audit_artifact_paths": dict(
+                    (runtime_signal_wiring_audit or {}).get("artifact_paths", {})
+                    if isinstance((runtime_signal_wiring_audit or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "session_bucket_contract_v1": build_session_bucket_contract_v1(),
+                "session_direction_annotation_contract_v1": build_session_direction_annotation_contract_v1(),
+                "should_have_done_contract_v1": build_should_have_done_contract_v1(),
+                "canonical_surface_contract_v1": build_canonical_surface_contract_v1(),
+                "session_aware_annotation_accuracy_contract_v1": build_session_aware_annotation_accuracy_contract_v1(),
+                "session_bias_shadow_contract_v1": build_session_bias_shadow_contract_v1(),
+                "state_strength_profile_contract_v1": build_state_strength_profile_contract_v1(),
+                "state_polarity_slot_vocabulary_contract_v1": build_state_polarity_slot_vocabulary_contract_v1(),
+                "rejection_split_rule_contract_v1": build_rejection_split_rule_contract_v1(),
+                "continuation_stage_contract_v1": build_continuation_stage_contract_v1(),
+                "location_context_contract_v1": build_location_context_contract_v1(),
+                "tempo_profile_contract_v1": build_tempo_profile_contract_v1(),
+                "ambiguity_modifier_contract_v1": build_ambiguity_modifier_contract_v1(),
+                "xau_pilot_mapping_contract_v1": build_xau_pilot_mapping_contract_v1(),
+                "nas_pilot_mapping_contract_v1": build_nas_pilot_mapping_contract_v1(),
+                "btc_pilot_mapping_contract_v1": build_btc_pilot_mapping_contract_v1(),
+                "xau_readonly_surface_contract_v1": build_xau_readonly_surface_contract_v1(),
+                "nas_readonly_surface_contract_v1": build_nas_readonly_surface_contract_v1(),
+                "btc_readonly_surface_contract_v1": build_btc_readonly_surface_contract_v1(),
+                "xau_decomposition_validation_contract_v1": build_xau_decomposition_validation_contract_v1(),
+                "xau_refined_gate_timebox_audit_contract_v1": (
+                    build_xau_refined_gate_timebox_audit_contract_v1()
+                ),
+                "state_flow_f0_chain_alignment_contract_v1": (
+                    build_state_flow_f0_chain_alignment_contract_v1()
+                ),
+                "flow_structure_gate_contract_v1": build_flow_structure_gate_contract_v1(),
+                "aggregate_directional_flow_metrics_contract_v1": (
+                    build_aggregate_directional_flow_metrics_contract_v1()
+                ),
+                "retained_window_flow_calibration_contract_v1": (
+                    build_retained_window_flow_calibration_contract_v1()
+                ),
+                "flow_threshold_provisional_band_contract_v1": (
+                    build_flow_threshold_provisional_band_contract_v1()
+                ),
+                "exact_pilot_match_bonus_contract_v1": (
+                    build_exact_pilot_match_bonus_contract_v1()
+                ),
+                "flow_support_state_contract_v1": (
+                    build_flow_support_state_contract_v1()
+                ),
+                "flow_chain_shadow_comparison_contract_v1": (
+                    build_flow_chain_shadow_comparison_contract_v1()
+                ),
+                "flow_candidate_improvement_review_contract_v1": (
+                    build_flow_candidate_improvement_review_contract_v1()
+                ),
+                "nas_btc_hard_opposed_truth_audit_contract_v1": (
+                    build_nas_btc_hard_opposed_truth_audit_contract_v1()
+                ),
+                "bounded_calibration_candidate_contract_v1": (
+                    build_bounded_calibration_candidate_contract_v1()
+                ),
+                "bounded_candidate_shadow_apply_contract_v1": (
+                    build_bounded_candidate_shadow_apply_contract_v1()
+                ),
+                "bounded_candidate_evaluation_dashboard_contract_v1": (
+                    build_bounded_candidate_evaluation_dashboard_contract_v1()
+                ),
+                "bounded_candidate_lifecycle_feedback_loop_contract_v1": (
+                    build_bounded_candidate_lifecycle_feedback_loop_contract_v1()
+                ),
+                "bounded_candidate_patch_memory_loop_contract_v1": (
+                    build_bounded_candidate_patch_memory_loop_contract_v1()
+                ),
+                "flow_shadow_display_surface_contract_v1": (
+                    build_flow_shadow_display_surface_contract_v1()
+                ),
+                "nas_decomposition_validation_contract_v1": build_nas_decomposition_validation_contract_v1(),
+                "btc_decomposition_validation_contract_v1": build_btc_decomposition_validation_contract_v1(),
+                "state_slot_commonization_judge_contract_v1": build_state_slot_commonization_judge_contract_v1(),
+                "state_slot_execution_interface_bridge_contract_v1": build_state_slot_execution_interface_bridge_contract_v1(),
+                "state_slot_symbol_extension_surface_contract_v1": (
+                    build_state_slot_symbol_extension_surface_contract_v1()
+                ),
+                "state_slot_position_lifecycle_policy_contract_v1": (
+                    build_state_slot_position_lifecycle_policy_contract_v1()
+                ),
+                "execution_policy_shadow_audit_contract_v1": build_execution_policy_shadow_audit_contract_v1(),
+                "bounded_lifecycle_canary_contract_v1": build_bounded_lifecycle_canary_contract_v1(),
+                "local_structure_profile_contract_v1": build_local_structure_profile_contract_v1(),
+                "runtime_readonly_surface_contract_v1": build_runtime_readonly_surface_contract_v1(),
+                "state_structure_dominance_contract_v1": build_state_structure_dominance_contract_v1(),
+                "dominance_validation_contract_v1": build_dominance_validation_contract_v1(),
+                "dominance_accuracy_shadow_contract_v1": build_dominance_accuracy_shadow_contract_v1(),
+                "symbol_specific_state_strength_calibration_contract_v1": (
+                    build_symbol_specific_state_strength_calibration_contract_v1()
+                ),
+                "ca2_r0_stability_summary_v1": dict(
+                    (ca2_r0_stability_report or {}).get("summary", {})
+                    if isinstance((ca2_r0_stability_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "ca2_r0_stability_artifact_paths": dict(
+                    (ca2_r0_stability_report or {}).get("artifact_paths", {})
+                    if isinstance((ca2_r0_stability_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "ca2_session_split_summary_v1": dict(
+                    (ca2_session_split_report or {}).get("summary", {})
+                    if isinstance((ca2_session_split_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "ca2_session_split_artifact_paths": dict(
+                    (ca2_session_split_report or {}).get("artifact_paths", {})
+                    if isinstance((ca2_session_split_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "should_have_done_summary_v1": dict(
+                    (should_have_done_candidate_report or {}).get("summary", {})
+                    if isinstance((should_have_done_candidate_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "should_have_done_artifact_paths": dict(
+                    (should_have_done_candidate_report or {}).get("artifact_paths", {})
+                    if isinstance((should_have_done_candidate_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "canonical_surface_summary_v1": dict(
+                    (canonical_surface_report or {}).get("summary", {})
+                    if isinstance((canonical_surface_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "canonical_surface_artifact_paths": dict(
+                    (canonical_surface_report or {}).get("artifact_paths", {})
+                    if isinstance((canonical_surface_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "session_aware_annotation_accuracy_summary_v1": dict(
+                    (session_aware_annotation_accuracy_report or {}).get("summary", {})
+                    if isinstance((session_aware_annotation_accuracy_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "session_aware_annotation_accuracy_artifact_paths": dict(
+                    (session_aware_annotation_accuracy_report or {}).get("artifact_paths", {})
+                    if isinstance((session_aware_annotation_accuracy_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "session_bias_shadow_summary_v1": dict(
+                    (session_bias_shadow_report or {}).get("summary", {})
+                    if isinstance((session_bias_shadow_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "session_bias_shadow_artifact_paths": dict(
+                    (session_bias_shadow_report or {}).get("artifact_paths", {})
+                    if isinstance((session_bias_shadow_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "state_strength_summary_v1": dict(
+                    (state_strength_summary_report or {}).get("summary", {})
+                    if isinstance((state_strength_summary_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "state_strength_artifact_paths": dict(
+                    (state_strength_summary_report or {}).get("artifact_paths", {})
+                    if isinstance((state_strength_summary_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "local_structure_summary_v1": dict(
+                    (local_structure_summary_report or {}).get("summary", {})
+                    if isinstance((local_structure_summary_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "local_structure_artifact_paths": dict(
+                    (local_structure_summary_report or {}).get("artifact_paths", {})
+                    if isinstance((local_structure_summary_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "runtime_readonly_surface_summary_v1": dict(
+                    (runtime_readonly_surface_report or {}).get("summary", {})
+                    if isinstance((runtime_readonly_surface_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "runtime_readonly_surface_artifact_paths": dict(
+                    (runtime_readonly_surface_report or {}).get("artifact_paths", {})
+                    if isinstance((runtime_readonly_surface_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "state_structure_dominance_summary_v1": dict(
+                    (state_structure_dominance_report or {}).get("summary", {})
+                    if isinstance((state_structure_dominance_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "state_structure_dominance_artifact_paths": dict(
+                    (state_structure_dominance_report or {}).get("artifact_paths", {})
+                    if isinstance((state_structure_dominance_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "dominance_validation_summary_v1": dict(
+                    (dominance_validation_report or {}).get("summary", {})
+                    if isinstance((dominance_validation_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "dominance_validation_artifact_paths": dict(
+                    (dominance_validation_report or {}).get("artifact_paths", {})
+                    if isinstance((dominance_validation_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "dominance_accuracy_summary_v1": dict(
+                    (dominance_accuracy_shadow_report or {}).get("accuracy_summary", {})
+                    if isinstance((dominance_accuracy_shadow_report or {}).get("accuracy_summary", {}), dict)
+                    else {}
+                ),
+                "dominance_candidate_shadow_report_v1": dict(
+                    (dominance_accuracy_shadow_report or {}).get("shadow_summary", {})
+                    if isinstance((dominance_accuracy_shadow_report or {}).get("shadow_summary", {}), dict)
+                    else {}
+                ),
+                "dominance_accuracy_shadow_artifact_paths": dict(
+                    (dominance_accuracy_shadow_report or {}).get("artifact_paths", {})
+                    if isinstance((dominance_accuracy_shadow_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "symbol_specific_state_strength_calibration_summary_v1": dict(
+                    (symbol_specific_state_strength_calibration_report or {}).get("summary", {})
+                    if isinstance((symbol_specific_state_strength_calibration_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "symbol_specific_state_strength_calibration_artifact_paths": dict(
+                    (symbol_specific_state_strength_calibration_report or {}).get("artifact_paths", {})
+                    if isinstance(
+                        (symbol_specific_state_strength_calibration_report or {}).get("artifact_paths", {}),
+                        dict,
+                    )
+                    else {}
+                ),
+                "state_strength_s0_stability_summary_v1": dict(
+                    (state_strength_s0_stability_report or {}).get("summary", {})
+                    if isinstance((state_strength_s0_stability_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "state_strength_s0_stability_artifact_paths": dict(
+                    (state_strength_s0_stability_report or {}).get("artifact_paths", {})
+                    if isinstance((state_strength_s0_stability_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "state_polarity_d0_stability_summary_v1": dict(
+                    (state_polarity_d0_stability_report or {}).get("summary", {})
+                    if isinstance((state_polarity_d0_stability_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "state_polarity_d0_stability_artifact_paths": dict(
+                    (state_polarity_d0_stability_report or {}).get("artifact_paths", {})
+                    if isinstance((state_polarity_d0_stability_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "state_polarity_slot_vocabulary_summary_v1": dict(
+                    (state_polarity_slot_vocabulary_report or {}).get("summary", {})
+                    if isinstance((state_polarity_slot_vocabulary_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "state_polarity_slot_vocabulary_artifact_paths": dict(
+                    (state_polarity_slot_vocabulary_report or {}).get("artifact_paths", {})
+                    if isinstance((state_polarity_slot_vocabulary_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "rejection_split_rule_summary_v1": dict(
+                    (rejection_split_rule_report or {}).get("summary", {})
+                    if isinstance((rejection_split_rule_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "rejection_split_rule_artifact_paths": dict(
+                    (rejection_split_rule_report or {}).get("artifact_paths", {})
+                    if isinstance((rejection_split_rule_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "continuation_stage_summary_v1": dict(
+                    (continuation_stage_report or {}).get("summary", {})
+                    if isinstance((continuation_stage_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "continuation_stage_artifact_paths": dict(
+                    (continuation_stage_report or {}).get("artifact_paths", {})
+                    if isinstance((continuation_stage_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "location_context_summary_v1": dict(
+                    (location_context_report or {}).get("summary", {})
+                    if isinstance((location_context_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "location_context_artifact_paths": dict(
+                    (location_context_report or {}).get("artifact_paths", {})
+                    if isinstance((location_context_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "tempo_profile_summary_v1": dict(
+                    (tempo_profile_report or {}).get("summary", {})
+                    if isinstance((tempo_profile_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "tempo_profile_artifact_paths": dict(
+                    (tempo_profile_report or {}).get("artifact_paths", {})
+                    if isinstance((tempo_profile_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "ambiguity_modifier_summary_v1": dict(
+                    (ambiguity_modifier_report or {}).get("summary", {})
+                    if isinstance((ambiguity_modifier_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "ambiguity_modifier_artifact_paths": dict(
+                    (ambiguity_modifier_report or {}).get("artifact_paths", {})
+                    if isinstance((ambiguity_modifier_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "xau_pilot_mapping_summary_v1": dict(
+                    (xau_pilot_mapping_report or {}).get("summary", {})
+                    if isinstance((xau_pilot_mapping_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "xau_pilot_mapping_artifact_paths": dict(
+                    (xau_pilot_mapping_report or {}).get("artifact_paths", {})
+                    if isinstance((xau_pilot_mapping_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "nas_pilot_mapping_summary_v1": dict(
+                    (nas_pilot_mapping_report or {}).get("summary", {})
+                    if isinstance((nas_pilot_mapping_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "nas_pilot_mapping_artifact_paths": dict(
+                    (nas_pilot_mapping_report or {}).get("artifact_paths", {})
+                    if isinstance((nas_pilot_mapping_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "btc_pilot_mapping_summary_v1": dict(
+                    (btc_pilot_mapping_report or {}).get("summary", {})
+                    if isinstance((btc_pilot_mapping_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "btc_pilot_mapping_artifact_paths": dict(
+                    (btc_pilot_mapping_report or {}).get("artifact_paths", {})
+                    if isinstance((btc_pilot_mapping_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "xau_readonly_surface_summary_v1": dict(
+                    (xau_readonly_surface_report or {}).get("summary", {})
+                    if isinstance((xau_readonly_surface_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "xau_readonly_surface_artifact_paths": dict(
+                    (xau_readonly_surface_report or {}).get("artifact_paths", {})
+                    if isinstance((xau_readonly_surface_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "nas_readonly_surface_summary_v1": dict(
+                    (nas_readonly_surface_report or {}).get("summary", {})
+                    if isinstance((nas_readonly_surface_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "nas_readonly_surface_artifact_paths": dict(
+                    (nas_readonly_surface_report or {}).get("artifact_paths", {})
+                    if isinstance((nas_readonly_surface_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "btc_readonly_surface_summary_v1": dict(
+                    (btc_readonly_surface_report or {}).get("summary", {})
+                    if isinstance((btc_readonly_surface_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "btc_readonly_surface_artifact_paths": dict(
+                    (btc_readonly_surface_report or {}).get("artifact_paths", {})
+                    if isinstance((btc_readonly_surface_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "xau_decomposition_validation_summary_v1": dict(
+                    (xau_decomposition_validation_report or {}).get("summary", {})
+                    if isinstance((xau_decomposition_validation_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "xau_decomposition_validation_artifact_paths": dict(
+                    (xau_decomposition_validation_report or {}).get("artifact_paths", {})
+                    if isinstance((xau_decomposition_validation_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "xau_refined_gate_timebox_audit_summary_v1": dict(
+                    (xau_refined_gate_timebox_audit_report or {}).get("summary", {})
+                    if isinstance((xau_refined_gate_timebox_audit_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "xau_refined_gate_timebox_audit_artifact_paths": dict(
+                    (xau_refined_gate_timebox_audit_report or {}).get("artifact_paths", {})
+                    if isinstance((xau_refined_gate_timebox_audit_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "state_flow_f0_chain_alignment_summary_v1": dict(
+                    (state_flow_f0_chain_alignment_report or {}).get("summary", {})
+                    if isinstance((state_flow_f0_chain_alignment_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "state_flow_f0_chain_alignment_artifact_paths": dict(
+                    (state_flow_f0_chain_alignment_report or {}).get("artifact_paths", {})
+                    if isinstance((state_flow_f0_chain_alignment_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "flow_structure_gate_summary_v1": dict(
+                    (flow_structure_gate_report or {}).get("summary", {})
+                    if isinstance((flow_structure_gate_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "flow_structure_gate_artifact_paths": dict(
+                    (flow_structure_gate_report or {}).get("artifact_paths", {})
+                    if isinstance((flow_structure_gate_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "aggregate_directional_flow_metrics_summary_v1": dict(
+                    (aggregate_directional_flow_metrics_report or {}).get("summary", {})
+                    if isinstance((aggregate_directional_flow_metrics_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "aggregate_directional_flow_metrics_artifact_paths": dict(
+                    (aggregate_directional_flow_metrics_report or {}).get("artifact_paths", {})
+                    if isinstance((aggregate_directional_flow_metrics_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "retained_window_flow_calibration_summary_v1": dict(
+                    (retained_window_flow_calibration_report or {}).get("summary", {})
+                    if isinstance((retained_window_flow_calibration_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "retained_window_flow_calibration_artifact_paths": dict(
+                    (retained_window_flow_calibration_report or {}).get("artifact_paths", {})
+                    if isinstance((retained_window_flow_calibration_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "flow_threshold_provisional_band_summary_v1": dict(
+                    (flow_threshold_provisional_band_report or {}).get("summary", {})
+                    if isinstance((flow_threshold_provisional_band_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "flow_threshold_provisional_band_artifact_paths": dict(
+                    (flow_threshold_provisional_band_report or {}).get("artifact_paths", {})
+                    if isinstance((flow_threshold_provisional_band_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "exact_pilot_match_bonus_summary_v1": dict(
+                    (exact_pilot_match_bonus_report or {}).get("summary", {})
+                    if isinstance((exact_pilot_match_bonus_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "exact_pilot_match_bonus_artifact_paths": dict(
+                    (exact_pilot_match_bonus_report or {}).get("artifact_paths", {})
+                    if isinstance((exact_pilot_match_bonus_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "flow_support_state_summary_v1": dict(
+                    (flow_support_state_report or {}).get("summary", {})
+                    if isinstance((flow_support_state_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "flow_support_state_artifact_paths": dict(
+                    (flow_support_state_report or {}).get("artifact_paths", {})
+                    if isinstance((flow_support_state_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "flow_chain_shadow_comparison_summary_v1": dict(
+                    (flow_chain_shadow_comparison_report or {}).get("summary", {})
+                    if isinstance((flow_chain_shadow_comparison_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "flow_chain_shadow_comparison_artifact_paths": dict(
+                    (flow_chain_shadow_comparison_report or {}).get("artifact_paths", {})
+                    if isinstance((flow_chain_shadow_comparison_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "flow_candidate_improvement_review_summary_v1": dict(
+                    (flow_candidate_improvement_review_report or {}).get("summary", {})
+                    if isinstance((flow_candidate_improvement_review_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "flow_candidate_improvement_review_artifact_paths": dict(
+                    (flow_candidate_improvement_review_report or {}).get("artifact_paths", {})
+                    if isinstance((flow_candidate_improvement_review_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "nas_btc_hard_opposed_truth_audit_summary_v1": dict(
+                    (nas_btc_hard_opposed_truth_audit_report or {}).get("summary", {})
+                    if isinstance((nas_btc_hard_opposed_truth_audit_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "nas_btc_hard_opposed_truth_audit_artifact_paths": dict(
+                    (nas_btc_hard_opposed_truth_audit_report or {}).get("artifact_paths", {})
+                    if isinstance((nas_btc_hard_opposed_truth_audit_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "bounded_calibration_candidate_summary_v1": dict(
+                    (bounded_calibration_candidate_report or {}).get("summary", {})
+                    if isinstance((bounded_calibration_candidate_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "bounded_calibration_candidate_artifact_paths": dict(
+                    (bounded_calibration_candidate_report or {}).get("artifact_paths", {})
+                    if isinstance((bounded_calibration_candidate_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "bounded_candidate_shadow_apply_summary_v1": dict(
+                    (bounded_candidate_shadow_apply_report or {}).get("summary", {})
+                    if isinstance((bounded_candidate_shadow_apply_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "bounded_candidate_shadow_apply_artifact_paths": dict(
+                    (bounded_candidate_shadow_apply_report or {}).get("artifact_paths", {})
+                    if isinstance((bounded_candidate_shadow_apply_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "bounded_candidate_evaluation_dashboard_summary_v1": dict(
+                    (bounded_candidate_evaluation_dashboard_report or {}).get("summary", {})
+                    if isinstance((bounded_candidate_evaluation_dashboard_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "bounded_candidate_evaluation_dashboard_artifact_paths": dict(
+                    (bounded_candidate_evaluation_dashboard_report or {}).get("artifact_paths", {})
+                    if isinstance((bounded_candidate_evaluation_dashboard_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "bounded_candidate_lifecycle_feedback_loop_summary_v1": dict(
+                    (bounded_candidate_lifecycle_feedback_loop_report or {}).get("summary", {})
+                    if isinstance((bounded_candidate_lifecycle_feedback_loop_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "bounded_candidate_lifecycle_feedback_loop_artifact_paths": dict(
+                    (bounded_candidate_lifecycle_feedback_loop_report or {}).get("artifact_paths", {})
+                    if isinstance((bounded_candidate_lifecycle_feedback_loop_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "bounded_candidate_patch_memory_loop_summary_v1": dict(
+                    (bounded_candidate_patch_memory_loop_report or {}).get("summary", {})
+                    if isinstance((bounded_candidate_patch_memory_loop_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "bounded_candidate_patch_memory_loop_artifact_paths": dict(
+                    (bounded_candidate_patch_memory_loop_report or {}).get("artifact_paths", {})
+                    if isinstance((bounded_candidate_patch_memory_loop_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "flow_shadow_display_surface_summary_v1": dict(
+                    (flow_shadow_display_surface_report or {}).get("summary", {})
+                    if isinstance((flow_shadow_display_surface_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "flow_shadow_display_surface_artifact_paths": dict(
+                    (flow_shadow_display_surface_report or {}).get("artifact_paths", {})
+                    if isinstance((flow_shadow_display_surface_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "nas_decomposition_validation_summary_v1": dict(
+                    (nas_decomposition_validation_report or {}).get("summary", {})
+                    if isinstance((nas_decomposition_validation_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "nas_decomposition_validation_artifact_paths": dict(
+                    (nas_decomposition_validation_report or {}).get("artifact_paths", {})
+                    if isinstance((nas_decomposition_validation_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "btc_decomposition_validation_summary_v1": dict(
+                    (btc_decomposition_validation_report or {}).get("summary", {})
+                    if isinstance((btc_decomposition_validation_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "btc_decomposition_validation_artifact_paths": dict(
+                    (btc_decomposition_validation_report or {}).get("artifact_paths", {})
+                    if isinstance((btc_decomposition_validation_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "state_slot_commonization_judge_summary_v1": dict(
+                    (state_slot_commonization_judge_report or {}).get("summary", {})
+                    if isinstance((state_slot_commonization_judge_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "state_slot_commonization_judge_artifact_paths": dict(
+                    (state_slot_commonization_judge_report or {}).get("artifact_paths", {})
+                    if isinstance((state_slot_commonization_judge_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "state_slot_execution_interface_bridge_summary_v1": dict(
+                    (state_slot_execution_interface_bridge_report or {}).get("summary", {})
+                    if isinstance((state_slot_execution_interface_bridge_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "state_slot_execution_interface_bridge_artifact_paths": dict(
+                    (state_slot_execution_interface_bridge_report or {}).get("artifact_paths", {})
+                    if isinstance((state_slot_execution_interface_bridge_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "state_slot_symbol_extension_surface_summary_v1": dict(
+                    (state_slot_symbol_extension_surface_report or {}).get("summary", {})
+                    if isinstance((state_slot_symbol_extension_surface_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "state_slot_symbol_extension_surface_artifact_paths": dict(
+                    (state_slot_symbol_extension_surface_report or {}).get("artifact_paths", {})
+                    if isinstance((state_slot_symbol_extension_surface_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "state_slot_position_lifecycle_policy_summary_v1": dict(
+                    (state_slot_position_lifecycle_policy_report or {}).get("summary", {})
+                    if isinstance((state_slot_position_lifecycle_policy_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "state_slot_position_lifecycle_policy_artifact_paths": dict(
+                    (state_slot_position_lifecycle_policy_report or {}).get("artifact_paths", {})
+                    if isinstance((state_slot_position_lifecycle_policy_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "execution_policy_shadow_audit_summary_v1": dict(
+                    (execution_policy_shadow_audit_report or {}).get("summary", {})
+                    if isinstance((execution_policy_shadow_audit_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "execution_policy_shadow_audit_artifact_paths": dict(
+                    (execution_policy_shadow_audit_report or {}).get("artifact_paths", {})
+                    if isinstance((execution_policy_shadow_audit_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
+                "bounded_lifecycle_canary_summary_v1": dict(
+                    (bounded_lifecycle_canary_report or {}).get("summary", {})
+                    if isinstance((bounded_lifecycle_canary_report or {}).get("summary", {}), dict)
+                    else {}
+                ),
+                "bounded_lifecycle_canary_artifact_paths": dict(
+                    (bounded_lifecycle_canary_report or {}).get("artifact_paths", {})
+                    if isinstance((bounded_lifecycle_canary_report or {}).get("artifact_paths", {}), dict)
+                    else {}
+                ),
                 "semantic_shadow_runtime_diagnostics": semantic_shadow_runtime_export,
                 "ai_entry_traces": self.ai_entry_traces[-30:],
                 "last_order_ts": self.last_order_ts,
@@ -2691,18 +5340,29 @@ class TradingApplication:
                     for symbol, expiry in self.order_block_until_by_symbol.items()
                     if float(expiry or 0.0) > time.time()
                 },
+                "pending_reverse_by_symbol": self._export_pending_reverse_by_symbol(),
                 "market_regime_by_symbol": self.latest_regime_by_symbol,
-                "latest_signal_by_symbol": self.latest_signal_by_symbol,
+                "latest_signal_by_symbol": {
+                    str(symbol): enrich_runtime_signal_surface_v1(row)
+                    for symbol, row in context_enriched_signal_rows.items()
+                    if isinstance(row, dict)
+                },
                 "loop_debug_state": self.loop_debug_state,
+                "state25_candidate_runtime_v1": state25_candidate_runtime_state,
+                "state25_candidate_threshold_surface_v1": state25_candidate_threshold_surface,
+                "state25_candidate_size_surface_v1": state25_candidate_size_surface,
+                "state25_candidate_weight_surface_v1": state25_candidate_weight_surface,
+                "runtime_recycle": export_runtime_recycle_state(normalized_runtime_recycle_state),
             }
             if isinstance(policy_snapshot, dict):
                 payload["policy_snapshot"] = policy_snapshot
             slim_payload = dict(payload)
             slim_payload["detail_schema_version"] = RUNTIME_STATUS_DETAIL_SCHEMA_VERSION
             slim_payload["detail_payload_path"] = self.runtime_status_detail_path.name
+            slim_payload["pending_reverse_by_symbol"] = dict(payload.get("pending_reverse_by_symbol", {}) or {})
             slim_payload["latest_signal_by_symbol"] = {
                 str(symbol): compact_runtime_signal_row(row)
-                for symbol, row in (self.latest_signal_by_symbol or {}).items()
+                for symbol, row in context_enriched_signal_rows.items()
                 if isinstance(row, dict)
             }
             slim_payload.pop("recent_runtime_diagnostics", None)
@@ -2733,6 +5393,13 @@ class TradingApplication:
             )
         except Exception as exc:
             logger.exception("Failed to write runtime status: %s", exc)
+
+    def refresh_state25_candidate_runtime_state(self) -> dict:
+        self.state25_candidate_runtime_state = load_state25_candidate_runtime_state(
+            getattr(self, "state25_active_candidate_state_path", ""),
+            current_state=getattr(self, "state25_candidate_runtime_state", {}),
+        )
+        return dict(self.state25_candidate_runtime_state or {})
 
     def _write_loop_debug(self, *, loop_count: int, stage: str, symbol: str = "", detail: str = "") -> None:
         try:

@@ -89,6 +89,7 @@ def test_exit_risk_guard_returns_reverse_surface_on_adverse_reverse():
         symbol="BTCUSD",
         ticket_i=2002,
         profit=-0.44,
+        peak_profit=0.0,
         adverse_risk=True,
         duration_sec=90.0,
         favorable_move_pct=0.0012,
@@ -115,3 +116,111 @@ def test_exit_risk_guard_returns_reverse_surface_on_adverse_reverse():
     assert reverse_reasons == ["sell_reverse_ready"]
     assert runtime.calls == [(2002, "Adverse Reversal")]
     assert int(metrics.get("exit_adverse_reversal", 0)) == 1
+
+
+def test_exit_risk_guard_uses_shorter_adverse_hold_for_weak_peak_case():
+    runtime = _DummyRuntime()
+    logger = _DummyTradeLogger()
+    metrics = {}
+    resets = []
+
+    def _bump(key: str, amount: int = 1):
+        metrics[key] = int(metrics.get(key, 0)) + int(amount)
+
+    def _reset(ticket_i: int):
+        resets.append(int(ticket_i))
+
+    guard = ExitRiskGuard(
+        action_executor=ExitActionExecutor(runtime=runtime, trade_logger=logger, bump_metric=_bump, reset_state=_reset),
+        bump_metric=_bump,
+        check_profit_giveback=lambda *args: False,
+        check_plus_to_minus=lambda *args: False,
+        should_delay_adverse=lambda *args: (False, ""),
+    )
+    pos = SimpleNamespace(ticket=3003, type=1)
+
+    hit, reverse_action, reverse_score, reverse_reasons = guard.try_execute_hard_risk_guards(
+        pos=pos,
+        symbol="NAS100",
+        ticket_i=3003,
+        profit=-0.18,
+        peak_profit=0.12,
+        adverse_risk=True,
+        duration_sec=20.0,
+        favorable_move_pct=0.0004,
+        dynamic_loss_usd=1.0,
+        tf_confirm=False,
+        hold_strong=False,
+        protect_score=80,
+        protect_threshold=60,
+        lock_score=10,
+        lock_threshold=90,
+        min_target_profit=0.05,
+        min_net_guard=0.10,
+        exit_signal_score=90,
+        exit_detail="unit",
+        reverse_signal_threshold=140,
+        score_gap=10,
+        opposite_score=20.0,
+        result={"buy": {"reasons": []}, "sell": {"reasons": []}},
+    )
+
+    assert hit is True
+    assert reverse_action is None
+    assert reverse_score == 0.0
+    assert reverse_reasons == []
+    assert runtime.calls == [(3003, "Protect Exit")]
+
+
+def test_exit_risk_guard_keeps_default_hold_for_meaningful_peak_case():
+    runtime = _DummyRuntime()
+    logger = _DummyTradeLogger()
+    metrics = {}
+    resets = []
+
+    def _bump(key: str, amount: int = 1):
+        metrics[key] = int(metrics.get(key, 0)) + int(amount)
+
+    def _reset(ticket_i: int):
+        resets.append(int(ticket_i))
+
+    guard = ExitRiskGuard(
+        action_executor=ExitActionExecutor(runtime=runtime, trade_logger=logger, bump_metric=_bump, reset_state=_reset),
+        bump_metric=_bump,
+        check_profit_giveback=lambda *args: False,
+        check_plus_to_minus=lambda *args: False,
+        should_delay_adverse=lambda *args: (False, ""),
+    )
+    pos = SimpleNamespace(ticket=3004, type=1)
+
+    hit, reverse_action, reverse_score, reverse_reasons = guard.try_execute_hard_risk_guards(
+        pos=pos,
+        symbol="NAS100",
+        ticket_i=3004,
+        profit=-0.18,
+        peak_profit=0.80,
+        adverse_risk=True,
+        duration_sec=20.0,
+        favorable_move_pct=0.0004,
+        dynamic_loss_usd=1.0,
+        tf_confirm=False,
+        hold_strong=False,
+        protect_score=80,
+        protect_threshold=60,
+        lock_score=10,
+        lock_threshold=90,
+        min_target_profit=0.05,
+        min_net_guard=0.10,
+        exit_signal_score=90,
+        exit_detail="unit",
+        reverse_signal_threshold=140,
+        score_gap=10,
+        opposite_score=20.0,
+        result={"buy": {"reasons": []}, "sell": {"reasons": []}},
+    )
+
+    assert hit is False
+    assert reverse_action is None
+    assert reverse_score == 0.0
+    assert reverse_reasons == []
+    assert runtime.calls == []

@@ -114,8 +114,9 @@ class SemanticPromotionGuard:
         current_threshold: int,
         semantic_prediction: Mapping[str, Any] | None,
         runtime_snapshot_row: Mapping[str, Any] | None = None,
+        mode_override: str | None = None,
     ) -> dict[str, Any]:
-        mode = cls.current_mode()
+        mode = normalize_rollout_mode(mode_override or cls.current_mode())
         prediction = _coerce_mapping(semantic_prediction)
         row = _coerce_mapping(runtime_snapshot_row)
         trace_quality_state = str(

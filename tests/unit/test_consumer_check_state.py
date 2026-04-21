@@ -1,4 +1,5 @@
 from backend.services.consumer_check_state import (
+    _apply_state_aware_display_modifier_v1,
     build_consumer_check_state_v1,
     evaluate_consumer_open_guard_v1,
     resolve_effective_consumer_check_state_v1,
@@ -382,6 +383,99 @@ def test_build_consumer_check_state_exposes_modifier_contract_without_uplift_whe
     assert state["modifier_score_delta"] == 0.0
 
 
+def test_display_modifier_restores_hidden_nas_upper_break_fail_entry_gate_wait_contract():
+    modifier = _apply_state_aware_display_modifier_v1(
+        symbol="NAS100",
+        candidate=True,
+        display_ready=False,
+        entry_ready=False,
+        side="SELL",
+        stage="BLOCKED",
+        reason="upper_break_fail_confirm",
+        probe_scene_id="",
+        blocked_by="clustered_entry_price_zone",
+        action_none_reason="",
+        display_importance_tier="",
+        display_importance_source_reason="",
+        candidate_support=0.0,
+        pair_gap=0.0,
+        bridge_act_vs_wait_bias=0.5,
+        bridge_false_break_risk=0.0,
+        bridge_awareness_keep_allowed=False,
+    )
+
+    assert modifier["modifier_applied"] is True
+    assert modifier["modifier_primary_reason"] == "chart_wait_visibility_restore"
+    assert modifier["modifier_stage_adjustment"] == "blocked_to_observe"
+    assert modifier["effective_display_ready"] is True
+    assert modifier["effective_stage"] == "OBSERVE"
+    assert modifier["chart_event_kind_hint"] == "WAIT"
+    assert modifier["chart_display_mode"] == "wait_check_repeat"
+    assert modifier["chart_display_reason"] == "nas_upper_break_fail_confirm_entry_gate_wait_as_wait_checks"
+
+
+def test_display_modifier_restores_hidden_xau_upper_reject_mixed_entry_gate_wait_contract():
+    modifier = _apply_state_aware_display_modifier_v1(
+        symbol="XAUUSD",
+        candidate=True,
+        display_ready=False,
+        entry_ready=False,
+        side="SELL",
+        stage="BLOCKED",
+        reason="upper_reject_mixed_confirm",
+        probe_scene_id="",
+        blocked_by="pyramid_not_in_drawdown",
+        action_none_reason="",
+        display_importance_tier="medium",
+        display_importance_source_reason="xau_upper_reject_development",
+        candidate_support=0.0,
+        pair_gap=0.0,
+        bridge_act_vs_wait_bias=0.5,
+        bridge_false_break_risk=0.0,
+        bridge_awareness_keep_allowed=False,
+    )
+
+    assert modifier["modifier_applied"] is True
+    assert modifier["modifier_primary_reason"] == "chart_wait_visibility_restore"
+    assert modifier["modifier_stage_adjustment"] == "blocked_to_observe"
+    assert modifier["effective_display_ready"] is True
+    assert modifier["effective_stage"] == "OBSERVE"
+    assert modifier["chart_event_kind_hint"] == "WAIT"
+    assert modifier["chart_display_mode"] == "wait_check_repeat"
+    assert modifier["chart_display_reason"] == "xau_upper_reject_mixed_confirm_entry_gate_wait_as_wait_checks"
+
+
+def test_display_modifier_restores_hidden_xau_outer_band_probe_entry_gate_wait_contract():
+    modifier = _apply_state_aware_display_modifier_v1(
+        symbol="XAUUSD",
+        candidate=True,
+        display_ready=False,
+        entry_ready=False,
+        side="SELL",
+        stage="BLOCKED",
+        reason="outer_band_reversal_support_required_observe",
+        probe_scene_id="xau_upper_sell_probe",
+        blocked_by="clustered_entry_price_zone",
+        action_none_reason="",
+        display_importance_tier="",
+        display_importance_source_reason="",
+        candidate_support=0.0,
+        pair_gap=0.0,
+        bridge_act_vs_wait_bias=0.5,
+        bridge_false_break_risk=0.0,
+        bridge_awareness_keep_allowed=False,
+    )
+
+    assert modifier["modifier_applied"] is True
+    assert modifier["modifier_primary_reason"] == "chart_wait_visibility_restore"
+    assert modifier["modifier_stage_adjustment"] == "blocked_to_observe"
+    assert modifier["effective_display_ready"] is True
+    assert modifier["effective_stage"] == "OBSERVE"
+    assert modifier["chart_event_kind_hint"] == "WAIT"
+    assert modifier["chart_display_mode"] == "wait_check_repeat"
+    assert modifier["chart_display_reason"] == "xau_outer_band_probe_entry_gate_wait_as_wait_checks"
+
+
 def test_build_consumer_check_state_does_not_uplift_nas_upper_continuation_display():
     state = build_consumer_check_state_v1(
         payload={
@@ -550,30 +644,7 @@ def test_build_consumer_check_state_soft_caps_xau_upper_reject_under_choppy_stat
     assert state["display_repeat_count"] == 2
 
 
-def test_build_consumer_check_state_hides_xau_upper_reject_confirm_under_forecast_wait():
-    state = build_consumer_check_state_v1(
-        payload={
-            "observe_reason": "upper_reject_confirm",
-            "consumer_effective_action": "SELL",
-            "blocked_by": "forecast_guard",
-            "action_none_reason": "observe_state_wait",
-            "core_pass": 0,
-        },
-        canonical_symbol="XAUUSD",
-    )
-
-    assert state["check_candidate"] is True
-    assert state["check_display_ready"] is False
-    assert state["entry_ready"] is False
-    assert state["check_side"] == "SELL"
-    assert state["check_stage"] in {"OBSERVE", "PROBE"}
-    assert state["blocked_display_reason"] == "xau_upper_reject_guard_wait_hidden"
-    assert state["display_strength_level"] >= 0
-    assert state["display_score"] == 0.0
-    assert state["display_repeat_count"] == 0
-
-
-def test_build_consumer_check_state_hides_xau_upper_reject_mixed_confirm_under_forecast_wait():
+def test_build_consumer_check_state_keeps_xau_upper_reject_mixed_confirm_under_forecast_wait_visible():
     state = build_consumer_check_state_v1(
         payload={
             "observe_reason": "upper_reject_mixed_confirm",
@@ -586,13 +657,43 @@ def test_build_consumer_check_state_hides_xau_upper_reject_mixed_confirm_under_f
     )
 
     assert state["check_candidate"] is True
-    assert state["check_display_ready"] is False
+    assert state["check_display_ready"] is True
     assert state["entry_ready"] is False
     assert state["check_side"] == "SELL"
-    assert state["check_stage"] in {"OBSERVE", "PROBE"}
-    assert state["blocked_display_reason"] == "xau_upper_reject_guard_wait_hidden"
-    assert state["display_score"] == 0.0
-    assert state["display_repeat_count"] == 0
+    assert state["check_stage"] == "OBSERVE"
+    assert state["blocked_display_reason"] == "forecast_guard"
+    assert state["display_importance_tier"] in {"", "medium"}
+    assert 0.70 <= state["display_score"] < 0.80
+    assert state["display_repeat_count"] == 1
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "xau_upper_reject_mixed_guard_wait_as_wait_checks"
+
+
+def test_build_consumer_check_state_keeps_xau_upper_reject_confirm_under_forecast_wait_visible():
+    state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_reject_confirm",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "forecast_guard",
+            "action_none_reason": "observe_state_wait",
+            "core_pass": 0,
+        },
+        canonical_symbol="XAUUSD",
+    )
+
+    assert state["check_candidate"] is True
+    assert state["check_display_ready"] is True
+    assert state["entry_ready"] is False
+    assert state["check_side"] == "SELL"
+    assert state["check_stage"] == "OBSERVE"
+    assert state["blocked_display_reason"] == "forecast_guard"
+    assert state["display_importance_tier"] in {"", "high"}
+    assert 0.70 <= state["display_score"] < 0.80
+    assert state["display_repeat_count"] == 1
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "xau_upper_reject_confirm_forecast_wait_as_wait_checks"
 
 
 def test_build_consumer_check_state_hides_xau_upper_reject_confirm_under_barrier_wait():
@@ -616,7 +717,311 @@ def test_build_consumer_check_state_hides_xau_upper_reject_confirm_under_barrier
     assert state["display_repeat_count"] == 0
 
 
-def test_build_consumer_check_state_hides_xau_upper_reject_mixed_confirm_under_barrier_wait():
+def test_build_consumer_check_state_keeps_xau_upper_reject_confirm_energy_soft_block_visible_as_wait():
+    state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_reject_confirm",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "energy_soft_block",
+            "action_none_reason": "execution_soft_blocked",
+            "box_state": "UPPER",
+            "bb_state": "UPPER_EDGE",
+            "core_pass": 0,
+        },
+        canonical_symbol="XAUUSD",
+    )
+
+    assert state["check_candidate"] is True
+    assert state["check_display_ready"] is True
+    assert state["entry_ready"] is False
+    assert state["check_side"] == "SELL"
+    assert state["check_stage"] == "BLOCKED"
+    assert state["entry_block_reason"] == "execution_soft_blocked"
+    assert state["blocked_display_reason"] == "energy_soft_block"
+    assert state["display_importance_tier"] == "high"
+    assert state["display_importance_source_reason"] == "xau_upper_reject_core"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "xau_upper_reject_confirm_energy_soft_block_as_wait_checks"
+    assert state["display_strength_level"] >= 5
+    assert state["display_repeat_count"] >= 1
+
+
+def test_build_consumer_check_state_keeps_xau_upper_reject_mixed_confirm_energy_soft_block_visible_as_wait():
+    state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_reject_mixed_confirm",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "energy_soft_block",
+            "action_none_reason": "execution_soft_blocked",
+            "box_state": "UPPER",
+            "bb_state": "UNKNOWN",
+            "core_pass": 0,
+        },
+        canonical_symbol="XAUUSD",
+    )
+
+    assert state["check_candidate"] is True
+    assert state["check_display_ready"] is True
+    assert state["entry_ready"] is False
+    assert state["check_side"] == "SELL"
+    assert state["check_stage"] == "BLOCKED"
+    assert state["entry_block_reason"] == "execution_soft_blocked"
+    assert state["blocked_display_reason"] == "energy_soft_block"
+    assert state["display_importance_tier"] == "medium"
+    assert state["display_importance_source_reason"] == "xau_upper_reject_development"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "xau_upper_reject_mixed_confirm_energy_soft_block_as_wait_checks"
+    assert state["display_strength_level"] >= 5
+    assert state["display_repeat_count"] >= 1
+
+
+def test_build_consumer_check_state_keeps_xau_upper_reject_mixed_confirm_entry_gate_wait_visible_as_wait():
+    state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_reject_mixed_confirm",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "clustered_entry_price_zone",
+            "action_none_reason": "",
+            "box_state": "UPPER",
+            "bb_state": "UPPER_EDGE",
+            "core_pass": 0,
+        },
+        canonical_symbol="XAUUSD",
+    )
+
+    assert state["check_candidate"] is True
+    assert state["check_display_ready"] is True
+    assert state["entry_ready"] is False
+    assert state["check_side"] == "SELL"
+    assert state["check_stage"] == "OBSERVE"
+    assert state["entry_block_reason"] == "clustered_entry_price_zone"
+    assert state["blocked_display_reason"] == "clustered_entry_price_zone"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "xau_upper_reject_mixed_confirm_entry_gate_wait_as_wait_checks"
+    assert state["display_strength_level"] >= 5
+    assert state["display_repeat_count"] >= 1
+
+
+def test_build_consumer_check_state_keeps_xau_outer_band_probe_entry_gate_wait_visible_as_wait():
+    state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "outer_band_reversal_support_required_observe",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "clustered_entry_price_zone",
+            "action_none_reason": "",
+            "probe_scene_id": "xau_upper_sell_probe",
+            "box_state": "UPPER",
+            "bb_state": "UPPER_EDGE",
+            "core_pass": 0,
+        },
+        canonical_symbol="XAUUSD",
+    )
+
+    assert state["check_candidate"] is True
+    assert state["check_display_ready"] is True
+    assert state["entry_ready"] is False
+    assert state["check_side"] == "SELL"
+    assert state["check_stage"] == "OBSERVE"
+    assert state["entry_block_reason"] == "clustered_entry_price_zone"
+    assert state["blocked_display_reason"] == "clustered_entry_price_zone"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "xau_outer_band_probe_entry_gate_wait_as_wait_checks"
+    assert state["display_strength_level"] >= 4
+    assert state["display_repeat_count"] >= 1
+
+
+def test_build_consumer_check_state_keeps_nas_upper_reject_mixed_confirm_energy_soft_block_visible_as_wait():
+    state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_reject_mixed_confirm",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "energy_soft_block",
+            "action_none_reason": "execution_soft_blocked",
+            "box_state": "ABOVE",
+            "bb_state": "BREAKOUT",
+            "core_pass": 0,
+        },
+        canonical_symbol="NAS100",
+    )
+
+    assert state["check_candidate"] is True
+    assert state["check_display_ready"] is True
+    assert state["entry_ready"] is False
+    assert state["check_side"] == "SELL"
+    assert state["check_stage"] == "BLOCKED"
+    assert state["entry_block_reason"] == "execution_soft_blocked"
+    assert state["blocked_display_reason"] == "energy_soft_block"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "nas_upper_reject_mixed_confirm_energy_soft_block_as_wait_checks"
+    assert state["display_strength_level"] >= 5
+    assert state["display_repeat_count"] >= 1
+
+
+def test_build_consumer_check_state_keeps_nas_upper_break_fail_confirm_entry_gate_wait_visible_as_wait():
+    state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_break_fail_confirm",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "pyramid_not_progressed",
+            "action_none_reason": "",
+            "box_state": "ABOVE",
+            "bb_state": "BREAKOUT",
+            "core_pass": 0,
+        },
+        canonical_symbol="NAS100",
+    )
+
+    assert state["check_candidate"] is True
+    assert state["check_display_ready"] is True
+    assert state["entry_ready"] is False
+    assert state["check_side"] == "SELL"
+    assert state["check_stage"] == "OBSERVE"
+    assert state["entry_block_reason"] == "pyramid_not_progressed"
+    assert state["blocked_display_reason"] == "pyramid_not_progressed"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "nas_upper_break_fail_confirm_entry_gate_wait_as_wait_checks"
+    assert state["display_strength_level"] >= 4
+    assert state["display_repeat_count"] >= 1
+
+
+def test_build_consumer_check_state_reclassifies_nas_upper_break_fail_confirm_with_up_breakout_as_buy_watch():
+    state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_break_fail_confirm",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "forecast_guard",
+            "action_none_reason": "observe_state_wait",
+            "breakout_candidate_direction": "UP",
+            "breakout_candidate_action_target": "WATCH_BREAKOUT",
+            "quick_trace_state": "OBSERVE",
+            "box_state": "ABOVE",
+            "bb_state": "BREAKOUT",
+            "core_pass": 0,
+        },
+        canonical_symbol="NAS100",
+    )
+
+    assert state["check_candidate"] is True
+    assert state["check_display_ready"] is True
+    assert state["entry_ready"] is False
+    assert state["check_side"] == "BUY"
+    assert state["check_stage"] == "OBSERVE"
+
+
+def test_build_consumer_check_state_reclassifies_btc_upper_reject_probe_with_up_breakout_as_buy_probe():
+    state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_reject_probe_observe",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "dynamic_threshold_not_met",
+            "action_none_reason": "probe_not_promoted",
+            "probe_scene_id": "btc_upper_sell_probe",
+            "breakout_candidate_direction": "UP",
+            "breakout_candidate_action_target": "PROBE_BREAKOUT",
+            "quick_trace_state": "PROBE_WAIT",
+            "box_state": "UPPER",
+            "bb_state": "MID",
+            "core_pass": 0,
+        },
+        canonical_symbol="BTCUSD",
+    )
+
+    assert state["check_candidate"] is True
+    assert state["check_display_ready"] is True
+    assert state["entry_ready"] is False
+    assert state["check_side"] == "BUY"
+    assert state["check_stage"] == "PROBE"
+
+
+def test_build_consumer_check_state_surfaces_btc_conflict_breakout_resume_as_buy_watch():
+    state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "conflict_box_upper_bb20_lower_upper_dominant_observe",
+            "consumer_effective_action": "NONE",
+            "blocked_by": "",
+            "action_none_reason": "observe_state_wait",
+            "breakout_candidate_direction": "UP",
+            "breakout_candidate_action_target": "WATCH_BREAKOUT",
+            "quick_trace_state": "OBSERVE",
+            "box_state": "UPPER",
+            "bb_state": "UNKNOWN",
+            "core_pass": 0,
+        },
+        canonical_symbol="BTCUSD",
+    )
+
+    assert state["check_candidate"] is True
+    assert state["check_display_ready"] is True
+    assert state["entry_ready"] is False
+    assert state["check_side"] == "BUY"
+    assert state["check_stage"] == "OBSERVE"
+
+
+def test_build_consumer_check_state_keeps_xau_upper_break_fail_confirm_energy_soft_block_visible_as_wait():
+    state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_break_fail_confirm",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "energy_soft_block",
+            "action_none_reason": "execution_soft_blocked",
+            "box_state": "UPPER",
+            "bb_state": "BREAKOUT",
+            "core_pass": 0,
+        },
+        canonical_symbol="XAUUSD",
+    )
+
+    assert state["check_candidate"] is True
+    assert state["check_display_ready"] is True
+    assert state["entry_ready"] is False
+    assert state["check_side"] == "SELL"
+    assert state["check_stage"] == "BLOCKED"
+    assert state["entry_block_reason"] == "execution_soft_blocked"
+    assert state["blocked_display_reason"] == "energy_soft_block"
+    assert state["display_importance_tier"] == "high"
+    assert state["display_importance_source_reason"] == "xau_upper_reject_core"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "xau_upper_break_fail_confirm_energy_soft_block_as_wait_checks"
+    assert state["display_strength_level"] >= 5
+    assert state["display_repeat_count"] >= 1
+
+
+def test_build_consumer_check_state_keeps_nas_upper_break_fail_confirm_energy_soft_block_visible_as_wait():
+    state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_break_fail_confirm",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "energy_soft_block",
+            "action_none_reason": "execution_soft_blocked",
+            "box_state": "ABOVE",
+            "bb_state": "UPPER_EDGE",
+            "core_pass": 0,
+        },
+        canonical_symbol="NAS100",
+    )
+
+    assert state["check_candidate"] is True
+    assert state["check_display_ready"] is True
+    assert state["entry_ready"] is False
+    assert state["check_side"] == "SELL"
+    assert state["check_stage"] == "BLOCKED"
+    assert state["entry_block_reason"] == "execution_soft_blocked"
+    assert state["blocked_display_reason"] == "energy_soft_block"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "nas_upper_break_fail_confirm_energy_soft_block_as_wait_checks"
+    assert state["display_strength_level"] >= 5
+    assert state["display_repeat_count"] >= 1
+
+
+def test_build_consumer_check_state_keeps_xau_upper_reject_mixed_confirm_under_barrier_wait_visible():
     state = build_consumer_check_state_v1(
         payload={
             "observe_reason": "upper_reject_mixed_confirm",
@@ -633,7 +1038,7 @@ def test_build_consumer_check_state_hides_xau_upper_reject_mixed_confirm_under_b
     assert state["entry_ready"] is False
     assert state["check_side"] == "SELL"
     assert state["check_stage"] == "OBSERVE"
-    assert state["blocked_display_reason"] in {"", "xau_upper_reject_development"}
+    assert state["blocked_display_reason"] == "barrier_guard"
     assert state["display_importance_tier"] in {"", "medium"}
     assert 0.70 <= state["display_score"] < 0.80
     assert state["display_repeat_count"] == 1
@@ -736,6 +1141,434 @@ def test_build_consumer_check_state_keeps_btc_lower_probe_promotion_wait_visible
     assert state["chart_display_reason"] == "btc_lower_probe_promotion_wait_as_wait_checks"
     assert state["display_strength_level"] >= 6
     assert state["display_repeat_count"] >= 3
+
+
+def test_build_consumer_check_state_keeps_btc_lower_probe_forecast_wait_visible_as_wait():
+    state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "lower_rebound_probe_observe",
+            "consumer_effective_action": "BUY",
+            "blocked_by": "forecast_guard",
+            "action_none_reason": "probe_not_promoted",
+            "probe_scene_id": "btc_lower_buy_conservative_probe",
+            "box_state": "LOWER",
+            "bb_state": "MID",
+            "core_pass": 0,
+        },
+        canonical_symbol="BTCUSD",
+    )
+
+    assert state["check_candidate"] is True
+    assert state["check_display_ready"] is True
+    assert state["entry_ready"] is False
+    assert state["check_side"] == "BUY"
+    assert state["check_stage"] == "OBSERVE"
+    assert state["blocked_display_reason"] == "forecast_guard"
+    assert state["display_importance_tier"] == "medium"
+    assert state["display_importance_source_reason"] == "btc_lower_recovery_start"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "btc_lower_probe_guard_wait_as_wait_checks"
+    assert state["display_strength_level"] == 5
+    assert state["display_repeat_count"] >= 1
+
+
+def test_build_consumer_check_state_keeps_btc_lower_probe_barrier_wait_visible_as_wait():
+    state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "lower_rebound_probe_observe",
+            "consumer_effective_action": "BUY",
+            "blocked_by": "barrier_guard",
+            "action_none_reason": "probe_not_promoted",
+            "probe_scene_id": "btc_lower_buy_conservative_probe",
+            "box_state": "LOWER",
+            "bb_state": "MID",
+            "core_pass": 0,
+        },
+        canonical_symbol="BTCUSD",
+    )
+
+    assert state["check_candidate"] is True
+    assert state["check_display_ready"] is True
+    assert state["entry_ready"] is False
+    assert state["check_side"] == "BUY"
+    assert state["check_stage"] == "OBSERVE"
+    assert state["blocked_display_reason"] == "barrier_guard"
+    assert state["display_importance_tier"] == "medium"
+    assert state["display_importance_source_reason"] == "btc_lower_recovery_start"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "btc_lower_probe_guard_wait_as_wait_checks"
+    assert state["display_strength_level"] == 5
+    assert state["display_repeat_count"] >= 1
+
+
+def test_build_consumer_check_state_keeps_xau_lower_probe_forecast_wait_visible_as_wait():
+    state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "lower_rebound_probe_observe",
+            "consumer_effective_action": "BUY",
+            "blocked_by": "forecast_guard",
+            "action_none_reason": "probe_not_promoted",
+            "probe_scene_id": "xau_second_support_buy_probe",
+            "box_state": "LOWER",
+            "bb_state": "UNKNOWN",
+            "core_pass": 0,
+        },
+        canonical_symbol="XAUUSD",
+    )
+
+    assert state["check_candidate"] is True
+    assert state["check_display_ready"] is True
+    assert state["entry_ready"] is False
+    assert state["check_side"] == "BUY"
+    assert state["check_stage"] == "PROBE"
+    assert state["blocked_display_reason"] == "forecast_guard"
+    assert state["display_importance_tier"] == "medium"
+    assert state["display_importance_source_reason"] == "xau_lower_recovery_start"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "xau_lower_probe_guard_wait_as_wait_checks"
+    assert state["display_strength_level"] >= 6
+    assert state["display_repeat_count"] >= 2
+
+
+def test_build_consumer_check_state_keeps_xau_middle_anchor_probe_guard_wait_visible_as_wait():
+    state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "middle_sr_anchor_required_observe",
+            "consumer_effective_action": "BUY",
+            "blocked_by": "middle_sr_anchor_guard",
+            "action_none_reason": "probe_not_promoted",
+            "probe_scene_id": "xau_second_support_buy_probe",
+            "box_state": "MIDDLE",
+            "bb_state": "MID",
+            "core_pass": 0,
+        },
+        canonical_symbol="XAUUSD",
+    )
+
+    assert state["check_candidate"] is True
+    assert state["check_display_ready"] is True
+    assert state["entry_ready"] is False
+    assert state["check_side"] == "BUY"
+    assert state["check_stage"] == "OBSERVE"
+    assert state["blocked_display_reason"] == ""
+    assert state["display_importance_tier"] == "medium"
+    assert state["display_importance_source_reason"] == "xau_second_support_reclaim"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "probe_guard_wait_as_wait_checks"
+    assert state["display_strength_level"] == 5
+    assert state["display_repeat_count"] >= 2
+
+
+def test_build_consumer_check_state_keeps_btc_upper_reject_confirm_forecast_wait_visible_as_wait():
+    state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_reject_confirm",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "forecast_guard",
+            "action_none_reason": "observe_state_wait",
+            "box_state": "MIDDLE",
+            "bb_state": "BREAKOUT",
+            "core_pass": 0,
+        },
+        canonical_symbol="BTCUSD",
+    )
+
+    assert state["check_candidate"] is True
+    assert state["check_display_ready"] is True
+    assert state["entry_ready"] is False
+    assert state["check_side"] == "SELL"
+    assert state["check_stage"] == "OBSERVE"
+    assert state["blocked_display_reason"] == "forecast_guard"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "btc_upper_reject_confirm_forecast_wait_as_wait_checks"
+    assert state["display_strength_level"] == 5
+    assert state["display_repeat_count"] >= 1
+
+
+def test_build_consumer_check_state_keeps_btc_upper_break_fail_confirm_forecast_wait_visible_as_wait():
+    state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_break_fail_confirm",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "forecast_guard",
+            "action_none_reason": "observe_state_wait",
+            "box_state": "MIDDLE",
+            "bb_state": "BREAKOUT",
+            "core_pass": 0,
+        },
+        canonical_symbol="BTCUSD",
+    )
+
+    assert state["check_candidate"] is True
+    assert state["check_display_ready"] is True
+    assert state["entry_ready"] is False
+    assert state["check_side"] == "SELL"
+    assert state["check_stage"] == "OBSERVE"
+    assert state["blocked_display_reason"] == "forecast_guard"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "btc_upper_break_fail_confirm_forecast_wait_as_wait_checks"
+    assert state["display_strength_level"] == 5
+    assert state["display_repeat_count"] >= 1
+
+
+def test_build_consumer_check_state_keeps_btc_upper_break_fail_confirm_entry_gate_wait_visible_as_wait():
+    state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_break_fail_confirm",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "clustered_entry_price_zone",
+            "action_none_reason": "",
+            "box_state": "ABOVE",
+            "bb_state": "UPPER_EDGE",
+            "core_pass": 0,
+        },
+        canonical_symbol="BTCUSD",
+    )
+
+    assert state["check_candidate"] is True
+    assert state["check_display_ready"] is True
+    assert state["entry_ready"] is False
+    assert state["check_side"] == "SELL"
+    assert state["check_stage"] == "OBSERVE"
+    assert state["blocked_display_reason"] == "clustered_entry_price_zone"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "btc_upper_break_fail_confirm_entry_gate_wait_as_wait_checks"
+    assert state["display_strength_level"] >= 5
+    assert state["display_repeat_count"] >= 1
+
+
+def test_build_consumer_check_state_keeps_btc_upper_break_fail_confirm_energy_soft_block_visible_as_wait():
+    state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_break_fail_confirm",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "energy_soft_block",
+            "action_none_reason": "execution_soft_blocked",
+            "box_state": "ABOVE",
+            "bb_state": "UPPER_EDGE",
+            "core_pass": 0,
+        },
+        canonical_symbol="BTCUSD",
+    )
+
+    assert state["check_candidate"] is True
+    assert state["check_display_ready"] is True
+    assert state["entry_ready"] is False
+    assert state["check_side"] == "SELL"
+    assert state["check_stage"] == "BLOCKED"
+    assert state["blocked_display_reason"] == "energy_soft_block"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "btc_upper_break_fail_confirm_energy_soft_block_as_wait_checks"
+    assert state["display_strength_level"] >= 5
+    assert state["display_repeat_count"] >= 1
+
+
+def test_build_consumer_check_state_keeps_btc_upper_reject_probe_forecast_wait_visible_as_wait():
+    state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_reject_probe_observe",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "forecast_guard",
+            "action_none_reason": "probe_not_promoted",
+            "probe_scene_id": "btc_upper_sell_probe",
+            "box_state": "MIDDLE",
+            "bb_state": "UPPER_EDGE",
+            "core_pass": 0,
+        },
+        canonical_symbol="BTCUSD",
+    )
+
+    assert state["check_candidate"] is True
+    assert state["check_display_ready"] is True
+    assert state["entry_ready"] is False
+    assert state["check_side"] == "SELL"
+    assert state["check_stage"] == "PROBE"
+    assert state["blocked_display_reason"] == "forecast_guard"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "btc_upper_reject_probe_forecast_wait_as_wait_checks"
+    assert state["display_strength_level"] >= 6
+    assert state["display_repeat_count"] >= 1
+
+
+def test_build_consumer_check_state_keeps_btc_upper_reject_probe_preflight_block_visible_as_wait():
+    state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_reject_probe_observe",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "preflight_action_blocked",
+            "action_none_reason": "preflight_blocked",
+            "probe_scene_id": "btc_upper_sell_probe",
+            "box_state": "MIDDLE",
+            "bb_state": "UPPER_EDGE",
+            "core_pass": 0,
+        },
+        canonical_symbol="BTCUSD",
+    )
+
+    assert state["check_candidate"] is True
+    assert state["check_display_ready"] is True
+    assert state["entry_ready"] is False
+    assert state["check_side"] == "SELL"
+    assert state["check_stage"] == "BLOCKED"
+    assert state["blocked_display_reason"] == "preflight_action_blocked"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "btc_upper_reject_probe_preflight_wait_as_wait_checks"
+    assert state["display_strength_level"] == 5
+    assert state["display_repeat_count"] >= 1
+
+
+def test_build_consumer_check_state_keeps_btc_upper_reject_probe_promotion_wait_visible_as_wait():
+    state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_reject_probe_observe",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "probe_promotion_gate",
+            "action_none_reason": "probe_not_promoted",
+            "probe_scene_id": "btc_upper_sell_probe",
+            "box_state": "UPPER",
+            "bb_state": "UPPER_EDGE",
+            "core_pass": 0,
+        },
+        canonical_symbol="BTCUSD",
+    )
+
+    assert state["check_candidate"] is True
+    assert state["check_display_ready"] is True
+    assert state["entry_ready"] is False
+    assert state["check_side"] == "SELL"
+    assert state["check_stage"] == "PROBE"
+    assert state["blocked_display_reason"] == "probe_promotion_gate"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "btc_upper_reject_probe_promotion_wait_as_wait_checks"
+    assert state["display_strength_level"] >= 6
+    assert state["display_repeat_count"] >= 2
+
+
+def test_build_consumer_check_state_keeps_btc_upper_reject_confirm_energy_soft_block_visible_as_wait():
+    state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_reject_confirm",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "energy_soft_block",
+            "action_none_reason": "execution_soft_blocked",
+            "box_state": "UPPER",
+            "bb_state": "UPPER_EDGE",
+            "core_pass": 0,
+        },
+        canonical_symbol="BTCUSD",
+    )
+
+    assert state["check_candidate"] is True
+    assert state["check_display_ready"] is True
+    assert state["entry_ready"] is False
+    assert state["check_side"] == "SELL"
+    assert state["check_stage"] == "BLOCKED"
+    assert state["blocked_display_reason"] == "energy_soft_block"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "btc_upper_reject_confirm_energy_soft_block_as_wait_checks"
+    assert state["display_strength_level"] >= 5
+    assert state["display_repeat_count"] >= 1
+
+
+def test_build_consumer_check_state_keeps_btc_upper_reject_mixed_confirm_energy_soft_block_visible_as_wait():
+    state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_reject_mixed_confirm",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "energy_soft_block",
+            "action_none_reason": "execution_soft_blocked",
+            "box_state": "ABOVE",
+            "bb_state": "UPPER_EDGE",
+            "core_pass": 0,
+        },
+        canonical_symbol="BTCUSD",
+    )
+
+    assert state["check_candidate"] is True
+    assert state["check_display_ready"] is True
+    assert state["entry_ready"] is False
+    assert state["check_side"] == "SELL"
+    assert state["check_stage"] == "BLOCKED"
+    assert state["blocked_display_reason"] == "energy_soft_block"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "btc_upper_reject_mixed_confirm_energy_soft_block_as_wait_checks"
+    assert state["display_strength_level"] >= 5
+    assert state["display_repeat_count"] >= 1
+
+
+def test_build_consumer_check_state_keeps_btc_upper_reject_probe_energy_soft_block_visible_as_wait():
+    state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_reject_probe_observe",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "energy_soft_block",
+            "action_none_reason": "execution_soft_blocked",
+            "probe_scene_id": "btc_upper_sell_probe",
+            "entry_probe_plan_v1": {
+                "active": True,
+                "ready_for_entry": True,
+                "energy_relief_allowed": True,
+                "symbol_scene_relief": "btc_upper_sell_probe",
+                "intended_action": "SELL",
+            },
+            "box_state": "UPPER",
+            "bb_state": "UPPER_EDGE",
+            "core_pass": 0,
+        },
+        canonical_symbol="BTCUSD",
+    )
+
+    assert state["check_candidate"] is True
+    assert state["check_display_ready"] is True
+    assert state["entry_ready"] is False
+    assert state["check_side"] == "SELL"
+    assert state["check_stage"] == "PROBE"
+    assert state["blocked_display_reason"] == "energy_soft_block"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "btc_upper_reject_probe_energy_soft_block_as_wait_checks"
+    assert state["display_strength_level"] >= 5
+    assert state["display_repeat_count"] >= 1
+
+
+def test_build_consumer_check_state_keeps_btc_upper_reject_confirm_preflight_block_visible_as_wait():
+    state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_reject_confirm",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "preflight_action_blocked",
+            "action_none_reason": "preflight_blocked",
+            "box_state": "MIDDLE",
+            "bb_state": "BREAKOUT",
+            "core_pass": 0,
+        },
+        canonical_symbol="BTCUSD",
+    )
+
+    assert state["check_candidate"] is True
+    assert state["check_display_ready"] is True
+    assert state["entry_ready"] is False
+    assert state["check_side"] == "SELL"
+    assert state["check_stage"] == "BLOCKED"
+    assert state["blocked_display_reason"] == "preflight_action_blocked"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "btc_upper_reject_confirm_preflight_wait_as_wait_checks"
+    assert state["display_strength_level"] == 5
+    assert state["display_repeat_count"] >= 1
 
 
 def test_build_consumer_check_state_keeps_nas_upper_reject_probe_forecast_wait_visible_as_wait():
@@ -960,6 +1793,38 @@ def test_build_consumer_check_state_keeps_nas_outer_band_probe_against_default_s
     assert state["display_repeat_count"] == 1
 
 
+def test_build_consumer_check_state_keeps_xau_outer_band_probe_against_default_side_visible_as_wait():
+    state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "outer_band_reversal_support_required_observe",
+            "consumer_effective_action": "BUY",
+            "blocked_by": "outer_band_guard",
+            "action_none_reason": "probe_not_promoted",
+            "probe_scene_id": "xau_upper_sell_probe",
+            "entry_probe_plan_v1": {
+                "reason": "probe_against_default_side",
+                "active": True,
+                "ready_for_entry": False,
+                "symbol_scene_relief": "xau_upper_sell_probe",
+                "intended_action": "SELL",
+            },
+            "box_state": "ABOVE",
+            "bb_state": "UPPER_EDGE",
+            "core_pass": 0,
+        },
+        canonical_symbol="XAUUSD",
+    )
+
+    assert state["check_stage"] == "OBSERVE"
+    assert state["check_display_ready"] is True
+    assert state["blocked_display_reason"] == "outer_band_guard"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "probe_guard_wait_as_wait_checks"
+    assert 0.70 <= state["display_score"] < 0.80
+    assert state["display_repeat_count"] == 1
+
+
 def test_build_consumer_check_state_keeps_xau_middle_anchor_guard_wait_visible_as_wait():
     state = build_consumer_check_state_v1(
         payload={
@@ -1069,6 +1934,34 @@ def test_build_consumer_check_state_hides_nas_sell_middle_anchor_wait_without_pr
     assert state["modifier_score_delta"] < 0.0
 
 
+def test_build_consumer_check_state_hides_btc_sell_middle_anchor_wait_without_probe_scene():
+    state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "middle_sr_anchor_required_observe",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "middle_sr_anchor_guard",
+            "action_none_reason": "observe_state_wait",
+            "box_state": "MIDDLE",
+            "bb_state": "UPPER_EDGE",
+            "core_pass": 0,
+        },
+        canonical_symbol="BTCUSD",
+    )
+
+    assert state["check_stage"] == "OBSERVE"
+    assert state["check_display_ready"] is False
+    assert state["display_importance_source_reason"] == ""
+    assert state["display_importance_tier"] == ""
+    assert state["display_score"] == 0.0
+    assert state["display_repeat_count"] == 0
+    assert state["modifier_contract_version"] == "common_state_aware_display_modifier_v1"
+    assert state["modifier_applied"] is True
+    assert state["modifier_primary_reason"] == "btc_sell_middle_anchor_wait_hide_without_probe"
+    assert "btc_sell_middle_anchor_wait_hide_without_probe" in state["modifier_reason_codes"]
+    assert state["modifier_stage_adjustment"] == "visibility_suppressed"
+    assert state["modifier_score_delta"] < 0.0
+
+
 def test_build_consumer_check_state_hides_nas_upper_reclaim_wait_without_probe_scene():
     state = build_consumer_check_state_v1(
         payload={
@@ -1095,6 +1988,59 @@ def test_build_consumer_check_state_hides_nas_upper_reclaim_wait_without_probe_s
     assert "nas_upper_reclaim_wait_hide_without_probe" in state["modifier_reason_codes"]
     assert state["modifier_stage_adjustment"] == "visibility_suppressed"
     assert state["modifier_score_delta"] < 0.0
+
+
+def test_build_consumer_check_state_hides_xau_upper_reclaim_wait_without_probe_scene():
+    state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_reclaim_strength_confirm",
+            "consumer_effective_action": "BUY",
+            "blocked_by": "forecast_guard",
+            "action_none_reason": "observe_state_wait",
+            "box_state": "UPPER",
+            "bb_state": "UNKNOWN",
+            "core_pass": 0,
+        },
+        canonical_symbol="XAUUSD",
+    )
+
+    assert state["check_stage"] == "OBSERVE"
+    assert state["check_display_ready"] is False
+    assert state["display_importance_source_reason"] == ""
+    assert state["display_importance_tier"] == ""
+    assert state["display_score"] == 0.0
+    assert state["display_repeat_count"] == 0
+    assert state["modifier_contract_version"] == "common_state_aware_display_modifier_v1"
+    assert state["modifier_applied"] is True
+    assert state["modifier_primary_reason"] == "xau_upper_reclaim_wait_hide_without_probe"
+    assert "xau_upper_reclaim_wait_hide_without_probe" in state["modifier_reason_codes"]
+    assert state["modifier_stage_adjustment"] == "visibility_suppressed"
+    assert state["modifier_score_delta"] < 0.0
+
+
+def test_build_consumer_check_state_marks_balanced_conflict_wait_hidden_without_probe():
+    state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "conflict_box_upper_bb20_lower_lower_dominant_observe",
+            "action_none_reason": "observe_state_wait",
+            "box_state": "ABOVE",
+            "bb_state": "UNKNOWN",
+            "core_pass": 0,
+        },
+        canonical_symbol="NAS100",
+    )
+
+    assert state["check_candidate"] is False
+    assert state["check_stage"] == ""
+    assert state["check_display_ready"] is False
+    assert state["display_score"] == 0.0
+    assert state["display_repeat_count"] == 0
+    assert state["modifier_contract_version"] == "common_state_aware_display_modifier_v1"
+    assert state["modifier_applied"] is True
+    assert state["modifier_primary_reason"] == "balanced_conflict_wait_hide_without_probe"
+    assert "balanced_conflict_wait_hide_without_probe" in state["modifier_reason_codes"]
+    assert state["modifier_stage_adjustment"] == "visibility_suppressed"
+    assert state["modifier_score_delta"] == 0.0
 
 
 def test_build_consumer_check_state_hides_nas_upper_reject_wait_without_probe_scene():
@@ -1304,12 +2250,12 @@ def test_resolve_effective_consumer_check_state_keeps_repeated_btc_structural_ob
     assert state["display_repeat_count"] >= 1
 
 
-def test_resolve_effective_consumer_check_state_suppresses_repeated_btc_lower_probe_observe():
+def test_resolve_effective_consumer_check_state_keeps_repeated_btc_lower_probe_forecast_wait_visible():
     initial_state = build_consumer_check_state_v1(
         payload={
             "observe_reason": "lower_rebound_probe_observe",
             "consumer_effective_action": "BUY",
-            "blocked_by": "barrier_guard",
+            "blocked_by": "forecast_guard",
             "action_none_reason": "probe_not_promoted",
             "probe_scene_id": "btc_lower_buy_conservative_probe",
             "core_pass": 0,
@@ -1343,13 +2289,16 @@ def test_resolve_effective_consumer_check_state_suppresses_repeated_btc_lower_pr
     )
 
     assert candidate is True
-    assert display_ready is False
+    assert display_ready is True
     assert entry_ready is False
     assert side == "BUY"
     assert stage == "OBSERVE"
     assert reason == "lower_rebound_probe_observe"
-    assert level == 0
-    assert state["blocked_display_reason"] == "btc_lower_probe_cadence_suppressed"
+    assert level == 5
+    assert state["blocked_display_reason"] == "forecast_guard"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "btc_lower_probe_guard_wait_as_wait_checks"
 
 
 def test_resolve_effective_consumer_check_state_keeps_btc_lower_probe_visible_under_barrier_guard():
@@ -1397,7 +2346,760 @@ def test_resolve_effective_consumer_check_state_keeps_btc_lower_probe_visible_un
     assert stage == "OBSERVE"
     assert reason == "lower_rebound_probe_observe"
     assert level == 5
-    assert state["blocked_display_reason"] in {"", "probe_not_promoted", "barrier_guard"}
+    assert state["blocked_display_reason"] == "barrier_guard"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "btc_lower_probe_guard_wait_as_wait_checks"
+
+
+def test_resolve_effective_consumer_check_state_keeps_xau_lower_probe_visible_under_forecast_guard():
+    initial_state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "lower_rebound_probe_observe",
+            "consumer_effective_action": "BUY",
+            "blocked_by": "forecast_guard",
+            "action_none_reason": "probe_not_promoted",
+            "probe_scene_id": "xau_second_support_buy_probe",
+            "box_state": "LOWER",
+            "bb_state": "UNKNOWN",
+            "core_pass": 0,
+        },
+        canonical_symbol="XAUUSD",
+    )
+
+    (
+        candidate,
+        display_ready,
+        entry_ready,
+        side,
+        stage,
+        reason,
+        level,
+        state,
+    ) = resolve_effective_consumer_check_state_v1(
+        consumer_check_state_v1=initial_state,
+        blocked_by_value="forecast_guard",
+        action_none_reason_value="probe_not_promoted",
+        action_value="BUY",
+        previous_runtime_row={
+            "observe_reason": "lower_rebound_probe_observe",
+            "blocked_by": "forecast_guard",
+            "action_none_reason": "probe_not_promoted",
+            "probe_scene_id": "xau_second_support_buy_probe",
+            "consumer_check_display_ready": True,
+            "consumer_check_side": "BUY",
+            "consumer_check_stage": "PROBE",
+        },
+    )
+
+    assert candidate is True
+    assert display_ready is True
+    assert entry_ready is False
+    assert side == "BUY"
+    assert stage == "PROBE"
+    assert reason == "lower_rebound_probe_observe"
+    assert level >= 6
+    assert state["blocked_display_reason"] == "forecast_guard"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "xau_lower_probe_guard_wait_as_wait_checks"
+
+
+def test_resolve_effective_consumer_check_state_keeps_xau_middle_anchor_probe_guard_visible_as_wait():
+    initial_state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "middle_sr_anchor_required_observe",
+            "consumer_effective_action": "BUY",
+            "blocked_by": "middle_sr_anchor_guard",
+            "action_none_reason": "probe_not_promoted",
+            "probe_scene_id": "xau_second_support_buy_probe",
+            "box_state": "MIDDLE",
+            "bb_state": "MID",
+            "core_pass": 0,
+        },
+        canonical_symbol="XAUUSD",
+    )
+
+    (
+        candidate,
+        display_ready,
+        entry_ready,
+        side,
+        stage,
+        reason,
+        level,
+        state,
+    ) = resolve_effective_consumer_check_state_v1(
+        consumer_check_state_v1=initial_state,
+        fallback_candidate=True,
+        fallback_display_ready=True,
+        fallback_entry_ready=False,
+        fallback_side="BUY",
+        fallback_stage="OBSERVE",
+        fallback_reason="middle_sr_anchor_required_observe",
+        fallback_display_strength_level=5,
+        fallback_action_none_reason="probe_not_promoted",
+        blocked_by_value="middle_sr_anchor_guard",
+        action_none_reason_value="probe_not_promoted",
+        action_value="",
+        previous_runtime_row={
+            "observe_reason": "middle_sr_anchor_required_observe",
+            "blocked_by": "middle_sr_anchor_guard",
+            "action_none_reason": "probe_not_promoted",
+            "probe_scene_id": "xau_second_support_buy_probe",
+            "consumer_check_display_ready": True,
+            "consumer_check_side": "BUY",
+            "consumer_check_stage": "OBSERVE",
+        },
+    )
+
+    assert candidate is True
+    assert display_ready is True
+    assert entry_ready is False
+    assert side == "BUY"
+    assert stage == "OBSERVE"
+    assert reason == "middle_sr_anchor_required_observe"
+    assert level == 5
+    assert state["blocked_display_reason"] == "middle_sr_anchor_guard"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "probe_guard_wait_as_wait_checks"
+
+
+def test_resolve_effective_consumer_check_state_keeps_btc_upper_reject_confirm_forecast_wait_visible():
+    initial_state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_reject_confirm",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "forecast_guard",
+            "action_none_reason": "observe_state_wait",
+            "box_state": "MIDDLE",
+            "bb_state": "BREAKOUT",
+            "core_pass": 0,
+        },
+        canonical_symbol="BTCUSD",
+    )
+
+    (
+        candidate,
+        display_ready,
+        entry_ready,
+        side,
+        stage,
+        reason,
+        level,
+        state,
+    ) = resolve_effective_consumer_check_state_v1(
+        consumer_check_state_v1=initial_state,
+        blocked_by_value="forecast_guard",
+        action_none_reason_value="observe_state_wait",
+        action_value="SELL",
+        previous_runtime_row={
+            "observe_reason": "upper_reject_confirm",
+            "blocked_by": "forecast_guard",
+            "action_none_reason": "observe_state_wait",
+            "probe_scene_id": "",
+            "consumer_check_display_ready": True,
+            "consumer_check_side": "SELL",
+            "consumer_check_stage": "OBSERVE",
+        },
+    )
+
+    assert candidate is True
+    assert display_ready is True
+    assert entry_ready is False
+    assert side == "SELL"
+    assert stage == "OBSERVE"
+    assert reason == "upper_reject_confirm"
+    assert level == 5
+    assert state["blocked_display_reason"] == "forecast_guard"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "btc_upper_reject_confirm_forecast_wait_as_wait_checks"
+
+
+def test_resolve_effective_consumer_check_state_keeps_btc_upper_break_fail_confirm_forecast_wait_visible():
+    initial_state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_break_fail_confirm",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "forecast_guard",
+            "action_none_reason": "observe_state_wait",
+            "box_state": "MIDDLE",
+            "bb_state": "BREAKOUT",
+            "core_pass": 0,
+        },
+        canonical_symbol="BTCUSD",
+    )
+
+    (
+        candidate,
+        display_ready,
+        entry_ready,
+        side,
+        stage,
+        reason,
+        level,
+        state,
+    ) = resolve_effective_consumer_check_state_v1(
+        consumer_check_state_v1=initial_state,
+        blocked_by_value="forecast_guard",
+        action_none_reason_value="observe_state_wait",
+        action_value="SELL",
+        previous_runtime_row={
+            "observe_reason": "upper_break_fail_confirm",
+            "blocked_by": "forecast_guard",
+            "action_none_reason": "observe_state_wait",
+            "probe_scene_id": "",
+            "consumer_check_display_ready": True,
+            "consumer_check_side": "SELL",
+            "consumer_check_stage": "OBSERVE",
+        },
+    )
+
+    assert candidate is True
+    assert display_ready is True
+    assert entry_ready is False
+    assert side == "SELL"
+    assert stage == "OBSERVE"
+    assert reason == "upper_break_fail_confirm"
+    assert level == 5
+    assert state["blocked_display_reason"] == "forecast_guard"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "btc_upper_break_fail_confirm_forecast_wait_as_wait_checks"
+
+
+def test_resolve_effective_consumer_check_state_keeps_btc_upper_break_fail_confirm_entry_gate_wait_visible():
+    initial_state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_break_fail_confirm",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "clustered_entry_price_zone",
+            "action_none_reason": "",
+            "box_state": "ABOVE",
+            "bb_state": "UPPER_EDGE",
+            "core_pass": 0,
+        },
+        canonical_symbol="BTCUSD",
+    )
+
+    (
+        candidate,
+        display_ready,
+        entry_ready,
+        side,
+        stage,
+        reason,
+        level,
+        state,
+    ) = resolve_effective_consumer_check_state_v1(
+        consumer_check_state_v1=initial_state,
+        blocked_by_value="clustered_entry_price_zone",
+        action_none_reason_value="",
+        action_value="SELL",
+        previous_runtime_row={
+            "observe_reason": "upper_break_fail_confirm",
+            "blocked_by": "clustered_entry_price_zone",
+            "action_none_reason": "",
+            "probe_scene_id": "",
+            "consumer_check_display_ready": True,
+            "consumer_check_side": "SELL",
+            "consumer_check_stage": "PROBE",
+        },
+    )
+
+    assert candidate is True
+    assert display_ready is True
+    assert entry_ready is False
+    assert side == "SELL"
+    assert stage == "OBSERVE"
+    assert reason == "upper_break_fail_confirm"
+    assert level >= 5
+    assert state["blocked_display_reason"] == "clustered_entry_price_zone"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "btc_upper_break_fail_confirm_entry_gate_wait_as_wait_checks"
+
+
+def test_resolve_effective_consumer_check_state_keeps_nas_upper_break_fail_confirm_entry_gate_wait_visible():
+    initial_state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_break_fail_confirm",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "clustered_entry_price_zone",
+            "action_none_reason": "",
+            "box_state": "ABOVE",
+            "bb_state": "BREAKOUT",
+            "core_pass": 0,
+        },
+        canonical_symbol="NAS100",
+    )
+
+    (
+        candidate,
+        display_ready,
+        entry_ready,
+        side,
+        stage,
+        reason,
+        level,
+        state,
+    ) = resolve_effective_consumer_check_state_v1(
+        consumer_check_state_v1=initial_state,
+        blocked_by_value="clustered_entry_price_zone",
+        action_none_reason_value="",
+        action_value="SELL",
+        previous_runtime_row={
+            "observe_reason": "upper_break_fail_confirm",
+            "blocked_by": "clustered_entry_price_zone",
+            "action_none_reason": "",
+            "probe_scene_id": "",
+            "consumer_check_display_ready": True,
+            "consumer_check_side": "SELL",
+            "consumer_check_stage": "PROBE",
+        },
+    )
+
+    assert candidate is True
+    assert display_ready is True
+    assert entry_ready is False
+    assert side == "SELL"
+    assert stage == "OBSERVE"
+    assert reason == "upper_break_fail_confirm"
+    assert level >= 4
+    assert state["blocked_display_reason"] == "clustered_entry_price_zone"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "nas_upper_break_fail_confirm_entry_gate_wait_as_wait_checks"
+
+
+def test_resolve_effective_consumer_check_state_keeps_xau_outer_band_probe_entry_gate_wait_visible():
+    initial_state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "outer_band_reversal_support_required_observe",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "clustered_entry_price_zone",
+            "action_none_reason": "",
+            "probe_scene_id": "xau_upper_sell_probe",
+            "box_state": "UPPER",
+            "bb_state": "UPPER_EDGE",
+            "core_pass": 0,
+        },
+        canonical_symbol="XAUUSD",
+    )
+
+    (
+        candidate,
+        display_ready,
+        entry_ready,
+        side,
+        stage,
+        reason,
+        level,
+        state,
+    ) = resolve_effective_consumer_check_state_v1(
+        consumer_check_state_v1=initial_state,
+        blocked_by_value="clustered_entry_price_zone",
+        action_none_reason_value="",
+        action_value="SELL",
+        previous_runtime_row={
+            "observe_reason": "outer_band_reversal_support_required_observe",
+            "blocked_by": "clustered_entry_price_zone",
+            "action_none_reason": "",
+            "probe_scene_id": "xau_upper_sell_probe",
+            "consumer_check_display_ready": True,
+            "consumer_check_side": "SELL",
+            "consumer_check_stage": "OBSERVE",
+        },
+    )
+
+    assert candidate is True
+    assert display_ready is True
+    assert entry_ready is False
+    assert side == "SELL"
+    assert stage == "OBSERVE"
+    assert reason == "outer_band_reversal_support_required_observe"
+    assert level >= 4
+    assert state["blocked_display_reason"] == "clustered_entry_price_zone"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "xau_outer_band_probe_entry_gate_wait_as_wait_checks"
+
+
+def test_resolve_effective_consumer_check_state_keeps_btc_upper_break_fail_confirm_energy_soft_block_visible():
+    initial_state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_break_fail_confirm",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "energy_soft_block",
+            "action_none_reason": "execution_soft_blocked",
+            "box_state": "ABOVE",
+            "bb_state": "UPPER_EDGE",
+            "core_pass": 0,
+        },
+        canonical_symbol="BTCUSD",
+    )
+
+    (
+        candidate,
+        display_ready,
+        entry_ready,
+        side,
+        stage,
+        reason,
+        level,
+        state,
+    ) = resolve_effective_consumer_check_state_v1(
+        consumer_check_state_v1=initial_state,
+        blocked_by_value="energy_soft_block",
+        action_none_reason_value="execution_soft_blocked",
+        action_value="SELL",
+        previous_runtime_row={
+            "observe_reason": "upper_break_fail_confirm",
+            "blocked_by": "energy_soft_block",
+            "action_none_reason": "execution_soft_blocked",
+            "probe_scene_id": "",
+            "consumer_check_display_ready": True,
+            "consumer_check_side": "SELL",
+            "consumer_check_stage": "BLOCKED",
+        },
+    )
+
+    assert candidate is True
+    assert display_ready is True
+    assert entry_ready is False
+    assert side == "SELL"
+    assert stage == "BLOCKED"
+    assert reason == "upper_break_fail_confirm"
+    assert level >= 5
+    assert state["blocked_display_reason"] == "energy_soft_block"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "btc_upper_break_fail_confirm_energy_soft_block_as_wait_checks"
+
+
+def test_resolve_effective_consumer_check_state_keeps_btc_upper_reject_probe_forecast_wait_visible():
+    initial_state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_reject_probe_observe",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "forecast_guard",
+            "action_none_reason": "probe_not_promoted",
+            "probe_scene_id": "btc_upper_sell_probe",
+            "box_state": "MIDDLE",
+            "bb_state": "UPPER_EDGE",
+            "core_pass": 0,
+        },
+        canonical_symbol="BTCUSD",
+    )
+
+    (
+        candidate,
+        display_ready,
+        entry_ready,
+        side,
+        stage,
+        reason,
+        level,
+        state,
+    ) = resolve_effective_consumer_check_state_v1(
+        consumer_check_state_v1=initial_state,
+        blocked_by_value="forecast_guard",
+        action_none_reason_value="probe_not_promoted",
+        action_value="SELL",
+        previous_runtime_row={
+            "observe_reason": "upper_reject_probe_observe",
+            "blocked_by": "forecast_guard",
+            "action_none_reason": "probe_not_promoted",
+            "probe_scene_id": "btc_upper_sell_probe",
+            "consumer_check_display_ready": True,
+            "consumer_check_side": "SELL",
+            "consumer_check_stage": "PROBE",
+        },
+    )
+
+    assert candidate is True
+    assert display_ready is True
+    assert entry_ready is False
+    assert side == "SELL"
+    assert stage == "PROBE"
+    assert reason == "upper_reject_probe_observe"
+    assert level >= 6
+    assert state["blocked_display_reason"] == "forecast_guard"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "btc_upper_reject_probe_forecast_wait_as_wait_checks"
+
+
+def test_resolve_effective_consumer_check_state_keeps_btc_upper_reject_probe_preflight_block_visible():
+    initial_state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_reject_probe_observe",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "preflight_action_blocked",
+            "action_none_reason": "preflight_blocked",
+            "probe_scene_id": "btc_upper_sell_probe",
+            "box_state": "MIDDLE",
+            "bb_state": "UPPER_EDGE",
+            "core_pass": 0,
+        },
+        canonical_symbol="BTCUSD",
+    )
+
+    (
+        candidate,
+        display_ready,
+        entry_ready,
+        side,
+        stage,
+        reason,
+        level,
+        state,
+    ) = resolve_effective_consumer_check_state_v1(
+        consumer_check_state_v1=initial_state,
+        blocked_by_value="preflight_action_blocked",
+        action_none_reason_value="preflight_blocked",
+        action_value="SELL",
+        previous_runtime_row={
+            "observe_reason": "upper_reject_probe_observe",
+            "blocked_by": "preflight_action_blocked",
+            "action_none_reason": "preflight_blocked",
+            "probe_scene_id": "btc_upper_sell_probe",
+            "consumer_check_display_ready": True,
+            "consumer_check_side": "SELL",
+            "consumer_check_stage": "BLOCKED",
+        },
+    )
+
+    assert candidate is True
+    assert display_ready is True
+    assert entry_ready is False
+    assert side == "SELL"
+    assert stage == "BLOCKED"
+    assert reason == "upper_reject_probe_observe"
+    assert level == 5
+    assert state["blocked_display_reason"] == "preflight_action_blocked"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "btc_upper_reject_probe_preflight_wait_as_wait_checks"
+
+
+def test_resolve_effective_consumer_check_state_keeps_btc_upper_reject_probe_promotion_wait_visible():
+    initial_state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_reject_probe_observe",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "probe_promotion_gate",
+            "action_none_reason": "probe_not_promoted",
+            "probe_scene_id": "btc_upper_sell_probe",
+            "box_state": "UPPER",
+            "bb_state": "UPPER_EDGE",
+            "core_pass": 0,
+        },
+        canonical_symbol="BTCUSD",
+    )
+
+    (
+        candidate,
+        display_ready,
+        entry_ready,
+        side,
+        stage,
+        reason,
+        level,
+        state,
+    ) = resolve_effective_consumer_check_state_v1(
+        consumer_check_state_v1=initial_state,
+        blocked_by_value="probe_promotion_gate",
+        action_none_reason_value="probe_not_promoted",
+        action_value="SELL",
+        previous_runtime_row={
+            "observe_reason": "upper_reject_probe_observe",
+            "blocked_by": "probe_promotion_gate",
+            "action_none_reason": "probe_not_promoted",
+            "probe_scene_id": "btc_upper_sell_probe",
+            "consumer_check_display_ready": True,
+            "consumer_check_side": "SELL",
+            "consumer_check_stage": "PROBE",
+        },
+    )
+
+    assert candidate is True
+    assert display_ready is True
+    assert entry_ready is False
+    assert side == "SELL"
+    assert stage == "PROBE"
+    assert reason == "upper_reject_probe_observe"
+    assert level >= 6
+    assert state["blocked_display_reason"] == "probe_promotion_gate"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "btc_upper_reject_probe_promotion_wait_as_wait_checks"
+
+
+def test_resolve_effective_consumer_check_state_keeps_btc_upper_reject_confirm_energy_soft_block_visible():
+    initial_state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_reject_confirm",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "energy_soft_block",
+            "action_none_reason": "execution_soft_blocked",
+            "box_state": "UPPER",
+            "bb_state": "UPPER_EDGE",
+            "core_pass": 0,
+        },
+        canonical_symbol="BTCUSD",
+    )
+
+    (
+        candidate,
+        display_ready,
+        entry_ready,
+        side,
+        stage,
+        reason,
+        level,
+        state,
+    ) = resolve_effective_consumer_check_state_v1(
+        consumer_check_state_v1=initial_state,
+        blocked_by_value="energy_soft_block",
+        action_none_reason_value="execution_soft_blocked",
+        action_value="SELL",
+        previous_runtime_row={
+            "observe_reason": "upper_reject_confirm",
+            "blocked_by": "energy_soft_block",
+            "action_none_reason": "execution_soft_blocked",
+            "probe_scene_id": "",
+            "consumer_check_display_ready": True,
+            "consumer_check_side": "SELL",
+            "consumer_check_stage": "BLOCKED",
+        },
+    )
+
+    assert candidate is True
+    assert display_ready is True
+    assert entry_ready is False
+    assert side == "SELL"
+    assert stage == "BLOCKED"
+    assert reason == "upper_reject_confirm"
+    assert level >= 5
+    assert state["blocked_display_reason"] == "energy_soft_block"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "btc_upper_reject_confirm_energy_soft_block_as_wait_checks"
+
+
+def test_resolve_effective_consumer_check_state_keeps_btc_upper_reject_probe_energy_soft_block_visible():
+    initial_state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_reject_probe_observe",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "energy_soft_block",
+            "action_none_reason": "execution_soft_blocked",
+            "probe_scene_id": "btc_upper_sell_probe",
+            "entry_probe_plan_v1": {
+                "active": True,
+                "ready_for_entry": True,
+                "energy_relief_allowed": True,
+                "symbol_scene_relief": "btc_upper_sell_probe",
+                "intended_action": "SELL",
+            },
+            "box_state": "UPPER",
+            "bb_state": "UPPER_EDGE",
+            "core_pass": 0,
+        },
+        canonical_symbol="BTCUSD",
+    )
+
+    (
+        candidate,
+        display_ready,
+        entry_ready,
+        side,
+        stage,
+        reason,
+        level,
+        state,
+    ) = resolve_effective_consumer_check_state_v1(
+        consumer_check_state_v1=initial_state,
+        blocked_by_value="energy_soft_block",
+        action_none_reason_value="execution_soft_blocked",
+        action_value="SELL",
+        previous_runtime_row={
+            "observe_reason": "upper_reject_probe_observe",
+            "blocked_by": "energy_soft_block",
+            "action_none_reason": "execution_soft_blocked",
+            "probe_scene_id": "btc_upper_sell_probe",
+            "consumer_check_display_ready": True,
+            "consumer_check_side": "SELL",
+            "consumer_check_stage": "BLOCKED",
+        },
+    )
+
+    assert candidate is True
+    assert display_ready is True
+    assert entry_ready is False
+    assert side == "SELL"
+    assert stage == "PROBE"
+    assert reason == "upper_reject_probe_observe"
+    assert level >= 5
+    assert state["blocked_display_reason"] == "energy_soft_block"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "btc_upper_reject_probe_energy_soft_block_as_wait_checks"
+
+
+def test_resolve_effective_consumer_check_state_keeps_btc_upper_reject_confirm_preflight_block_visible():
+    initial_state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_reject_confirm",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "preflight_action_blocked",
+            "action_none_reason": "preflight_blocked",
+            "box_state": "MIDDLE",
+            "bb_state": "BREAKOUT",
+            "core_pass": 0,
+        },
+        canonical_symbol="BTCUSD",
+    )
+
+    (
+        candidate,
+        display_ready,
+        entry_ready,
+        side,
+        stage,
+        reason,
+        level,
+        state,
+    ) = resolve_effective_consumer_check_state_v1(
+        consumer_check_state_v1=initial_state,
+        blocked_by_value="preflight_action_blocked",
+        action_none_reason_value="preflight_blocked",
+        action_value="SELL",
+        previous_runtime_row={
+            "observe_reason": "upper_reject_confirm",
+            "blocked_by": "preflight_action_blocked",
+            "action_none_reason": "preflight_blocked",
+            "probe_scene_id": "",
+            "consumer_check_display_ready": True,
+            "consumer_check_side": "SELL",
+            "consumer_check_stage": "BLOCKED",
+        },
+    )
+
+    assert candidate is True
+    assert display_ready is True
+    assert entry_ready is False
+    assert side == "SELL"
+    assert stage == "BLOCKED"
+    assert reason == "upper_reject_confirm"
+    assert level == 5
+    assert state["blocked_display_reason"] == "preflight_action_blocked"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "btc_upper_reject_confirm_preflight_wait_as_wait_checks"
 
 
 def test_resolve_effective_consumer_check_state_keeps_btc_lower_probe_energy_soft_block_visible():
@@ -1957,6 +3659,66 @@ def test_resolve_effective_consumer_check_state_keeps_nas_outer_band_probe_again
     assert state["chart_display_reason"] == "probe_guard_wait_as_wait_checks"
 
 
+def test_resolve_effective_consumer_check_state_keeps_xau_outer_band_probe_against_default_side_visible():
+    initial_state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "outer_band_reversal_support_required_observe",
+            "consumer_effective_action": "BUY",
+            "blocked_by": "outer_band_guard",
+            "action_none_reason": "probe_not_promoted",
+            "probe_scene_id": "xau_upper_sell_probe",
+            "entry_probe_plan_v1": {
+                "reason": "probe_against_default_side",
+                "active": True,
+                "ready_for_entry": False,
+                "symbol_scene_relief": "xau_upper_sell_probe",
+                "intended_action": "SELL",
+            },
+            "box_state": "ABOVE",
+            "bb_state": "UPPER_EDGE",
+            "core_pass": 0,
+        },
+        canonical_symbol="XAUUSD",
+    )
+
+    (
+        candidate,
+        display_ready,
+        entry_ready,
+        side,
+        stage,
+        reason,
+        level,
+        state,
+    ) = resolve_effective_consumer_check_state_v1(
+        consumer_check_state_v1=initial_state,
+        blocked_by_value="outer_band_guard",
+        action_none_reason_value="probe_not_promoted",
+        action_value="BUY",
+        previous_runtime_row={
+            "observe_reason": "outer_band_reversal_support_required_observe",
+            "blocked_by": "outer_band_guard",
+            "action_none_reason": "probe_not_promoted",
+            "probe_scene_id": "xau_upper_sell_probe",
+            "consumer_check_display_ready": True,
+            "consumer_check_side": "BUY",
+            "consumer_check_stage": "OBSERVE",
+        },
+    )
+
+    assert candidate is True
+    assert display_ready is True
+    assert entry_ready is False
+    assert side == "BUY"
+    assert stage == "OBSERVE"
+    assert reason == "outer_band_reversal_support_required_observe"
+    assert level == 5
+    assert state["blocked_display_reason"] == "outer_band_guard"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "probe_guard_wait_as_wait_checks"
+
+
 def test_resolve_effective_consumer_check_state_keeps_nas_breakout_reclaim_visible():
     (
         candidate,
@@ -2003,7 +3765,7 @@ def test_resolve_effective_consumer_check_state_keeps_nas_breakout_reclaim_visib
     assert state["display_repeat_count"] == 2
 
 
-def test_resolve_effective_consumer_check_state_suppresses_repeated_xau_upper_reject_probe_family():
+def test_resolve_effective_consumer_check_state_keeps_repeated_xau_upper_reject_probe_forecast_wait_visible():
     initial_state = build_consumer_check_state_v1(
         payload={
             "observe_reason": "upper_reject_probe_observe",
@@ -2042,13 +3804,16 @@ def test_resolve_effective_consumer_check_state_suppresses_repeated_xau_upper_re
     )
 
     assert candidate is True
-    assert display_ready is False
+    assert display_ready is True
     assert entry_ready is False
     assert side == "SELL"
     assert stage == "PROBE"
     assert reason == "upper_reject_probe_observe"
-    assert level == 0
-    assert state["blocked_display_reason"] == "xau_upper_reject_cadence_suppressed"
+    assert level >= 6
+    assert state["blocked_display_reason"] == "forecast_guard"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "xau_upper_reject_probe_forecast_wait_as_wait_checks"
 
 
 def test_resolve_effective_consumer_check_state_hides_xau_upper_reject_confirm_under_barrier_wait():
@@ -2139,6 +3904,364 @@ def test_resolve_effective_consumer_check_state_keeps_xau_upper_reject_mixed_con
     assert state["blocked_display_reason"] == "barrier_guard"
 
 
+def test_resolve_effective_consumer_check_state_keeps_xau_upper_reject_mixed_confirm_forecast_wait_visible():
+    initial_state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_reject_mixed_confirm",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "forecast_guard",
+            "action_none_reason": "observe_state_wait",
+            "core_pass": 0,
+        },
+        canonical_symbol="XAUUSD",
+    )
+
+    (
+        candidate,
+        display_ready,
+        entry_ready,
+        side,
+        stage,
+        reason,
+        level,
+        state,
+    ) = resolve_effective_consumer_check_state_v1(
+        consumer_check_state_v1=initial_state,
+        blocked_by_value="forecast_guard",
+        action_none_reason_value="observe_state_wait",
+        action_value="SELL",
+        previous_runtime_row={
+            "observe_reason": "upper_reject_mixed_confirm",
+            "blocked_by": "forecast_guard",
+            "action_none_reason": "observe_state_wait",
+            "probe_scene_id": "",
+            "consumer_check_display_ready": True,
+            "consumer_check_side": "SELL",
+            "consumer_check_stage": "OBSERVE",
+        },
+    )
+
+    assert candidate is True
+    assert display_ready is True
+    assert entry_ready is False
+    assert side == "SELL"
+    assert stage == "OBSERVE"
+    assert reason == "upper_reject_mixed_confirm"
+    assert level >= 5
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "xau_upper_reject_mixed_guard_wait_as_wait_checks"
+    assert state["blocked_display_reason"] == "forecast_guard"
+
+
+def test_resolve_effective_consumer_check_state_keeps_xau_upper_reject_confirm_forecast_wait_visible():
+    initial_state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_reject_confirm",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "forecast_guard",
+            "action_none_reason": "observe_state_wait",
+            "core_pass": 0,
+        },
+        canonical_symbol="XAUUSD",
+    )
+
+    (
+        candidate,
+        display_ready,
+        entry_ready,
+        side,
+        stage,
+        reason,
+        level,
+        state,
+    ) = resolve_effective_consumer_check_state_v1(
+        consumer_check_state_v1=initial_state,
+        blocked_by_value="forecast_guard",
+        action_none_reason_value="observe_state_wait",
+        action_value="SELL",
+        previous_runtime_row={
+            "observe_reason": "upper_reject_confirm",
+            "blocked_by": "forecast_guard",
+            "action_none_reason": "observe_state_wait",
+            "probe_scene_id": "",
+            "consumer_check_display_ready": True,
+            "consumer_check_side": "SELL",
+            "consumer_check_stage": "OBSERVE",
+        },
+    )
+
+    assert candidate is True
+    assert display_ready is True
+    assert entry_ready is False
+    assert side == "SELL"
+    assert stage == "OBSERVE"
+    assert reason == "upper_reject_confirm"
+    assert level >= 5
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "xau_upper_reject_confirm_forecast_wait_as_wait_checks"
+    assert state["blocked_display_reason"] == "forecast_guard"
+
+
+def test_resolve_effective_consumer_check_state_keeps_xau_upper_reject_confirm_energy_soft_block_visible():
+    initial_state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_reject_confirm",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "energy_soft_block",
+            "action_none_reason": "execution_soft_blocked",
+            "box_state": "UPPER",
+            "bb_state": "UPPER_EDGE",
+            "core_pass": 0,
+        },
+        canonical_symbol="XAUUSD",
+    )
+
+    (
+        candidate,
+        display_ready,
+        entry_ready,
+        side,
+        stage,
+        reason,
+        level,
+        state,
+    ) = resolve_effective_consumer_check_state_v1(
+        consumer_check_state_v1=initial_state,
+        blocked_by_value="energy_soft_block",
+        action_none_reason_value="execution_soft_blocked",
+        action_value="SELL",
+        previous_runtime_row={
+            "observe_reason": "upper_reject_confirm",
+            "blocked_by": "energy_soft_block",
+            "action_none_reason": "execution_soft_blocked",
+            "probe_scene_id": "",
+            "consumer_check_display_ready": True,
+            "consumer_check_side": "SELL",
+            "consumer_check_stage": "BLOCKED",
+        },
+    )
+
+    assert candidate is True
+    assert display_ready is True
+    assert entry_ready is False
+    assert side == "SELL"
+    assert stage == "BLOCKED"
+    assert reason == "upper_reject_confirm"
+    assert level >= 5
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "xau_upper_reject_confirm_energy_soft_block_as_wait_checks"
+    assert state["blocked_display_reason"] == "energy_soft_block"
+
+
+def test_resolve_effective_consumer_check_state_keeps_xau_upper_break_fail_confirm_energy_soft_block_visible():
+    initial_state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_break_fail_confirm",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "energy_soft_block",
+            "action_none_reason": "execution_soft_blocked",
+            "box_state": "UPPER",
+            "bb_state": "BREAKOUT",
+            "core_pass": 0,
+        },
+        canonical_symbol="XAUUSD",
+    )
+
+    (
+        candidate,
+        display_ready,
+        entry_ready,
+        side,
+        stage,
+        reason,
+        level,
+        state,
+    ) = resolve_effective_consumer_check_state_v1(
+        consumer_check_state_v1=initial_state,
+        blocked_by_value="energy_soft_block",
+        action_none_reason_value="execution_soft_blocked",
+        action_value="SELL",
+        previous_runtime_row={
+            "observe_reason": "upper_break_fail_confirm",
+            "blocked_by": "energy_soft_block",
+            "action_none_reason": "execution_soft_blocked",
+            "probe_scene_id": "",
+            "consumer_check_display_ready": True,
+            "consumer_check_side": "SELL",
+            "consumer_check_stage": "BLOCKED",
+        },
+    )
+
+    assert candidate is True
+    assert display_ready is True
+    assert entry_ready is False
+    assert side == "SELL"
+    assert stage == "BLOCKED"
+    assert reason == "upper_break_fail_confirm"
+    assert level >= 5
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "xau_upper_break_fail_confirm_energy_soft_block_as_wait_checks"
+    assert state["blocked_display_reason"] == "energy_soft_block"
+
+
+def test_resolve_effective_consumer_check_state_keeps_nas_upper_break_fail_confirm_energy_soft_block_visible():
+    initial_state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_break_fail_confirm",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "energy_soft_block",
+            "action_none_reason": "execution_soft_blocked",
+            "box_state": "ABOVE",
+            "bb_state": "UPPER_EDGE",
+            "core_pass": 0,
+        },
+        canonical_symbol="NAS100",
+    )
+
+    (
+        candidate,
+        display_ready,
+        entry_ready,
+        side,
+        stage,
+        reason,
+        level,
+        state,
+    ) = resolve_effective_consumer_check_state_v1(
+        consumer_check_state_v1=initial_state,
+        blocked_by_value="energy_soft_block",
+        action_none_reason_value="execution_soft_blocked",
+        action_value="SELL",
+        previous_runtime_row={
+            "observe_reason": "upper_break_fail_confirm",
+            "blocked_by": "energy_soft_block",
+            "action_none_reason": "execution_soft_blocked",
+            "probe_scene_id": "",
+            "consumer_check_display_ready": True,
+            "consumer_check_side": "SELL",
+            "consumer_check_stage": "BLOCKED",
+        },
+    )
+
+    assert candidate is True
+    assert display_ready is True
+    assert entry_ready is False
+    assert side == "SELL"
+    assert stage == "BLOCKED"
+    assert reason == "upper_break_fail_confirm"
+    assert level >= 5
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "nas_upper_break_fail_confirm_energy_soft_block_as_wait_checks"
+    assert state["blocked_display_reason"] == "energy_soft_block"
+
+
+def test_resolve_effective_consumer_check_state_keeps_xau_upper_reject_mixed_confirm_energy_soft_block_visible():
+    initial_state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_reject_mixed_confirm",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "energy_soft_block",
+            "action_none_reason": "execution_soft_blocked",
+            "box_state": "UPPER",
+            "bb_state": "UNKNOWN",
+            "core_pass": 0,
+        },
+        canonical_symbol="XAUUSD",
+    )
+
+    (
+        candidate,
+        display_ready,
+        entry_ready,
+        side,
+        stage,
+        reason,
+        level,
+        state,
+    ) = resolve_effective_consumer_check_state_v1(
+        consumer_check_state_v1=initial_state,
+        blocked_by_value="energy_soft_block",
+        action_none_reason_value="execution_soft_blocked",
+        action_value="SELL",
+        previous_runtime_row={
+            "observe_reason": "upper_reject_mixed_confirm",
+            "blocked_by": "energy_soft_block",
+            "action_none_reason": "execution_soft_blocked",
+            "probe_scene_id": "",
+            "consumer_check_display_ready": True,
+            "consumer_check_side": "SELL",
+            "consumer_check_stage": "BLOCKED",
+        },
+    )
+
+    assert candidate is True
+    assert display_ready is True
+    assert entry_ready is False
+    assert side == "SELL"
+    assert stage == "BLOCKED"
+    assert reason == "upper_reject_mixed_confirm"
+    assert level >= 5
+    assert state["chart_display_reason"] == "xau_upper_reject_mixed_confirm_energy_soft_block_as_wait_checks"
+    assert state["blocked_display_reason"] == "energy_soft_block"
+
+
+def test_resolve_effective_consumer_check_state_keeps_xau_upper_reject_mixed_confirm_entry_gate_wait_visible():
+    initial_state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_reject_mixed_confirm",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "pyramid_not_in_drawdown",
+            "action_none_reason": "",
+            "box_state": "UPPER",
+            "bb_state": "UPPER_EDGE",
+            "core_pass": 0,
+        },
+        canonical_symbol="XAUUSD",
+    )
+
+    (
+        candidate,
+        display_ready,
+        entry_ready,
+        side,
+        stage,
+        reason,
+        level,
+        state,
+    ) = resolve_effective_consumer_check_state_v1(
+        consumer_check_state_v1=initial_state,
+        blocked_by_value="pyramid_not_in_drawdown",
+        action_none_reason_value="",
+        action_value="SELL",
+        previous_runtime_row={
+            "observe_reason": "upper_reject_mixed_confirm",
+            "blocked_by": "pyramid_not_in_drawdown",
+            "action_none_reason": "",
+            "probe_scene_id": "",
+            "consumer_check_display_ready": True,
+            "consumer_check_side": "SELL",
+            "consumer_check_stage": "OBSERVE",
+        },
+    )
+
+    assert candidate is True
+    assert display_ready is True
+    assert entry_ready is False
+    assert side == "SELL"
+    assert stage == "OBSERVE"
+    assert reason == "upper_reject_mixed_confirm"
+    assert level >= 5
+    assert state["blocked_display_reason"] == "pyramid_not_in_drawdown"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "xau_upper_reject_mixed_confirm_entry_gate_wait_as_wait_checks"
+
+
 def test_build_consumer_check_state_keeps_xau_upper_reject_probe_energy_soft_block_visible_as_wait():
     state = build_consumer_check_state_v1(
         payload={
@@ -2177,6 +4300,66 @@ def test_build_consumer_check_state_keeps_xau_upper_reject_probe_energy_soft_blo
     assert state["chart_event_kind_hint"] == "WAIT"
     assert state["chart_display_mode"] == "wait_check_repeat"
     assert state["chart_display_reason"] == "xau_upper_reject_probe_energy_soft_block_as_wait_checks"
+    assert state["display_strength_level"] >= 6
+    assert state["display_repeat_count"] >= 2
+
+
+def test_build_consumer_check_state_keeps_xau_upper_reject_probe_forecast_wait_visible_as_wait():
+    state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_reject_probe_observe",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "forecast_guard",
+            "action_none_reason": "probe_not_promoted",
+            "probe_scene_id": "xau_upper_sell_probe",
+            "box_state": "ABOVE",
+            "bb_state": "UPPER_EDGE",
+            "core_pass": 0,
+        },
+        canonical_symbol="XAUUSD",
+    )
+
+    assert state["check_candidate"] is True
+    assert state["check_display_ready"] is True
+    assert state["entry_ready"] is False
+    assert state["check_side"] == "SELL"
+    assert state["check_stage"] == "PROBE"
+    assert state["entry_block_reason"] == "probe_not_promoted"
+    assert state["blocked_display_reason"] == "forecast_guard"
+    assert state["display_importance_source_reason"] == "xau_upper_reject_development"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "xau_upper_reject_probe_forecast_wait_as_wait_checks"
+    assert state["display_strength_level"] >= 6
+    assert state["display_repeat_count"] >= 2
+
+
+def test_build_consumer_check_state_keeps_xau_upper_reject_probe_promotion_wait_visible_as_wait():
+    state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_reject_probe_observe",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "probe_promotion_gate",
+            "action_none_reason": "probe_not_promoted",
+            "probe_scene_id": "xau_upper_sell_probe",
+            "box_state": "UPPER",
+            "bb_state": "UPPER_EDGE",
+            "core_pass": 0,
+        },
+        canonical_symbol="XAUUSD",
+    )
+
+    assert state["check_candidate"] is True
+    assert state["check_display_ready"] is True
+    assert state["entry_ready"] is False
+    assert state["check_side"] == "SELL"
+    assert state["check_stage"] == "PROBE"
+    assert state["entry_block_reason"] == "probe_not_promoted"
+    assert state["blocked_display_reason"] == "probe_promotion_gate"
+    assert state["display_importance_source_reason"] == "xau_upper_reject_development"
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "xau_upper_reject_probe_promotion_wait_as_wait_checks"
     assert state["display_strength_level"] >= 6
     assert state["display_repeat_count"] >= 2
 
@@ -2314,6 +4497,112 @@ def test_resolve_effective_consumer_check_state_keeps_xau_upper_reject_probe_ene
     assert state["chart_display_mode"] == "wait_check_repeat"
     assert state["chart_display_reason"] == "xau_upper_reject_probe_energy_soft_block_as_wait_checks"
     assert state["blocked_display_reason"] == "energy_soft_block"
+
+
+def test_resolve_effective_consumer_check_state_keeps_xau_upper_reject_probe_forecast_wait_visible():
+    initial_state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_reject_probe_observe",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "forecast_guard",
+            "action_none_reason": "probe_not_promoted",
+            "probe_scene_id": "xau_upper_sell_probe",
+            "box_state": "ABOVE",
+            "bb_state": "UPPER_EDGE",
+            "core_pass": 0,
+        },
+        canonical_symbol="XAUUSD",
+    )
+
+    (
+        candidate,
+        display_ready,
+        entry_ready,
+        side,
+        stage,
+        reason,
+        level,
+        state,
+    ) = resolve_effective_consumer_check_state_v1(
+        consumer_check_state_v1=initial_state,
+        blocked_by_value="forecast_guard",
+        action_none_reason_value="probe_not_promoted",
+        action_value="SELL",
+        previous_runtime_row={
+            "observe_reason": "upper_reject_probe_observe",
+            "blocked_by": "forecast_guard",
+            "action_none_reason": "probe_not_promoted",
+            "probe_scene_id": "xau_upper_sell_probe",
+            "consumer_check_display_ready": True,
+            "consumer_check_side": "SELL",
+            "consumer_check_stage": "PROBE",
+        },
+    )
+
+    assert candidate is True
+    assert display_ready is True
+    assert entry_ready is False
+    assert side == "SELL"
+    assert stage == "PROBE"
+    assert reason == "upper_reject_probe_observe"
+    assert level >= 6
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "xau_upper_reject_probe_forecast_wait_as_wait_checks"
+    assert state["blocked_display_reason"] == "forecast_guard"
+
+
+def test_resolve_effective_consumer_check_state_keeps_xau_upper_reject_probe_promotion_wait_visible():
+    initial_state = build_consumer_check_state_v1(
+        payload={
+            "observe_reason": "upper_reject_probe_observe",
+            "consumer_effective_action": "SELL",
+            "blocked_by": "probe_promotion_gate",
+            "action_none_reason": "probe_not_promoted",
+            "probe_scene_id": "xau_upper_sell_probe",
+            "box_state": "UPPER",
+            "bb_state": "UPPER_EDGE",
+            "core_pass": 0,
+        },
+        canonical_symbol="XAUUSD",
+    )
+
+    (
+        candidate,
+        display_ready,
+        entry_ready,
+        side,
+        stage,
+        reason,
+        level,
+        state,
+    ) = resolve_effective_consumer_check_state_v1(
+        consumer_check_state_v1=initial_state,
+        blocked_by_value="probe_promotion_gate",
+        action_none_reason_value="probe_not_promoted",
+        action_value="SELL",
+        previous_runtime_row={
+            "observe_reason": "upper_reject_probe_observe",
+            "blocked_by": "probe_promotion_gate",
+            "action_none_reason": "probe_not_promoted",
+            "probe_scene_id": "xau_upper_sell_probe",
+            "consumer_check_display_ready": True,
+            "consumer_check_side": "SELL",
+            "consumer_check_stage": "PROBE",
+        },
+    )
+
+    assert candidate is True
+    assert display_ready is True
+    assert entry_ready is False
+    assert side == "SELL"
+    assert stage == "PROBE"
+    assert reason == "upper_reject_probe_observe"
+    assert level >= 6
+    assert state["chart_event_kind_hint"] == "WAIT"
+    assert state["chart_display_mode"] == "wait_check_repeat"
+    assert state["chart_display_reason"] == "xau_upper_reject_probe_promotion_wait_as_wait_checks"
+    assert state["blocked_display_reason"] == "probe_promotion_gate"
 
 
 def test_resolve_effective_consumer_check_state_keeps_xau_middle_anchor_probe_energy_soft_block_visible():

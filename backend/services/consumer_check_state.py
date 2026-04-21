@@ -5,6 +5,10 @@ from collections.abc import Collection, Mapping
 from typing import Any
 
 import pandas as pd
+from backend.services.symbol_temperament import (
+    canonical_symbol as normalize_canonical_symbol,
+    resolve_probe_scene_direction,
+)
 from backend.trading.chart_flow_policy import build_common_expression_policy_v1
 
 
@@ -392,6 +396,62 @@ def _apply_state_aware_display_modifier_v1(
         modifier_reason_codes.append("nas_sell_middle_anchor_wait_hide_without_probe")
         modifier_stage_adjustment = "visibility_suppressed"
 
+    btc_sell_middle_anchor_wait_hide = _mapping_from_jsonish(
+        soft_caps_policy.get("btc_sell_middle_anchor_wait_hide_without_probe")
+    )
+    btc_sell_middle_anchor_symbol_allow = {
+        str(item or "").strip().upper()
+        for item in list(btc_sell_middle_anchor_wait_hide.get("symbol_allow", []) or [])
+        if str(item or "").strip()
+    }
+    btc_sell_middle_anchor_side_allow = {
+        str(item or "").strip().upper()
+        for item in list(btc_sell_middle_anchor_wait_hide.get("side_allow", []) or [])
+        if str(item or "").strip()
+    }
+    btc_sell_middle_anchor_observe_allow = {
+        str(item or "").strip()
+        for item in list(btc_sell_middle_anchor_wait_hide.get("observe_reason_allow", []) or [])
+        if str(item or "").strip()
+    }
+    btc_sell_middle_anchor_blocked_allow = {
+        str(item or "").strip()
+        for item in list(btc_sell_middle_anchor_wait_hide.get("blocked_by_allow", []) or [])
+        if str(item or "").strip()
+    }
+    btc_sell_middle_anchor_action_allow = {
+        str(item or "").strip()
+        for item in list(btc_sell_middle_anchor_wait_hide.get("action_none_allow", []) or [])
+        if str(item or "").strip()
+    }
+    btc_sell_middle_anchor_soft_cap_applies = bool(
+        bool(btc_sell_middle_anchor_wait_hide.get("enabled", True))
+        and candidate
+        and effective_display_ready
+        and not entry_ready
+        and (not btc_sell_middle_anchor_symbol_allow or symbol_u in btc_sell_middle_anchor_symbol_allow)
+        and (not btc_sell_middle_anchor_side_allow or side_u in btc_sell_middle_anchor_side_allow)
+        and reason_u in btc_sell_middle_anchor_observe_allow
+        and blocked_u in btc_sell_middle_anchor_blocked_allow
+        and action_none_u in btc_sell_middle_anchor_action_allow
+        and (
+            not bool(btc_sell_middle_anchor_wait_hide.get("require_probe_scene_absent", True))
+            or not probe_scene_u
+        )
+        and (
+            not bool(btc_sell_middle_anchor_wait_hide.get("require_importance_source_absent", True))
+            or not str(display_importance_source_reason or "").strip()
+        )
+    )
+    if btc_sell_middle_anchor_soft_cap_applies and bool(
+        btc_sell_middle_anchor_wait_hide.get("suppress_display", True)
+    ):
+        effective_display_ready = False
+        if not modifier_primary_reason:
+            modifier_primary_reason = "btc_sell_middle_anchor_wait_hide_without_probe"
+        modifier_reason_codes.append("btc_sell_middle_anchor_wait_hide_without_probe")
+        modifier_stage_adjustment = "visibility_suppressed"
+
     nas_upper_reclaim_wait_hide = _mapping_from_jsonish(
         soft_caps_policy.get("nas_upper_reclaim_wait_hide_without_probe")
     )
@@ -444,6 +504,60 @@ def _apply_state_aware_display_modifier_v1(
         if not modifier_primary_reason:
             modifier_primary_reason = "nas_upper_reclaim_wait_hide_without_probe"
         modifier_reason_codes.append("nas_upper_reclaim_wait_hide_without_probe")
+        modifier_stage_adjustment = "visibility_suppressed"
+
+    xau_upper_reclaim_wait_hide = _mapping_from_jsonish(
+        soft_caps_policy.get("xau_upper_reclaim_wait_hide_without_probe")
+    )
+    xau_upper_reclaim_symbol_allow = {
+        str(item or "").strip().upper()
+        for item in list(xau_upper_reclaim_wait_hide.get("symbol_allow", []) or [])
+        if str(item or "").strip()
+    }
+    xau_upper_reclaim_side_allow = {
+        str(item or "").strip().upper()
+        for item in list(xau_upper_reclaim_wait_hide.get("side_allow", []) or [])
+        if str(item or "").strip()
+    }
+    xau_upper_reclaim_observe_allow = {
+        str(item or "").strip()
+        for item in list(xau_upper_reclaim_wait_hide.get("observe_reason_allow", []) or [])
+        if str(item or "").strip()
+    }
+    xau_upper_reclaim_blocked_allow = {
+        str(item or "").strip()
+        for item in list(xau_upper_reclaim_wait_hide.get("blocked_by_allow", []) or [])
+        if str(item or "").strip()
+    }
+    xau_upper_reclaim_action_allow = {
+        str(item or "").strip()
+        for item in list(xau_upper_reclaim_wait_hide.get("action_none_allow", []) or [])
+        if str(item or "").strip()
+    }
+    xau_upper_reclaim_soft_cap_applies = bool(
+        bool(xau_upper_reclaim_wait_hide.get("enabled", True))
+        and candidate
+        and effective_display_ready
+        and not entry_ready
+        and (not xau_upper_reclaim_symbol_allow or symbol_u in xau_upper_reclaim_symbol_allow)
+        and (not xau_upper_reclaim_side_allow or side_u in xau_upper_reclaim_side_allow)
+        and reason_u in xau_upper_reclaim_observe_allow
+        and blocked_u in xau_upper_reclaim_blocked_allow
+        and action_none_u in xau_upper_reclaim_action_allow
+        and (
+            not bool(xau_upper_reclaim_wait_hide.get("require_probe_scene_absent", True))
+            or not probe_scene_u
+        )
+        and (
+            not bool(xau_upper_reclaim_wait_hide.get("require_importance_source_absent", True))
+            or not str(display_importance_source_reason or "").strip()
+        )
+    )
+    if xau_upper_reclaim_soft_cap_applies and bool(xau_upper_reclaim_wait_hide.get("suppress_display", True)):
+        effective_display_ready = False
+        if not modifier_primary_reason:
+            modifier_primary_reason = "xau_upper_reclaim_wait_hide_without_probe"
+        modifier_reason_codes.append("xau_upper_reclaim_wait_hide_without_probe")
         modifier_stage_adjustment = "visibility_suppressed"
 
     nas_upper_reject_wait_hide = _mapping_from_jsonish(
@@ -616,6 +730,8 @@ def _apply_state_aware_display_modifier_v1(
     chart_wait_reliefs = _mapping_from_jsonish(_display_modifier_policy_v1().get("chart_wait_reliefs"))
     for relief_policy in chart_wait_reliefs.values():
         relief = _mapping_from_jsonish(relief_policy)
+        relief_restore_hidden_display = bool(relief.get("restore_hidden_display", False))
+        relief_restore_stage = str(relief.get("restore_stage", "OBSERVE") or "OBSERVE").upper().strip()
         symbol_allow = {
             str(item or "").strip().upper()
             for item in list(relief.get("symbol_allow", []) or [])
@@ -631,6 +747,7 @@ def _apply_state_aware_display_modifier_v1(
             for item in list(relief.get("stage_allow", []) or [])
             if str(item or "").strip()
         }
+        stage_match = str(effective_stage or stage_u or "").upper().strip()
         observe_allow = {
             str(item or "").strip()
             for item in list(relief.get("observe_reason_allow", []) or [])
@@ -654,11 +771,11 @@ def _apply_state_aware_display_modifier_v1(
         relief_applies = bool(
             bool(relief.get("enabled", True))
             and candidate
-            and effective_display_ready
             and not entry_ready
+            and (effective_display_ready or relief_restore_hidden_display)
             and (not symbol_allow or symbol_u in symbol_allow)
             and (not side_allow or side_u in side_allow)
-            and (not stage_allow or stage_u in stage_allow)
+            and (not stage_allow or stage_match in stage_allow)
             and (not observe_allow or reason_u in observe_allow)
             and (not blocked_allow or blocked_u in blocked_allow)
             and (not probe_scene_allow or probe_scene_u in probe_scene_allow)
@@ -674,6 +791,19 @@ def _apply_state_aware_display_modifier_v1(
         )
         if not relief_applies:
             continue
+        if relief_restore_hidden_display and not effective_display_ready:
+            effective_display_ready = True
+            if effective_stage in {"", "BLOCKED"}:
+                previous_stage = str(effective_stage or "NONE").lower()
+                effective_stage = relief_restore_stage or "OBSERVE"
+                if not modifier_stage_adjustment or modifier_stage_adjustment == "none":
+                    modifier_stage_adjustment = f"{previous_stage}_to_{str(effective_stage).lower()}"
+            elif not modifier_stage_adjustment or modifier_stage_adjustment == "none":
+                modifier_stage_adjustment = "visibility_restore"
+            if not modifier_primary_reason:
+                modifier_primary_reason = "chart_wait_visibility_restore"
+            if "chart_wait_visibility_restore" not in modifier_reason_codes:
+                modifier_reason_codes.append("chart_wait_visibility_restore")
         chart_event_kind_hint = str(relief.get("event_kind_hint", "WAIT") or "WAIT").upper().strip()
         chart_display_mode = str(relief.get("display_mode", "wait_check_repeat") or "wait_check_repeat").strip()
         chart_display_reason = str(relief.get("display_reason", "") or "").strip()
@@ -772,21 +902,49 @@ def _display_repeat_count(display_score: float) -> int:
     return 0
 
 
-def _nas_display_importance_tier(
-    *,
-    symbol: str,
-    side: str,
-    observe_reason: str,
-    probe_scene_id: str,
-    box_state: str,
-    bb_state: str,
-) -> str:
-    symbol_u = str(symbol or "").upper().strip()
-    side_u = str(side or "").upper().strip()
-    observe_reason_u = str(observe_reason or "").strip()
-    probe_scene_u = str(probe_scene_id or "").strip()
+_DISPLAY_LOWER_REBOUND_REASONS_V1 = {
+    "lower_rebound_probe_observe",
+    "lower_rebound_confirm",
+}
+_DISPLAY_STRUCTURAL_OBSERVE_REASONS_V1 = {
+    "outer_band_reversal_support_required_observe",
+    "middle_sr_anchor_required_observe",
+}
+_DISPLAY_UPPER_REJECT_REASONS_V1 = {
+    "upper_reject_probe_observe",
+    "upper_reject_confirm",
+    "upper_reject_mixed_confirm",
+    "upper_break_fail_confirm",
+}
+_DISPLAY_UPPER_REJECT_CORE_REASONS_V1 = {
+    "upper_reject_confirm",
+    "upper_break_fail_confirm",
+}
+_DISPLAY_IMPORTANCE_REASON_ALIAS_V1 = {
+    "NAS100": {
+        "lower_recovery_start": "nas_lower_recovery_start",
+        "breakout_reclaim_confirm": "nas_breakout_reclaim_confirm",
+        "structural_rebound": "nas_structural_rebound",
+        "upper_support_awareness": "nas_upper_support_awareness",
+    },
+    "XAUUSD": {
+        "lower_recovery_start": "xau_lower_recovery_start",
+        "structural_rebound": "xau_second_support_reclaim",
+        "upper_reject_core": "xau_upper_reject_core",
+        "upper_reject_development": "xau_upper_reject_development",
+    },
+    "BTCUSD": {
+        "lower_recovery_start": "btc_lower_recovery_start",
+        "breakout_reclaim_confirm": "btc_breakout_reclaim_confirm",
+        "structural_rebound": "btc_structural_rebound",
+    },
+}
+
+
+def _display_importance_context_v1(*, box_state: str, bb_state: str) -> dict[str, bool]:
     box_state_u = str(box_state or "").upper().strip()
     bb_state_u = str(bb_state or "").upper().strip()
+    lower_deep = bool(box_state_u == "BELOW" or bb_state_u in {"LOWER_EDGE", "BREAKDOWN"})
     lower_context = bool(
         box_state_u in {"BELOW", "LOWER", "LOWER_EDGE"}
         or bb_state_u in {"LOWER_EDGE", "BREAKDOWN"}
@@ -797,44 +955,167 @@ def _nas_display_importance_tier(
     )
     upper_context = bool(
         box_state_u in {"UPPER", "UPPER_EDGE", "ABOVE"}
-        or bb_state_u in {"UPPER", "UPPER_EDGE"}
+        or bb_state_u in {"UPPER", "UPPER_EDGE", "ABOVE", "BREAKOUT"}
     )
-    if symbol_u != "NAS100" or side_u != "BUY":
+    return {
+        "lower_deep": lower_deep,
+        "lower_context": lower_context,
+        "middle_context": middle_context,
+        "upper_context": upper_context,
+    }
+
+
+def _display_importance_direction_v1(
+    *,
+    symbol: str,
+    side: str,
+    observe_reason: str,
+    probe_scene_id: str,
+) -> str:
+    symbol_u = normalize_canonical_symbol(str(symbol or ""))
+    observe_reason_u = str(observe_reason or "").strip().lower()
+    probe_scene_u = str(probe_scene_id or "").strip()
+    side_u = str(side or "").upper().strip()
+    scene_direction = resolve_probe_scene_direction(probe_scene_u)
+    if observe_reason_u in _DISPLAY_LOWER_REBOUND_REASONS_V1:
+        return "BUY"
+    if observe_reason_u in _DISPLAY_UPPER_REJECT_REASONS_V1:
+        return "SELL"
+    if observe_reason_u in _DISPLAY_STRUCTURAL_OBSERVE_REASONS_V1:
+        if scene_direction:
+            return scene_direction
+        if symbol_u == "NAS100":
+            return _first_directional_value(side_u)
         return ""
-    if (
-        observe_reason_u == "lower_rebound_probe_observe"
-        and probe_scene_u == "nas_clean_confirm_probe"
-    ):
-        if box_state_u == "BELOW" or bb_state_u in {"LOWER_EDGE", "BREAKDOWN"}:
-            return "high"
-        if upper_context:
+    return _first_directional_value(side_u, scene_direction)
+
+
+def _display_importance_family_v1(
+    *,
+    symbol: str,
+    side: str,
+    observe_reason: str,
+    probe_scene_id: str,
+    box_state: str,
+    bb_state: str,
+) -> str:
+    symbol_u = normalize_canonical_symbol(str(symbol or ""))
+    observe_reason_u = str(observe_reason or "").strip().lower()
+    probe_scene_u = str(probe_scene_id or "").strip()
+    bb_state_u = str(bb_state or "").upper().strip()
+    direction_u = _display_importance_direction_v1(
+        symbol=symbol_u,
+        side=side,
+        observe_reason=observe_reason_u,
+        probe_scene_id=probe_scene_u,
+    )
+    context = _display_importance_context_v1(box_state=box_state, bb_state=bb_state)
+    lower_context = bool(context["lower_context"])
+    middle_context = bool(context["middle_context"])
+    upper_context = bool(context["upper_context"])
+
+    if direction_u == "BUY":
+        if observe_reason_u in _DISPLAY_LOWER_REBOUND_REASONS_V1:
+            if lower_context:
+                return "lower_recovery_start"
+            if (
+                symbol_u in {"NAS100", "BTCUSD"}
+                and observe_reason_u == "lower_rebound_confirm"
+                and upper_context
+                and bb_state_u == "UPPER_EDGE"
+                and (symbol_u != "NAS100" or probe_scene_u == "nas_clean_confirm_probe")
+            ):
+                return "breakout_reclaim_confirm"
             return ""
-        if lower_context or middle_context:
-            return "medium"
-        return "medium"
-    if observe_reason_u == "lower_rebound_confirm":
-        if box_state_u == "BELOW" or bb_state_u in {"LOWER_EDGE", "BREAKDOWN"}:
-            return "high"
-        if upper_context:
-            if probe_scene_u == "nas_clean_confirm_probe" and bb_state_u == "UPPER_EDGE":
-                return "medium"
-            return ""
-        if lower_context or middle_context:
-            return "medium"
-        return "medium"
-    if (
-        observe_reason_u in {
-            "outer_band_reversal_support_required_observe",
-            "middle_sr_anchor_required_observe",
-        }
-        and probe_scene_u == "nas_clean_confirm_probe"
-    ):
-        if upper_context:
-            return ""
-        if lower_context or middle_context:
-            return "medium"
-        return "medium"
+        if observe_reason_u in _DISPLAY_STRUCTURAL_OBSERVE_REASONS_V1:
+            if upper_context and symbol_u == "NAS100":
+                return "upper_support_awareness"
+            if lower_context or middle_context:
+                return "structural_rebound"
+            if symbol_u == "NAS100" and direction_u == "BUY":
+                return "structural_rebound"
+    if direction_u == "SELL" and symbol_u == "XAUUSD":
+        if observe_reason_u in _DISPLAY_UPPER_REJECT_CORE_REASONS_V1 and upper_context:
+            return "upper_reject_core"
+        if observe_reason_u in _DISPLAY_UPPER_REJECT_REASONS_V1 and (upper_context or middle_context):
+            return "upper_reject_development"
     return ""
+
+
+def _display_importance_tier_common_v1(
+    *,
+    symbol: str,
+    side: str,
+    observe_reason: str,
+    probe_scene_id: str,
+    box_state: str,
+    bb_state: str,
+) -> str:
+    symbol_u = normalize_canonical_symbol(str(symbol or ""))
+    observe_reason_u = str(observe_reason or "").strip().lower()
+    context = _display_importance_context_v1(box_state=box_state, bb_state=bb_state)
+    lower_deep = bool(context["lower_deep"])
+    lower_context = bool(context["lower_context"])
+    middle_context = bool(context["middle_context"])
+    upper_context = bool(context["upper_context"])
+    direction_u = _display_importance_direction_v1(
+        symbol=symbol_u,
+        side=side,
+        observe_reason=observe_reason_u,
+        probe_scene_id=probe_scene_id,
+    )
+    family = _display_importance_family_v1(
+        symbol=symbol_u,
+        side=side,
+        observe_reason=observe_reason_u,
+        probe_scene_id=probe_scene_id,
+        box_state=box_state,
+        bb_state=bb_state,
+    )
+
+    if observe_reason_u in _DISPLAY_LOWER_REBOUND_REASONS_V1:
+        if lower_deep:
+            return "high"
+        if family == "breakout_reclaim_confirm":
+            return "medium"
+        if upper_context:
+            return ""
+        if lower_context or middle_context:
+            return "medium"
+        return "medium"
+    if observe_reason_u in _DISPLAY_STRUCTURAL_OBSERVE_REASONS_V1:
+        if family == "upper_support_awareness":
+            return ""
+        if family == "structural_rebound":
+            return "medium"
+        return "medium" if symbol_u == "NAS100" and direction_u == "BUY" else ""
+    if observe_reason_u in _DISPLAY_UPPER_REJECT_REASONS_V1:
+        if family == "upper_reject_core":
+            return "high"
+        if family == "upper_reject_development":
+            return "medium"
+    return ""
+
+
+def _nas_display_importance_tier(
+    *,
+    symbol: str,
+    side: str,
+    observe_reason: str,
+    probe_scene_id: str,
+    box_state: str,
+    bb_state: str,
+) -> str:
+    if normalize_canonical_symbol(str(symbol or "")) != "NAS100":
+        return ""
+    return _display_importance_tier_common_v1(
+        symbol=symbol,
+        side=side,
+        observe_reason=observe_reason,
+        probe_scene_id=probe_scene_id,
+        box_state=box_state,
+        bb_state=bb_state,
+    )
 
 
 def _xau_display_importance_tier(
@@ -846,61 +1127,16 @@ def _xau_display_importance_tier(
     box_state: str,
     bb_state: str,
 ) -> str:
-    symbol_u = str(symbol or "").upper().strip()
-    side_u = str(side or "").upper().strip()
-    observe_reason_u = str(observe_reason or "").strip()
-    probe_scene_u = str(probe_scene_id or "").strip()
-    box_state_u = str(box_state or "").upper().strip()
-    bb_state_u = str(bb_state or "").upper().strip()
-    lower_context = bool(
-        box_state_u in {"BELOW", "LOWER", "LOWER_EDGE"}
-        or bb_state_u in {"LOWER_EDGE", "BREAKDOWN"}
-    )
-    middle_context = bool(
-        box_state_u in {"MIDDLE", "MID"}
-        or bb_state_u in {"MID", "MIDDLE"}
-    )
-    upper_context = bool(
-        box_state_u in {"UPPER", "UPPER_EDGE", "ABOVE"}
-        or bb_state_u in {"UPPER", "UPPER_EDGE", "ABOVE", "BREAKOUT"}
-    )
-    if symbol_u != "XAUUSD":
+    if normalize_canonical_symbol(str(symbol or "")) != "XAUUSD":
         return ""
-    if side_u == "BUY":
-        if observe_reason_u in {"lower_rebound_probe_observe", "lower_rebound_confirm"}:
-            if box_state_u == "BELOW" or bb_state_u in {"LOWER_EDGE", "BREAKDOWN"}:
-                return "high"
-            if lower_context or middle_context:
-                return "medium"
-            return ""
-        if (
-            observe_reason_u in {
-                "outer_band_reversal_support_required_observe",
-                "middle_sr_anchor_required_observe",
-            }
-            and probe_scene_u == "xau_second_support_buy_probe"
-        ):
-            if upper_context:
-                return ""
-            if lower_context or middle_context:
-                return "medium"
-            return ""
-    if side_u == "SELL":
-        if observe_reason_u in {
-            "upper_reject_probe_observe",
-            "upper_reject_confirm",
-            "upper_reject_mixed_confirm",
-            "upper_break_fail_confirm",
-        } and (
-            probe_scene_u == "xau_upper_sell_probe"
-            or observe_reason_u in {"upper_reject_confirm", "upper_reject_mixed_confirm", "upper_break_fail_confirm"}
-        ):
-            if observe_reason_u in {"upper_reject_confirm", "upper_break_fail_confirm"} and upper_context:
-                return "high"
-            if upper_context or middle_context:
-                return "medium"
-            return ""
-    return ""
+    return _display_importance_tier_common_v1(
+        symbol=symbol,
+        side=side,
+        observe_reason=observe_reason,
+        probe_scene_id=probe_scene_id,
+        box_state=box_state,
+        bb_state=bb_state,
+    )
 
 
 def _btc_display_importance_tier(
@@ -912,51 +1148,16 @@ def _btc_display_importance_tier(
     box_state: str,
     bb_state: str,
 ) -> str:
-    symbol_u = str(symbol or "").upper().strip()
-    side_u = str(side or "").upper().strip()
-    observe_reason_u = str(observe_reason or "").strip()
-    probe_scene_u = str(probe_scene_id or "").strip()
-    box_state_u = str(box_state or "").upper().strip()
-    bb_state_u = str(bb_state or "").upper().strip()
-    lower_context = bool(
-        box_state_u in {"BELOW", "LOWER", "LOWER_EDGE"}
-        or bb_state_u in {"LOWER_EDGE", "BREAKDOWN"}
-    )
-    middle_context = bool(
-        box_state_u in {"MIDDLE", "MID"}
-        or bb_state_u in {"MID", "MIDDLE"}
-    )
-    upper_context = bool(
-        box_state_u in {"UPPER", "UPPER_EDGE", "ABOVE"}
-        or bb_state_u in {"UPPER", "UPPER_EDGE", "ABOVE", "BREAKOUT"}
-    )
-    if symbol_u != "BTCUSD" or side_u != "BUY":
+    if normalize_canonical_symbol(str(symbol or "")) != "BTCUSD":
         return ""
-    if observe_reason_u in {"lower_rebound_probe_observe", "lower_rebound_confirm"}:
-        if box_state_u == "BELOW" or bb_state_u in {"LOWER_EDGE", "BREAKDOWN"}:
-            return "high"
-        if upper_context:
-            if observe_reason_u == "lower_rebound_confirm":
-                return "medium"
-            return ""
-        if lower_context or middle_context:
-            return "medium"
-        if observe_reason_u == "lower_rebound_confirm" or probe_scene_u == "btc_lower_buy_conservative_probe":
-            return "medium"
-        return ""
-    if (
-        observe_reason_u in {
-            "outer_band_reversal_support_required_observe",
-            "middle_sr_anchor_required_observe",
-        }
-        and probe_scene_u == "btc_lower_buy_conservative_probe"
-    ):
-        if upper_context:
-            return ""
-        if lower_context or middle_context:
-            return "medium"
-        return ""
-    return ""
+    return _display_importance_tier_common_v1(
+        symbol=symbol,
+        side=side,
+        observe_reason=observe_reason,
+        probe_scene_id=probe_scene_id,
+        box_state=box_state,
+        bb_state=bb_state,
+    )
 
 
 def _display_importance_source_reason_v1(
@@ -968,85 +1169,90 @@ def _display_importance_source_reason_v1(
     box_state: str,
     bb_state: str,
 ) -> str:
-    symbol_u = str(symbol or "").upper().strip()
-    side_u = str(side or "").upper().strip()
-    observe_reason_u = str(observe_reason or "").strip()
-    probe_scene_u = str(probe_scene_id or "").strip()
-    box_state_u = str(box_state or "").upper().strip()
-    bb_state_u = str(bb_state or "").upper().strip()
-    lower_context = bool(
-        box_state_u in {"BELOW", "LOWER", "LOWER_EDGE"}
-        or bb_state_u in {"LOWER_EDGE", "BREAKDOWN"}
+    symbol_u = normalize_canonical_symbol(str(symbol or ""))
+    family = _display_importance_family_v1(
+        symbol=symbol_u,
+        side=side,
+        observe_reason=observe_reason,
+        probe_scene_id=probe_scene_id,
+        box_state=box_state,
+        bb_state=bb_state,
     )
-    middle_context = bool(
-        box_state_u in {"MIDDLE", "MID"}
-        or bb_state_u in {"MID", "MIDDLE"}
+    reason_map = _DISPLAY_IMPORTANCE_REASON_ALIAS_V1.get(symbol_u, {})
+    return str(reason_map.get(family, "") or "")
+
+
+def _upward_breakout_resume_signal_v1(
+    *,
+    breakout_candidate_direction: str,
+    breakout_candidate_action_target: str,
+    box_state: str,
+    bb_state: str,
+    quick_trace_state: str,
+) -> bool:
+    breakout_direction_u = str(breakout_candidate_direction or "").strip().upper()
+    breakout_target_u = str(breakout_candidate_action_target or "").strip().upper()
+    box_state_u = str(box_state or "").strip().upper()
+    bb_state_u = str(bb_state or "").strip().upper()
+    quick_trace_u = str(quick_trace_state or "").strip().upper()
+    return bool(
+        breakout_direction_u == "UP"
+        and breakout_target_u in {"WATCH_BREAKOUT", "PROBE_BREAKOUT"}
+        and box_state_u in {"MIDDLE", "MID", "UPPER", "UPPER_EDGE", "ABOVE"}
+        and bb_state_u in {"UNKNOWN", "MID", "MIDDLE", "UPPER", "UPPER_EDGE", "ABOVE", "BREAKOUT"}
+        and quick_trace_u in {"OBSERVE", "BLOCKED", "PROBE_WAIT"}
     )
-    upper_context = bool(
-        box_state_u in {"UPPER", "UPPER_EDGE", "ABOVE"}
-        or bb_state_u in {"UPPER", "UPPER_EDGE", "ABOVE", "BREAKOUT"}
+
+
+def _sell_watch_breakout_resume_relief_v1(
+    *,
+    side: str,
+    observe_reason: str,
+    breakout_candidate_direction: str,
+    breakout_candidate_action_target: str,
+    box_state: str,
+    bb_state: str,
+    quick_trace_state: str,
+) -> bool:
+    observe_reason_u = str(observe_reason or "").strip().lower()
+    side_u = str(side or "").strip().upper()
+    return bool(
+        side_u == "SELL"
+        and observe_reason_u in {"upper_break_fail_confirm", "upper_reject_probe_observe"}
+        and _upward_breakout_resume_signal_v1(
+            breakout_candidate_direction=breakout_candidate_direction,
+            breakout_candidate_action_target=breakout_candidate_action_target,
+            box_state=box_state,
+            bb_state=bb_state,
+            quick_trace_state=quick_trace_state,
+        )
     )
-    if symbol_u == "NAS100" and side_u == "BUY":
-        if observe_reason_u in {"lower_rebound_probe_observe", "lower_rebound_confirm"} and lower_context:
-            return "nas_lower_recovery_start"
-        if (
-            observe_reason_u == "lower_rebound_confirm"
-            and probe_scene_u == "nas_clean_confirm_probe"
-            and upper_context
-            and bb_state_u == "UPPER_EDGE"
-        ):
-            return "nas_breakout_reclaim_confirm"
-        if (
-            observe_reason_u in {"outer_band_reversal_support_required_observe", "middle_sr_anchor_required_observe"}
-            and probe_scene_u == "nas_clean_confirm_probe"
-            and not upper_context
-        ):
-            return "nas_structural_rebound"
-        if (
-            observe_reason_u in {"outer_band_reversal_support_required_observe", "middle_sr_anchor_required_observe"}
-            and probe_scene_u == "nas_clean_confirm_probe"
-            and upper_context
-        ):
-            return "nas_upper_support_awareness"
-    if symbol_u == "XAUUSD":
-        if side_u == "BUY":
-            if observe_reason_u in {"lower_rebound_probe_observe", "lower_rebound_confirm"} and lower_context:
-                return "xau_lower_recovery_start"
-            if (
-                observe_reason_u in {"outer_band_reversal_support_required_observe", "middle_sr_anchor_required_observe"}
-                and probe_scene_u == "xau_second_support_buy_probe"
-                and (lower_context or middle_context)
-            ):
-                return "xau_second_support_reclaim"
-        if side_u == "SELL":
-            if observe_reason_u in {"upper_reject_confirm", "upper_break_fail_confirm"} and upper_context:
-                return "xau_upper_reject_core"
-            if (
-                observe_reason_u in {
-                    "upper_reject_probe_observe",
-                    "upper_reject_confirm",
-                    "upper_reject_mixed_confirm",
-                    "upper_break_fail_confirm",
-                }
-                and (upper_context or middle_context)
-            ):
-                return "xau_upper_reject_development"
-    if symbol_u == "BTCUSD" and side_u == "BUY":
-        if observe_reason_u in {"lower_rebound_probe_observe", "lower_rebound_confirm"} and lower_context:
-            return "btc_lower_recovery_start"
-        if (
-            observe_reason_u == "lower_rebound_confirm"
-            and upper_context
-            and bb_state_u == "UPPER_EDGE"
-        ):
-            return "btc_breakout_reclaim_confirm"
-        if (
-            observe_reason_u in {"outer_band_reversal_support_required_observe", "middle_sr_anchor_required_observe"}
-            and probe_scene_u == "btc_lower_buy_conservative_probe"
-            and (lower_context or middle_context)
-        ):
-            return "btc_structural_rebound"
-    return ""
+
+
+def _conflict_breakout_resume_surface_v1(
+    *,
+    observe_reason: str,
+    breakout_candidate_direction: str,
+    breakout_candidate_action_target: str,
+    box_state: str,
+    bb_state: str,
+    quick_trace_state: str,
+) -> bool:
+    observe_reason_u = str(observe_reason or "").strip().lower()
+    return bool(
+        observe_reason_u
+        in {
+            "conflict_box_upper_bb20_lower_upper_dominant_observe",
+            "conflict_box_upper_bb20_lower_balanced_observe",
+        }
+        and _upward_breakout_resume_signal_v1(
+            breakout_candidate_direction=breakout_candidate_direction,
+            breakout_candidate_action_target=breakout_candidate_action_target,
+            box_state=box_state,
+            bb_state=bb_state,
+            quick_trace_state=quick_trace_state,
+        )
+    )
 
 
 def _display_importance_tier_v1(
@@ -1058,21 +1264,7 @@ def _display_importance_tier_v1(
     box_state: str,
     bb_state: str,
 ) -> str:
-    return _nas_display_importance_tier(
-        symbol=symbol,
-        side=side,
-        observe_reason=observe_reason,
-        probe_scene_id=probe_scene_id,
-        box_state=box_state,
-        bb_state=bb_state,
-    ) or _xau_display_importance_tier(
-        symbol=symbol,
-        side=side,
-        observe_reason=observe_reason,
-        probe_scene_id=probe_scene_id,
-        box_state=box_state,
-        bb_state=bb_state,
-    ) or _btc_display_importance_tier(
+    return _display_importance_tier_common_v1(
         symbol=symbol,
         side=side,
         observe_reason=observe_reason,
@@ -1380,6 +1572,13 @@ def build_consumer_check_state_v1(
         or probe_plan_local.get("symbol_scene_relief", "")
         or ""
     ).strip()
+    breakout_candidate_direction_local = str(
+        payload_local.get("breakout_candidate_direction", "") or ""
+    ).strip().upper()
+    breakout_candidate_action_target_local = str(
+        payload_local.get("breakout_candidate_action_target", "") or ""
+    ).strip().upper()
+    quick_trace_state_local = str(payload_local.get("quick_trace_state", "") or "").strip().upper()
     probe_active_local = bool(probe_plan_local.get("active", False))
     probe_ready_local = bool(probe_plan_local.get("ready_for_entry", False))
     consumer_block_is_execution_local = bool(payload_local.get("consumer_block_is_execution", False))
@@ -1394,16 +1593,6 @@ def build_consumer_check_state_v1(
         "outer_band_reversal_support_required_observe",
         "middle_sr_anchor_required_observe",
     }
-    weak_observe_surface = bool(explicit_watch_surface or explicit_structural_observe_surface)
-    structural_guard_observe_surface = bool(
-        explicit_structural_observe_surface
-        and blocked_by_local in {"outer_band_guard", "middle_sr_anchor_guard"}
-    )
-    explicit_execution_surface = bool(
-        action_none_reason_local in {"execution_soft_blocked", "confirm_suppressed"}
-        or blocked_by_local == "energy_soft_block"
-        or blocked_by_local.endswith("_soft_block")
-    )
     balanced_conflict_display_suppressed = bool(
         observe_reason_local.startswith("conflict_box_")
         and action_none_reason_local == "observe_state_wait"
@@ -1414,6 +1603,49 @@ def build_consumer_check_state_v1(
     )
     if balanced_conflict_display_suppressed:
         display_side = ""
+    common_sell_breakout_resume_relief = _sell_watch_breakout_resume_relief_v1(
+        side=display_side,
+        observe_reason=observe_reason_local,
+        breakout_candidate_direction=breakout_candidate_direction_local,
+        breakout_candidate_action_target=breakout_candidate_action_target_local,
+        box_state=box_state_local,
+        bb_state=bb_state_local,
+        quick_trace_state=quick_trace_state_local,
+    )
+    common_conflict_breakout_resume_surface = _conflict_breakout_resume_surface_v1(
+        observe_reason=observe_reason_local,
+        breakout_candidate_direction=breakout_candidate_direction_local,
+        breakout_candidate_action_target=breakout_candidate_action_target_local,
+        box_state=box_state_local,
+        bb_state=bb_state_local,
+        quick_trace_state=quick_trace_state_local,
+    )
+    if common_sell_breakout_resume_relief or (
+        common_conflict_breakout_resume_surface and display_side not in {"BUY", "SELL"}
+    ):
+        display_side = "BUY"
+    breakout_resume_observe_surface = bool(
+        common_conflict_breakout_resume_surface
+        or (
+            common_sell_breakout_resume_relief
+            and action_none_reason_local == "observe_state_wait"
+            and not probe_ready_local
+        )
+    )
+    weak_observe_surface = bool(
+        explicit_watch_surface
+        or explicit_structural_observe_surface
+        or breakout_resume_observe_surface
+    )
+    structural_guard_observe_surface = bool(
+        explicit_structural_observe_surface
+        and blocked_by_local in {"outer_band_guard", "middle_sr_anchor_guard"}
+    )
+    explicit_execution_surface = bool(
+        action_none_reason_local in {"execution_soft_blocked", "confirm_suppressed"}
+        or blocked_by_local == "energy_soft_block"
+        or blocked_by_local.endswith("_soft_block")
+    )
     btc_upper_sell_weak_display_relief = bool(
         symbol_local == "BTCUSD"
         and display_side == "SELL"
@@ -1430,6 +1662,22 @@ def build_consumer_check_state_v1(
         and action_none_reason_local == "probe_not_promoted"
         and probe_scene_local == "nas_clean_confirm_probe"
         and probe_reason_local == "probe_against_default_side"
+    )
+    xau_outer_band_probe_against_default_side_wait_relief = bool(
+        symbol_local == "XAUUSD"
+        and observe_reason_local == "outer_band_reversal_support_required_observe"
+        and blocked_by_local == "outer_band_guard"
+        and action_none_reason_local == "probe_not_promoted"
+        and probe_scene_local == "xau_upper_sell_probe"
+        and probe_reason_local == "probe_against_default_side"
+    )
+    xau_lower_probe_guard_wait_relief = bool(
+        symbol_local == "XAUUSD"
+        and display_side == "BUY"
+        and observe_reason_local == "lower_rebound_probe_observe"
+        and blocked_by_local in {"forecast_guard", "barrier_guard"}
+        and action_none_reason_local == "probe_not_promoted"
+        and probe_scene_local == "xau_second_support_buy_probe"
     )
     nas_lower_probe_downgrade = bool(
         symbol_local == "NAS100"
@@ -1464,6 +1712,136 @@ def build_consumer_check_state_v1(
         and action_none_reason_local == "probe_not_promoted"
         and probe_scene_local == "btc_lower_buy_conservative_probe"
     )
+    btc_lower_probe_guard_wait_relief = bool(
+        symbol_local == "BTCUSD"
+        and display_side == "BUY"
+        and observe_reason_local == "lower_rebound_probe_observe"
+        and blocked_by_local in {"forecast_guard", "barrier_guard"}
+        and action_none_reason_local == "probe_not_promoted"
+        and probe_scene_local == "btc_lower_buy_conservative_probe"
+    )
+    btc_upper_reject_confirm_forecast_wait_relief = bool(
+        symbol_local == "BTCUSD"
+        and display_side == "SELL"
+        and observe_reason_local == "upper_reject_confirm"
+        and blocked_by_local == "forecast_guard"
+        and action_none_reason_local == "observe_state_wait"
+        and not probe_scene_local
+    )
+    btc_upper_break_fail_confirm_forecast_wait_relief = bool(
+        symbol_local == "BTCUSD"
+        and display_side == "SELL"
+        and observe_reason_local == "upper_break_fail_confirm"
+        and blocked_by_local == "forecast_guard"
+        and action_none_reason_local == "observe_state_wait"
+        and not probe_scene_local
+    )
+    btc_upper_break_fail_confirm_entry_gate_wait_relief = bool(
+        symbol_local == "BTCUSD"
+        and display_side == "SELL"
+        and observe_reason_local == "upper_break_fail_confirm"
+        and blocked_by_local in {
+            "clustered_entry_price_zone",
+            "pyramid_not_progressed",
+            "pyramid_not_in_drawdown",
+        }
+        and not action_none_reason_local
+        and not probe_scene_local
+    )
+    nas_upper_break_fail_confirm_entry_gate_wait_relief = bool(
+        symbol_local == "NAS100"
+        and display_side == "SELL"
+        and observe_reason_local == "upper_break_fail_confirm"
+        and blocked_by_local in {
+            "clustered_entry_price_zone",
+            "pyramid_not_progressed",
+            "pyramid_not_in_drawdown",
+        }
+        and not action_none_reason_local
+        and not probe_scene_local
+    )
+    xau_upper_reject_mixed_confirm_entry_gate_wait_relief = bool(
+        symbol_local == "XAUUSD"
+        and display_side == "SELL"
+        and observe_reason_local == "upper_reject_mixed_confirm"
+        and blocked_by_local in {
+            "clustered_entry_price_zone",
+            "pyramid_not_progressed",
+            "pyramid_not_in_drawdown",
+        }
+        and not action_none_reason_local
+        and not probe_scene_local
+    )
+    xau_outer_band_probe_entry_gate_wait_relief = bool(
+        symbol_local == "XAUUSD"
+        and display_side == "SELL"
+        and observe_reason_local == "outer_band_reversal_support_required_observe"
+        and blocked_by_local in {
+            "clustered_entry_price_zone",
+            "pyramid_not_progressed",
+            "pyramid_not_in_drawdown",
+        }
+        and not action_none_reason_local
+        and probe_scene_local == "xau_upper_sell_probe"
+    )
+    btc_upper_break_fail_confirm_energy_wait_relief = bool(
+        symbol_local == "BTCUSD"
+        and display_side == "SELL"
+        and observe_reason_local == "upper_break_fail_confirm"
+        and blocked_by_local == "energy_soft_block"
+        and action_none_reason_local == "execution_soft_blocked"
+        and not probe_scene_local
+    )
+    btc_upper_reject_probe_forecast_wait_relief = bool(
+        symbol_local == "BTCUSD"
+        and display_side == "SELL"
+        and observe_reason_local == "upper_reject_probe_observe"
+        and blocked_by_local == "forecast_guard"
+        and action_none_reason_local == "probe_not_promoted"
+        and probe_scene_local == "btc_upper_sell_probe"
+    )
+    btc_upper_reject_probe_preflight_wait_relief = bool(
+        symbol_local == "BTCUSD"
+        and display_side == "SELL"
+        and observe_reason_local == "upper_reject_probe_observe"
+        and blocked_by_local == "preflight_action_blocked"
+        and action_none_reason_local == "preflight_blocked"
+        and probe_scene_local == "btc_upper_sell_probe"
+    )
+    btc_upper_reject_probe_promotion_wait_relief = bool(
+        symbol_local == "BTCUSD"
+        and display_side == "SELL"
+        and observe_reason_local == "upper_reject_probe_observe"
+        and blocked_by_local == "probe_promotion_gate"
+        and action_none_reason_local == "probe_not_promoted"
+        and probe_scene_local == "btc_upper_sell_probe"
+    )
+    btc_upper_reject_confirm_preflight_wait_relief = bool(
+        symbol_local == "BTCUSD"
+        and display_side == "SELL"
+        and observe_reason_local == "upper_reject_confirm"
+        and blocked_by_local == "preflight_action_blocked"
+        and action_none_reason_local == "preflight_blocked"
+        and not probe_scene_local
+    )
+    btc_upper_reject_confirm_energy_wait_relief = bool(
+        symbol_local == "BTCUSD"
+        and display_side == "SELL"
+        and observe_reason_local == "upper_reject_confirm"
+        and blocked_by_local == "energy_soft_block"
+        and action_none_reason_local == "execution_soft_blocked"
+        and not probe_scene_local
+    )
+    btc_upper_reject_probe_energy_wait_relief = bool(
+        symbol_local == "BTCUSD"
+        and display_side == "SELL"
+        and observe_reason_local == "upper_reject_probe_observe"
+        and blocked_by_local == "energy_soft_block"
+        and action_none_reason_local == "execution_soft_blocked"
+        and probe_scene_local == "btc_upper_sell_probe"
+        and probe_ready_local
+        and bool(probe_plan_local.get("energy_relief_allowed", False))
+    )
     nas_upper_reject_probe_forecast_wait_relief = bool(
         symbol_local == "NAS100"
         and display_side == "SELL"
@@ -1479,6 +1857,22 @@ def build_consumer_check_state_v1(
         and blocked_by_local == "probe_promotion_gate"
         and action_none_reason_local == "probe_not_promoted"
         and probe_scene_local == "nas_clean_confirm_probe"
+    )
+    xau_upper_reject_probe_forecast_wait_relief = bool(
+        symbol_local == "XAUUSD"
+        and display_side == "SELL"
+        and observe_reason_local == "upper_reject_probe_observe"
+        and blocked_by_local == "forecast_guard"
+        and action_none_reason_local == "probe_not_promoted"
+        and probe_scene_local == "xau_upper_sell_probe"
+    )
+    xau_upper_reject_probe_promotion_wait_relief = bool(
+        symbol_local == "XAUUSD"
+        and display_side == "SELL"
+        and observe_reason_local == "upper_reject_probe_observe"
+        and blocked_by_local == "probe_promotion_gate"
+        and action_none_reason_local == "probe_not_promoted"
+        and probe_scene_local == "xau_upper_sell_probe"
     )
     btc_structural_probe_energy_wait_relief = bool(
         symbol_local == "BTCUSD"
@@ -1520,6 +1914,54 @@ def build_consumer_check_state_v1(
         and action_none_reason_local == "execution_soft_blocked"
         and probe_scene_local == "xau_second_support_buy_probe"
     )
+    xau_upper_reject_confirm_energy_wait_relief = bool(
+        symbol_local == "XAUUSD"
+        and display_side == "SELL"
+        and observe_reason_local == "upper_reject_confirm"
+        and blocked_by_local == "energy_soft_block"
+        and action_none_reason_local == "execution_soft_blocked"
+        and not probe_scene_local
+    )
+    xau_upper_reject_mixed_confirm_energy_wait_relief = bool(
+        symbol_local == "XAUUSD"
+        and display_side == "SELL"
+        and observe_reason_local == "upper_reject_mixed_confirm"
+        and blocked_by_local == "energy_soft_block"
+        and action_none_reason_local == "execution_soft_blocked"
+        and not probe_scene_local
+    )
+    nas_upper_reject_mixed_confirm_energy_wait_relief = bool(
+        symbol_local == "NAS100"
+        and display_side == "SELL"
+        and observe_reason_local == "upper_reject_mixed_confirm"
+        and blocked_by_local == "energy_soft_block"
+        and action_none_reason_local == "execution_soft_blocked"
+        and not probe_scene_local
+    )
+    btc_upper_reject_mixed_confirm_energy_wait_relief = bool(
+        symbol_local == "BTCUSD"
+        and display_side == "SELL"
+        and observe_reason_local == "upper_reject_mixed_confirm"
+        and blocked_by_local == "energy_soft_block"
+        and action_none_reason_local == "execution_soft_blocked"
+        and not probe_scene_local
+    )
+    xau_upper_break_fail_confirm_energy_wait_relief = bool(
+        symbol_local == "XAUUSD"
+        and display_side == "SELL"
+        and observe_reason_local == "upper_break_fail_confirm"
+        and blocked_by_local == "energy_soft_block"
+        and action_none_reason_local == "execution_soft_blocked"
+        and not probe_scene_local
+    )
+    nas_upper_break_fail_confirm_energy_wait_relief = bool(
+        symbol_local == "NAS100"
+        and display_side == "SELL"
+        and observe_reason_local == "upper_break_fail_confirm"
+        and blocked_by_local == "energy_soft_block"
+        and action_none_reason_local == "execution_soft_blocked"
+        and not probe_scene_local
+    )
     xau_outer_band_probe_energy_wait_relief = bool(
         symbol_local == "XAUUSD"
         and display_side == "SELL"
@@ -1550,6 +1992,7 @@ def build_consumer_check_state_v1(
             or explicit_probe_surface
             or explicit_watch_surface
             or explicit_structural_observe_surface
+            or breakout_resume_observe_surface
             or explicit_execution_surface
             or core_reason_local
             in {
@@ -1566,6 +2009,7 @@ def build_consumer_check_state_v1(
             probe_reason_local in {"probe_side_mismatch", "probe_against_default_side"}
             and not btc_upper_sell_weak_display_relief
             and not nas_outer_band_probe_against_default_side_wait_relief
+            and not xau_outer_band_probe_against_default_side_wait_relief
         )
     )
     core_pass_local = _to_float(payload_local.get("core_pass", 0), default=0.0)
@@ -1584,6 +2028,7 @@ def build_consumer_check_state_v1(
         and not entry_ready
         and not btc_upper_sell_weak_display_relief
         and not btc_lower_probe_energy_wait_relief
+        and not btc_upper_reject_probe_energy_wait_relief
         and not xau_upper_reject_probe_energy_wait_relief
         and not xau_middle_anchor_probe_energy_wait_relief
         and not xau_outer_band_probe_energy_wait_relief
@@ -1684,14 +2129,24 @@ def build_consumer_check_state_v1(
                 and action_none_reason_local == "observe_state_wait"
             )
         )
+        and not xau_upper_reject_confirm_energy_wait_relief
+        and not xau_upper_break_fail_confirm_energy_wait_relief
         and not xau_upper_reject_confirm_hidden
     )
     xau_upper_reject_mixed_guard_wait_relief = bool(
         symbol_local == "XAUUSD"
         and display_side == "SELL"
         and observe_reason_local == "upper_reject_mixed_confirm"
-        and blocked_by_local == "barrier_guard"
+        and blocked_by_local in {"barrier_guard", "forecast_guard"}
         and action_none_reason_local == "observe_state_wait"
+    )
+    xau_upper_reject_confirm_forecast_wait_relief = bool(
+        symbol_local == "XAUUSD"
+        and display_side == "SELL"
+        and observe_reason_local == "upper_reject_confirm"
+        and blocked_by_local == "forecast_guard"
+        and action_none_reason_local == "observe_state_wait"
+        and not probe_scene_local
     )
     xau_middle_anchor_guard_wait_relief = bool(
         symbol_local == "XAUUSD"
@@ -1708,6 +2163,7 @@ def build_consumer_check_state_v1(
         and blocked_by_local in {"forecast_guard", "barrier_guard"}
         and action_none_reason_local == "observe_state_wait"
         and not probe_ready_local
+        and not xau_upper_reject_confirm_forecast_wait_relief
         and not xau_upper_reject_mixed_guard_wait_relief
     )
     if xau_upper_sell_repeat_suppressed:
@@ -1718,6 +2174,26 @@ def build_consumer_check_state_v1(
         display_ready = False
         if not blocked_display_reason:
             blocked_display_reason = "xau_upper_reject_guard_wait_hidden"
+    if btc_upper_reject_confirm_preflight_wait_relief and check_stage == "BLOCKED":
+        display_ready = True
+        if not blocked_display_reason:
+            blocked_display_reason = blocked_by_local or action_none_reason_local or probe_reason_local
+    if btc_upper_reject_probe_preflight_wait_relief and check_stage == "BLOCKED":
+        display_ready = True
+        if not blocked_display_reason:
+            blocked_display_reason = blocked_by_local or action_none_reason_local or probe_reason_local
+    if (
+        btc_upper_reject_confirm_energy_wait_relief
+        and check_stage in {"OBSERVE", "PROBE", "BLOCKED"}
+        and not blocked_display_reason
+    ):
+        blocked_display_reason = blocked_by_local or action_none_reason_local or probe_reason_local
+    if (
+        btc_upper_reject_probe_energy_wait_relief
+        and check_stage in {"PROBE", "BLOCKED"}
+        and not blocked_display_reason
+    ):
+        blocked_display_reason = blocked_by_local or action_none_reason_local or probe_reason_local
     if (
         btc_lower_probe_energy_wait_relief
         and check_stage in {"PROBE", "BLOCKED"}
@@ -1727,6 +2203,78 @@ def build_consumer_check_state_v1(
     if (
         btc_lower_probe_promotion_wait_relief
         and check_stage in {"PROBE", "BLOCKED"}
+        and not blocked_display_reason
+    ):
+        blocked_display_reason = blocked_by_local or action_none_reason_local or probe_reason_local
+    if (
+        btc_lower_probe_guard_wait_relief
+        and check_stage in {"OBSERVE", "PROBE", "BLOCKED"}
+        and not blocked_display_reason
+    ):
+        blocked_display_reason = blocked_by_local or action_none_reason_local or probe_reason_local
+    if (
+        btc_upper_reject_confirm_forecast_wait_relief
+        and check_stage in {"OBSERVE", "PROBE", "BLOCKED"}
+        and not blocked_display_reason
+    ):
+        blocked_display_reason = blocked_by_local or action_none_reason_local or probe_reason_local
+    if (
+        btc_upper_break_fail_confirm_forecast_wait_relief
+        and check_stage in {"OBSERVE", "PROBE", "BLOCKED"}
+        and not blocked_display_reason
+    ):
+        blocked_display_reason = blocked_by_local or action_none_reason_local or probe_reason_local
+    if (
+        btc_upper_break_fail_confirm_entry_gate_wait_relief
+        and check_stage in {"OBSERVE", "PROBE", "BLOCKED"}
+        and not blocked_display_reason
+    ):
+        blocked_display_reason = blocked_by_local or action_none_reason_local or probe_reason_local
+    if (
+        nas_upper_break_fail_confirm_entry_gate_wait_relief
+        and check_stage in {"OBSERVE", "PROBE", "BLOCKED"}
+        and not blocked_display_reason
+    ):
+        blocked_display_reason = blocked_by_local or action_none_reason_local or probe_reason_local
+    if (
+        xau_upper_reject_mixed_confirm_entry_gate_wait_relief
+        and check_stage in {"OBSERVE", "PROBE", "BLOCKED"}
+        and not blocked_display_reason
+    ):
+        blocked_display_reason = blocked_by_local or action_none_reason_local or probe_reason_local
+    if (
+        xau_outer_band_probe_entry_gate_wait_relief
+        and check_stage in {"OBSERVE", "PROBE", "BLOCKED"}
+        and not blocked_display_reason
+    ):
+        blocked_display_reason = blocked_by_local or action_none_reason_local or probe_reason_local
+    if (
+        btc_upper_break_fail_confirm_energy_wait_relief
+        and check_stage in {"OBSERVE", "PROBE", "BLOCKED"}
+        and not blocked_display_reason
+    ):
+        blocked_display_reason = blocked_by_local or action_none_reason_local or probe_reason_local
+    if (
+        btc_upper_reject_probe_forecast_wait_relief
+        and check_stage in {"OBSERVE", "PROBE", "BLOCKED"}
+        and not blocked_display_reason
+    ):
+        blocked_display_reason = blocked_by_local or action_none_reason_local or probe_reason_local
+    if (
+        btc_upper_reject_probe_preflight_wait_relief
+        and check_stage in {"BLOCKED", "PROBE", "OBSERVE"}
+        and not blocked_display_reason
+    ):
+        blocked_display_reason = blocked_by_local or action_none_reason_local or probe_reason_local
+    if (
+        btc_upper_reject_confirm_preflight_wait_relief
+        and check_stage in {"BLOCKED", "PROBE", "OBSERVE"}
+        and not blocked_display_reason
+    ):
+        blocked_display_reason = blocked_by_local or action_none_reason_local or probe_reason_local
+    if (
+        btc_upper_reject_probe_promotion_wait_relief
+        and check_stage in {"BLOCKED", "PROBE", "OBSERVE"}
         and not blocked_display_reason
     ):
         blocked_display_reason = blocked_by_local or action_none_reason_local or probe_reason_local
@@ -1743,7 +2291,31 @@ def build_consumer_check_state_v1(
     ):
         blocked_display_reason = blocked_by_local or action_none_reason_local or probe_reason_local
     if (
+        xau_upper_reject_probe_forecast_wait_relief
+        and check_stage in {"PROBE", "BLOCKED"}
+        and not blocked_display_reason
+    ):
+        blocked_display_reason = blocked_by_local or action_none_reason_local or probe_reason_local
+    if (
+        xau_upper_reject_probe_promotion_wait_relief
+        and check_stage in {"PROBE", "BLOCKED"}
+        and not blocked_display_reason
+    ):
+        blocked_display_reason = blocked_by_local or action_none_reason_local or probe_reason_local
+    if (
         nas_outer_band_probe_against_default_side_wait_relief
+        and check_stage in {"OBSERVE", "PROBE", "BLOCKED"}
+        and not blocked_display_reason
+    ):
+        blocked_display_reason = blocked_by_local or action_none_reason_local or probe_reason_local
+    if (
+        xau_outer_band_probe_against_default_side_wait_relief
+        and check_stage in {"OBSERVE", "PROBE", "BLOCKED"}
+        and not blocked_display_reason
+    ):
+        blocked_display_reason = blocked_by_local or action_none_reason_local or probe_reason_local
+    if (
+        xau_lower_probe_guard_wait_relief
         and check_stage in {"OBSERVE", "PROBE", "BLOCKED"}
         and not blocked_display_reason
     ):
@@ -1767,6 +2339,24 @@ def build_consumer_check_state_v1(
     ):
         blocked_display_reason = blocked_by_local or action_none_reason_local or probe_reason_local
     if (
+        xau_upper_reject_confirm_energy_wait_relief
+        and check_stage in {"PROBE", "BLOCKED", "OBSERVE"}
+        and not blocked_display_reason
+    ):
+        blocked_display_reason = blocked_by_local or action_none_reason_local or probe_reason_local
+    if (
+        xau_upper_break_fail_confirm_energy_wait_relief
+        and check_stage in {"PROBE", "BLOCKED", "OBSERVE"}
+        and not blocked_display_reason
+    ):
+        blocked_display_reason = blocked_by_local or action_none_reason_local or probe_reason_local
+    if (
+        nas_upper_break_fail_confirm_energy_wait_relief
+        and check_stage in {"PROBE", "BLOCKED", "OBSERVE"}
+        and not blocked_display_reason
+    ):
+        blocked_display_reason = blocked_by_local or action_none_reason_local or probe_reason_local
+    if (
         xau_outer_band_probe_energy_wait_relief
         and check_stage in {"PROBE", "BLOCKED"}
         and not blocked_display_reason
@@ -1775,6 +2365,36 @@ def build_consumer_check_state_v1(
     if (
         xau_middle_anchor_guard_wait_relief
         and check_stage in {"OBSERVE", "PROBE", "BLOCKED"}
+        and not blocked_display_reason
+    ):
+        blocked_display_reason = blocked_by_local or action_none_reason_local or probe_reason_local
+    if (
+        xau_upper_reject_confirm_forecast_wait_relief
+        and check_stage in {"OBSERVE", "PROBE", "BLOCKED"}
+        and not blocked_display_reason
+    ):
+        blocked_display_reason = blocked_by_local or action_none_reason_local or probe_reason_local
+    if (
+        xau_upper_reject_mixed_guard_wait_relief
+        and check_stage in {"OBSERVE", "PROBE", "BLOCKED"}
+        and not blocked_display_reason
+    ):
+        blocked_display_reason = blocked_by_local or action_none_reason_local or probe_reason_local
+    if (
+        xau_upper_reject_mixed_confirm_energy_wait_relief
+        and check_stage in {"BLOCKED", "PROBE", "OBSERVE"}
+        and not blocked_display_reason
+    ):
+        blocked_display_reason = blocked_by_local or action_none_reason_local or probe_reason_local
+    if (
+        nas_upper_reject_mixed_confirm_energy_wait_relief
+        and check_stage in {"BLOCKED", "PROBE", "OBSERVE"}
+        and not blocked_display_reason
+    ):
+        blocked_display_reason = blocked_by_local or action_none_reason_local or probe_reason_local
+    if (
+        btc_upper_reject_mixed_confirm_energy_wait_relief
+        and check_stage in {"BLOCKED", "PROBE", "OBSERVE"}
         and not blocked_display_reason
     ):
         blocked_display_reason = blocked_by_local or action_none_reason_local or probe_reason_local
@@ -1876,6 +2496,19 @@ def build_consumer_check_state_v1(
         and not str(modifier_result.get("modifier_primary_reason", "") or "")
     ):
         reason_code = "btc_lower_rebound_forecast_wait_hide_without_probe"
+        modifier_result["modifier_applied"] = True
+        modifier_result["modifier_primary_reason"] = reason_code
+        modifier_reason_codes = list(modifier_result.get("modifier_reason_codes", []) or [])
+        if reason_code not in modifier_reason_codes:
+            modifier_reason_codes.append(reason_code)
+        modifier_result["modifier_reason_codes"] = modifier_reason_codes
+        modifier_result["modifier_stage_adjustment"] = "visibility_suppressed"
+    if (
+        balanced_conflict_display_suppressed
+        and not bool(baseline_snapshot["check_display_ready"])
+        and not str(modifier_result.get("modifier_primary_reason", "") or "")
+    ):
+        reason_code = "balanced_conflict_wait_hide_without_probe"
         modifier_result["modifier_applied"] = True
         modifier_result["modifier_primary_reason"] = reason_code
         modifier_reason_codes = list(modifier_result.get("modifier_reason_codes", []) or [])
@@ -1996,6 +2629,66 @@ def resolve_effective_consumer_check_state_v1(
         action_upper = str(action_value or "").upper()
         if action_upper in {"BUY", "SELL"}:
             side_local = action_upper
+    btc_upper_break_fail_confirm_entry_gate_wait_repeat_relief = bool(
+        symbol_local == "BTCUSD"
+        and side_local == "SELL"
+        and stage_local in {"OBSERVE", "PROBE", "BLOCKED"}
+        and display_ready_local
+        and semantic_origin_reason_local == "upper_break_fail_confirm"
+        and blocked_local in {
+            "clustered_entry_price_zone",
+            "pyramid_not_progressed",
+            "pyramid_not_in_drawdown",
+        }
+        and not action_none_local
+        and not probe_scene_local
+        and chart_display_reason == "btc_upper_break_fail_confirm_entry_gate_wait_as_wait_checks"
+    )
+    nas_upper_break_fail_confirm_entry_gate_wait_repeat_relief = bool(
+        symbol_local == "NAS100"
+        and side_local == "SELL"
+        and stage_local in {"OBSERVE", "PROBE", "BLOCKED"}
+        and display_ready_local
+        and semantic_origin_reason_local == "upper_break_fail_confirm"
+        and blocked_local in {
+            "clustered_entry_price_zone",
+            "pyramid_not_progressed",
+            "pyramid_not_in_drawdown",
+        }
+        and not action_none_local
+        and not probe_scene_local
+        and chart_display_reason == "nas_upper_break_fail_confirm_entry_gate_wait_as_wait_checks"
+    )
+    xau_upper_reject_mixed_confirm_entry_gate_wait_repeat_relief = bool(
+        symbol_local == "XAUUSD"
+        and side_local == "SELL"
+        and stage_local in {"OBSERVE", "PROBE", "BLOCKED"}
+        and display_ready_local
+        and semantic_origin_reason_local == "upper_reject_mixed_confirm"
+        and blocked_local in {
+            "clustered_entry_price_zone",
+            "pyramid_not_progressed",
+            "pyramid_not_in_drawdown",
+        }
+        and not action_none_local
+        and not probe_scene_local
+        and chart_display_reason == "xau_upper_reject_mixed_confirm_entry_gate_wait_as_wait_checks"
+    )
+    xau_outer_band_probe_entry_gate_wait_repeat_relief = bool(
+        symbol_local == "XAUUSD"
+        and side_local == "SELL"
+        and stage_local in {"OBSERVE", "PROBE", "BLOCKED"}
+        and display_ready_local
+        and semantic_origin_reason_local == "outer_band_reversal_support_required_observe"
+        and blocked_local in {
+            "clustered_entry_price_zone",
+            "pyramid_not_progressed",
+            "pyramid_not_in_drawdown",
+        }
+        and not action_none_local
+        and probe_scene_local == "xau_upper_sell_probe"
+        and chart_display_reason == "xau_outer_band_probe_entry_gate_wait_as_wait_checks"
+    )
     suppress_guards = {
         str(item or "").strip()
         for item in (
@@ -2007,7 +2700,13 @@ def resolve_effective_consumer_check_state_v1(
     }
     if blocked_local or action_none_local:
         entry_ready_local = False
-        if blocked_local in suppress_guards:
+        if (
+            blocked_local in suppress_guards
+            and not btc_upper_break_fail_confirm_entry_gate_wait_repeat_relief
+            and not nas_upper_break_fail_confirm_entry_gate_wait_repeat_relief
+            and not xau_upper_reject_mixed_confirm_entry_gate_wait_repeat_relief
+            and not xau_outer_band_probe_entry_gate_wait_repeat_relief
+        ):
             stage_local = "BLOCKED" if candidate or side_local in {"BUY", "SELL"} else ""
             display_ready_local = False
             level_local = 0
@@ -2056,8 +2755,12 @@ def resolve_effective_consumer_check_state_v1(
         and blocked_local in {"forecast_guard", "barrier_guard"}
         and action_none_local == "observe_state_wait"
         and not (
+            semantic_origin_reason_local == "upper_reject_confirm"
+            and blocked_local == "forecast_guard"
+        )
+        and not (
             semantic_origin_reason_local == "upper_reject_mixed_confirm"
-            and blocked_local == "barrier_guard"
+            and blocked_local in {"barrier_guard", "forecast_guard"}
         )
     )
     btc_outer_band_probe_guard_wait_repeat_relief = bool(
@@ -2070,6 +2773,17 @@ def resolve_effective_consumer_check_state_v1(
         and action_none_local == "probe_not_promoted"
         and probe_scene_local == "btc_lower_buy_conservative_probe"
         and chart_display_reason == "probe_guard_wait_as_wait_checks"
+    )
+    btc_lower_probe_guard_wait_repeat_relief = bool(
+        symbol_local == "BTCUSD"
+        and side_local == "BUY"
+        and stage_local == "OBSERVE"
+        and display_ready_local
+        and semantic_origin_reason_local == "lower_rebound_probe_observe"
+        and blocked_local in {"forecast_guard", "barrier_guard"}
+        and action_none_local == "probe_not_promoted"
+        and probe_scene_local == "btc_lower_buy_conservative_probe"
+        and chart_display_reason == "btc_lower_probe_guard_wait_as_wait_checks"
     )
     btc_lower_structural_cadence_suppressed = bool(
         symbol_local == "BTCUSD"
@@ -2101,6 +2815,50 @@ def resolve_effective_consumer_check_state_v1(
         and action_none_local == "observe_state_wait"
         and not probe_scene_local
         and chart_display_reason == "xau_middle_anchor_guard_wait_as_wait_checks"
+    )
+    xau_upper_reject_probe_forecast_wait_repeat_relief = bool(
+        symbol_local == "XAUUSD"
+        and side_local == "SELL"
+        and stage_local == "PROBE"
+        and display_ready_local
+        and semantic_origin_reason_local == "upper_reject_probe_observe"
+        and blocked_local == "forecast_guard"
+        and action_none_local == "probe_not_promoted"
+        and probe_scene_local == "xau_upper_sell_probe"
+        and chart_display_reason == "xau_upper_reject_probe_forecast_wait_as_wait_checks"
+    )
+    xau_upper_reject_probe_promotion_wait_repeat_relief = bool(
+        symbol_local == "XAUUSD"
+        and side_local == "SELL"
+        and stage_local == "PROBE"
+        and display_ready_local
+        and semantic_origin_reason_local == "upper_reject_probe_observe"
+        and blocked_local == "probe_promotion_gate"
+        and action_none_local == "probe_not_promoted"
+        and probe_scene_local == "xau_upper_sell_probe"
+        and chart_display_reason == "xau_upper_reject_probe_promotion_wait_as_wait_checks"
+    )
+    xau_upper_reject_mixed_guard_wait_repeat_relief = bool(
+        symbol_local == "XAUUSD"
+        and side_local == "SELL"
+        and stage_local == "OBSERVE"
+        and display_ready_local
+        and semantic_origin_reason_local == "upper_reject_mixed_confirm"
+        and blocked_local in {"barrier_guard", "forecast_guard"}
+        and action_none_local == "observe_state_wait"
+        and not probe_scene_local
+        and chart_display_reason == "xau_upper_reject_mixed_guard_wait_as_wait_checks"
+    )
+    xau_upper_reject_confirm_forecast_wait_repeat_relief = bool(
+        symbol_local == "XAUUSD"
+        and side_local == "SELL"
+        and stage_local == "OBSERVE"
+        and display_ready_local
+        and semantic_origin_reason_local == "upper_reject_confirm"
+        and blocked_local == "forecast_guard"
+        and action_none_local == "observe_state_wait"
+        and not probe_scene_local
+        and chart_display_reason == "xau_upper_reject_confirm_forecast_wait_as_wait_checks"
     )
     xau_middle_anchor_cadence_suppressed = bool(
         symbol_local == "XAUUSD"
@@ -2134,10 +2892,19 @@ def resolve_effective_consumer_check_state_v1(
         and blocked_local in {"forecast_guard", "barrier_guard", "probe_promotion_gate"}
         and action_none_local in {"observe_state_wait", "probe_not_promoted"}
         and not (
+            semantic_origin_reason_local == "upper_reject_confirm"
+            and blocked_local == "forecast_guard"
+            and action_none_local == "observe_state_wait"
+        )
+        and not (
             semantic_origin_reason_local == "upper_reject_mixed_confirm"
             and blocked_local == "barrier_guard"
             and action_none_local == "observe_state_wait"
         )
+        and not xau_upper_reject_confirm_forecast_wait_repeat_relief
+        and not xau_upper_reject_mixed_guard_wait_repeat_relief
+        and not xau_upper_reject_probe_forecast_wait_repeat_relief
+        and not xau_upper_reject_probe_promotion_wait_repeat_relief
         and _matches_runtime_display_signature(
             previous_runtime_row,
             side=side_local,
@@ -2177,6 +2944,7 @@ def resolve_effective_consumer_check_state_v1(
         and blocked_local == "forecast_guard"
         and action_none_local == "probe_not_promoted"
         and probe_scene_local == "btc_lower_buy_conservative_probe"
+        and not btc_lower_probe_guard_wait_repeat_relief
         and _matches_runtime_display_signature(
             previous_runtime_row,
             side=side_local,

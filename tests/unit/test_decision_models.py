@@ -162,6 +162,18 @@ def test_entry_service_append_log_stores_dto_snapshots(monkeypatch):
             "transition_reversal_continuation_gap": 0.29,
             "management_continue_fail_gap": 0.33,
             "management_recover_reentry_gap": 0.14,
+            "state25_candidate_rollout_phase": "log_only",
+            "state25_candidate_effective_entry_threshold": 41.0,
+            "state25_candidate_size_multiplier": 0.85,
+            "forecast_state25_overlay_mode": "log_only",
+            "forecast_state25_candidate_management_bias": "fast_cut_bias",
+            "belief_action_hint_mode": "log_only",
+            "belief_candidate_recommended_family": "hold_bias",
+            "belief_action_hint_confidence": "high",
+            "barrier_action_hint_mode": "log_only",
+            "barrier_candidate_recommended_family": "wait_bias",
+            "barrier_action_hint_confidence": "medium",
+            "barrier_action_hint_cost_hint": "wait_value_r=0.18",
             "core_reason": "core_pass",
             "wait_score": 3.0,
             "wait_conflict": 2.0,
@@ -346,6 +358,17 @@ def test_entry_service_append_log_stores_dto_snapshots(monkeypatch):
     assert row["entry_decision_result_v1"]["wait_state"]["state"] == "CONFLICT"
     assert row["entry_decision_result_v1"]["selected_setup"]["setup_id"] == "range_lower_reversal_buy"
     assert row["entry_decision_result_v1"]["predictions"]["entry"]["p_win"] == 0.64
+    assert row["state25_candidate_rollout_phase"] == "log_only"
+    assert row["state25_candidate_effective_entry_threshold"] == 41.0
+    assert row["forecast_state25_overlay_mode"] == "log_only"
+    assert row["forecast_state25_candidate_management_bias"] == "fast_cut_bias"
+    assert row["belief_action_hint_mode"] == "log_only"
+    assert row["belief_candidate_recommended_family"] == "hold_bias"
+    assert row["belief_action_hint_confidence"] == "high"
+    assert row["barrier_action_hint_mode"] == "log_only"
+    assert row["barrier_candidate_recommended_family"] == "wait_bias"
+    assert row["barrier_action_hint_confidence"] == "medium"
+    assert row["barrier_action_hint_cost_hint"] == "wait_value_r=0.18"
     assert captured["row"]["signal_timeframe"] == "15M"
     assert captured["row"]["signal_bar_ts"] == 1773149400
 

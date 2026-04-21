@@ -12,6 +12,10 @@ from backend.services.r0_row_interpretation import (
     resolve_r0_probe_state,
     resolve_r0_reason_triplet,
 )
+from backend.services.runtime_signal_surface import (
+    build_legacy_raw_score_surface_v1,
+    build_position_energy_surface_v1,
+)
 from backend.services.entry_wait_context_bias_bundle import compact_entry_wait_bias_bundle_v1
 from backend.services.entry_wait_context_contract import compact_entry_wait_context_v1
 from backend.services.entry_wait_state_policy_contract import compact_entry_wait_state_policy_input_v1
@@ -108,6 +112,14 @@ ENTRY_DECISION_DETAIL_ONLY_COLUMNS = {
     "consumer_policy_input_field",
     "consumer_policy_contract_version",
     "consumer_policy_identity_preserved",
+    "forecast_state25_runtime_bridge_v1",
+    "breakout_event_runtime_v1",
+    "belief_state25_runtime_bridge_v1",
+    "barrier_state25_runtime_bridge_v1",
+    "forecast_state25_log_only_overlay_trace_v1",
+    "countertrend_continuation_signal_v1",
+    "breakout_event_overlay_candidates_v1",
+    "breakout_event_overlay_trace_v1",
     "layer_mode_scope_contract_v1",
     "layer_mode_effective_trace_v1",
     "layer_mode_influence_trace_v1",
@@ -351,6 +363,85 @@ def _to_simple_float(value: Any) -> float | None:
         return None
 
 
+def _to_simple_int(value: Any) -> int | None:
+    if value in ("", None):
+        return None
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return int(value)
+    if isinstance(value, float):
+        return int(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return int(float(text))
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_micro_structure_hot_surface(payload: Mapping[str, Any] | None) -> dict[str, Any]:
+    source = dict(payload or {})
+    state_vector = _coerce_mapping(source.get("state_vector_v2"))
+    state_metadata = _coerce_mapping(state_vector.get("metadata"))
+    forecast_features = _coerce_mapping(source.get("forecast_features_v1"))
+    state_harvest = _coerce_mapping(forecast_features.get("state_harvest"))
+    secondary_harvest = _coerce_mapping(forecast_features.get("secondary_harvest"))
+
+    semantic_fields = (
+        "micro_breakout_readiness_state",
+        "micro_reversal_risk_state",
+        "micro_participation_state",
+        "micro_gap_context_state",
+    )
+    source_field_map = {
+        "micro_body_size_pct_20": "source_micro_body_size_pct_20",
+        "micro_doji_ratio_20": "source_micro_doji_ratio_20",
+        "micro_same_color_run_current": "source_micro_same_color_run_current",
+        "micro_same_color_run_max_20": "source_micro_same_color_run_max_20",
+        "micro_range_compression_ratio_20": "source_micro_range_compression_ratio_20",
+        "micro_volume_burst_ratio_20": "source_micro_volume_burst_ratio_20",
+        "micro_volume_burst_decay_20": "source_micro_volume_burst_decay_20",
+        "micro_gap_fill_progress": "source_micro_gap_fill_progress",
+    }
+
+    compact: dict[str, Any] = {}
+    for field in semantic_fields:
+        compact[field] = str(
+            state_metadata.get(field, "")
+            or state_harvest.get(field, "")
+            or ""
+        )
+
+    float_fields = {
+        "micro_body_size_pct_20",
+        "micro_doji_ratio_20",
+        "micro_range_compression_ratio_20",
+        "micro_volume_burst_ratio_20",
+        "micro_volume_burst_decay_20",
+        "micro_gap_fill_progress",
+    }
+    int_fields = {
+        "micro_same_color_run_current",
+        "micro_same_color_run_max_20",
+    }
+
+    for hot_field, source_field in source_field_map.items():
+        raw_value = state_metadata.get(source_field)
+        if raw_value in ("", None):
+            raw_value = secondary_harvest.get(source_field)
+        if hot_field in float_fields:
+            value = _to_simple_float(raw_value)
+        elif hot_field in int_fields:
+            value = _to_simple_int(raw_value)
+        else:
+            value = raw_value
+        compact[hot_field] = "" if value is None else value
+
+    return compact
+
+
 def _infer_direction_from_text(*values: Any) -> str:
     for value in values:
         text = str(value or "").strip().lower()
@@ -572,6 +663,126 @@ def compact_trace_mapping(value: Any) -> dict[str, Any]:
             ),
         },
     )
+
+
+def compact_forecast_state25_runtime_bridge_v1(value: Any) -> dict[str, Any]:
+    payload = _coerce_mapping(value)
+    compact: dict[str, Any] = {}
+    for key in ("contract_version", "scope_freeze_contract_version", "scene_source"):
+        item = payload.get(key)
+        if _is_simple_value(item):
+            compact[key] = item
+
+    scene = _coerce_mapping(payload.get("state25_runtime_hint_v1"))
+    if scene:
+        scene_compact = _compact_scalar_mapping(scene)
+        candidate_pattern_ids = scene.get("candidate_pattern_ids")
+        if isinstance(candidate_pattern_ids, (list, tuple)):
+            scene_compact["candidate_pattern_ids"] = [
+                int(item) for item in candidate_pattern_ids if str(item or "").strip()
+            ]
+        if scene_compact:
+            compact["state25_runtime_hint_v1"] = scene_compact
+
+    forecast = _coerce_mapping(payload.get("forecast_runtime_summary_v1"))
+    if forecast:
+        forecast_compact = _compact_scalar_mapping(forecast)
+        if forecast_compact:
+            compact["forecast_runtime_summary_v1"] = forecast_compact
+
+    bridge = _coerce_mapping(payload.get("entry_wait_exit_bridge_v1"))
+    if bridge:
+        bridge_compact = _compact_scalar_mapping(bridge)
+        if bridge_compact:
+            compact["entry_wait_exit_bridge_v1"] = bridge_compact
+
+    overlay = _coerce_mapping(payload.get("log_only_overlay_candidates_v1"))
+    if overlay:
+        overlay_compact = _compact_scalar_mapping(overlay)
+        if overlay_compact:
+            compact["log_only_overlay_candidates_v1"] = overlay_compact
+
+    return compact
+
+
+def compact_belief_state25_runtime_bridge_v1(value: Any) -> dict[str, Any]:
+    payload = _coerce_mapping(value)
+    compact: dict[str, Any] = {}
+    for key in ("contract_version", "scope_freeze_contract_version", "scene_source"):
+        item = payload.get(key)
+        if _is_simple_value(item):
+            compact[key] = item
+
+    scene = _coerce_mapping(payload.get("state25_runtime_hint_v1"))
+    if scene:
+        scene_compact = _compact_scalar_mapping(scene)
+        candidate_pattern_ids = scene.get("candidate_pattern_ids")
+        if isinstance(candidate_pattern_ids, (list, tuple)):
+            scene_compact["candidate_pattern_ids"] = [
+                int(item) for item in candidate_pattern_ids if str(item or "").strip()
+            ]
+        if scene_compact:
+            compact["state25_runtime_hint_v1"] = scene_compact
+
+    belief_summary = _coerce_mapping(payload.get("belief_runtime_summary_v1"))
+    if belief_summary:
+        belief_summary_compact = _compact_scalar_mapping(belief_summary)
+        if belief_summary_compact:
+            compact["belief_runtime_summary_v1"] = belief_summary_compact
+
+    belief_input_trace = _coerce_mapping(payload.get("belief_input_trace_v1"))
+    if belief_input_trace:
+        belief_input_trace_compact = _compact_scalar_mapping(belief_input_trace)
+        if belief_input_trace_compact:
+            compact["belief_input_trace_v1"] = belief_input_trace_compact
+
+    belief_action_hint = _coerce_mapping(payload.get("belief_action_hint_v1"))
+    if belief_action_hint:
+        belief_action_hint_compact = _compact_scalar_mapping(belief_action_hint)
+        if belief_action_hint_compact:
+            compact["belief_action_hint_v1"] = belief_action_hint_compact
+
+    return compact
+
+
+def compact_barrier_state25_runtime_bridge_v1(value: Any) -> dict[str, Any]:
+    payload = _coerce_mapping(value)
+    compact: dict[str, Any] = {}
+    for key in ("contract_version", "scope_freeze_contract_version", "scene_source"):
+        item = payload.get(key)
+        if _is_simple_value(item):
+            compact[key] = item
+
+    scene = _coerce_mapping(payload.get("state25_runtime_hint_v1"))
+    if scene:
+        scene_compact = _compact_scalar_mapping(scene)
+        candidate_pattern_ids = scene.get("candidate_pattern_ids")
+        if isinstance(candidate_pattern_ids, (list, tuple)):
+            scene_compact["candidate_pattern_ids"] = [
+                int(item) for item in candidate_pattern_ids if str(item or "").strip()
+            ]
+        if scene_compact:
+            compact["state25_runtime_hint_v1"] = scene_compact
+
+    barrier_summary = _coerce_mapping(payload.get("barrier_runtime_summary_v1"))
+    if barrier_summary:
+        barrier_summary_compact = _compact_scalar_mapping(barrier_summary)
+        if barrier_summary_compact:
+            compact["barrier_runtime_summary_v1"] = barrier_summary_compact
+
+    barrier_input_trace = _coerce_mapping(payload.get("barrier_input_trace_v1"))
+    if barrier_input_trace:
+        barrier_input_trace_compact = _compact_scalar_mapping(barrier_input_trace)
+        if barrier_input_trace_compact:
+            compact["barrier_input_trace_v1"] = barrier_input_trace_compact
+
+    barrier_action_hint = _coerce_mapping(payload.get("barrier_action_hint_v1"))
+    if barrier_action_hint:
+        barrier_action_hint_compact = _compact_scalar_mapping(barrier_action_hint)
+        if barrier_action_hint_compact:
+            compact["barrier_action_hint_v1"] = barrier_action_hint_compact
+
+    return compact
 
 
 def compact_energy_usage_trace(value: Any) -> dict[str, Any]:
@@ -964,8 +1175,60 @@ def _compact_current_entry_context(value: Any) -> dict[str, Any]:
     return compact
 
 
+COMPACT_RUNTIME_SIGNAL_SKIP_SIMPLE_FIELDS = {
+    "consumer_scope_contract_v1",
+    "energy_scope_contract_v1",
+    "runtime_alignment_scope_contract_v1",
+    "entry_guard_contract_v1",
+    "entry_service_responsibility_contract_v1",
+    "setup_detector_responsibility_contract_v1",
+    "setup_mapping_contract_v1",
+    "exit_handoff_contract_v1",
+    "re_entry_contract_v1",
+    "consumer_logging_contract_v1",
+    "consumer_test_contract_v1",
+    "consumer_freeze_handoff_v1",
+    "consumer_migration_freeze_v1",
+    "consumer_migration_guard_v1",
+    "observe_confirm_input_contract_v2",
+    "observe_confirm_output_contract_v2",
+    "observe_confirm_scope_contract_v1",
+    "energy_migration_dual_write_v1",
+    "energy_migration_guard_v1",
+    "energy_logging_replay_contract_v1",
+    "forecast_calibration_contract_v1",
+    "outcome_labeler_scope_contract_v1",
+    "layer_mode_contract_v1",
+    "layer_mode_scope_contract_v1",
+    "layer_mode_layer_inventory_v1",
+    "layer_mode_default_policy_v1",
+    "layer_mode_dual_write_contract_v1",
+    "layer_mode_influence_semantics_v1",
+    "layer_mode_application_contract_v1",
+    "layer_mode_identity_guard_contract_v1",
+    "layer_mode_policy_overlay_output_contract_v1",
+    "layer_mode_logging_replay_contract_v1",
+    "layer_mode_test_contract_v1",
+    "layer_mode_freeze_handoff_v1",
+    "consumer_layer_mode_integration_v1",
+    "layer_mode_application_trace_v1",
+    "layer_mode_identity_guard_trace_v1",
+    "layer_mode_influence_trace_v1",
+    "layer_mode_effective_trace_v1",
+    "layer_mode_logging_replay_v1",
+    "layer_mode_policy_v1",
+    "position_snapshot_effective_v1",
+    "response_vector_effective_v1",
+    "state_vector_effective_v1",
+    "evidence_vector_effective_v1",
+    "belief_state_effective_v1",
+    "barrier_state_effective_v1",
+    "forecast_effective_policy_v1",
+}
+
+
 def compact_runtime_signal_row(row: Mapping[str, Any] | None) -> dict[str, Any]:
-    payload = dict(row or {})
+    payload = row if isinstance(row, Mapping) else {}
     compact: dict[str, Any] = {}
     nested_fields = {
         "current_entry_context_v1",
@@ -1011,10 +1274,18 @@ def compact_runtime_signal_row(row: Mapping[str, Any] | None) -> dict[str, Any]:
         "entry_wait_context_v1",
         "entry_wait_bias_bundle_v1",
         "entry_wait_state_policy_input_v1",
+        "forecast_state25_runtime_bridge_v1",
+        "belief_state25_runtime_bridge_v1",
+        "barrier_state25_runtime_bridge_v1",
+        "forecast_state25_log_only_overlay_trace_v1",
+        "state25_candidate_context_bridge_v1",
+        "directional_continuation_overlay_v1",
     }
 
     for key, value in payload.items():
         if key in nested_fields:
+            continue
+        if str(key) in COMPACT_RUNTIME_SIGNAL_SKIP_SIMPLE_FIELDS:
             continue
         if _is_simple_value(value):
             compact[str(key)] = value
@@ -1079,11 +1350,52 @@ def compact_runtime_signal_row(row: Mapping[str, Any] | None) -> dict[str, Any]:
     if forecast_gap_metrics:
         compact["forecast_gap_metrics_v1"] = forecast_gap_metrics
 
+    forecast_state25_runtime_bridge = compact_forecast_state25_runtime_bridge_v1(
+        payload.get("forecast_state25_runtime_bridge_v1")
+    )
+    if forecast_state25_runtime_bridge:
+        compact["forecast_state25_runtime_bridge_v1"] = forecast_state25_runtime_bridge
+    belief_state25_runtime_bridge = compact_belief_state25_runtime_bridge_v1(
+        payload.get("belief_state25_runtime_bridge_v1")
+    )
+    if belief_state25_runtime_bridge:
+        compact["belief_state25_runtime_bridge_v1"] = belief_state25_runtime_bridge
+    barrier_state25_runtime_bridge = compact_barrier_state25_runtime_bridge_v1(
+        payload.get("barrier_state25_runtime_bridge_v1")
+    )
+    if barrier_state25_runtime_bridge:
+        compact["barrier_state25_runtime_bridge_v1"] = barrier_state25_runtime_bridge
+    forecast_state25_log_only_overlay_trace = compact_trace_mapping(
+        payload.get("forecast_state25_log_only_overlay_trace_v1")
+    )
+    if forecast_state25_log_only_overlay_trace:
+        compact["forecast_state25_log_only_overlay_trace_v1"] = (
+            forecast_state25_log_only_overlay_trace
+        )
+    state25_candidate_context_bridge = compact_trace_mapping(
+        payload.get("state25_candidate_context_bridge_v1")
+    )
+    if state25_candidate_context_bridge:
+        compact["state25_candidate_context_bridge_v1"] = (
+            state25_candidate_context_bridge
+        )
+    directional_continuation_overlay = compact_trace_mapping(
+        payload.get("directional_continuation_overlay_v1")
+    )
+    if directional_continuation_overlay:
+        compact["directional_continuation_overlay_v1"] = directional_continuation_overlay
+
     observe_confirm_v1 = _compact_observe_confirm(payload.get("observe_confirm_v1"))
     if observe_confirm_v1:
         compact["observe_confirm_v1"] = observe_confirm_v1
 
-    raw_observe_metadata = _coerce_mapping(_coerce_mapping(payload.get("observe_confirm_v2")).get("metadata"))
+    observe_confirm_v2_source = payload.get("observe_confirm_v2")
+    if isinstance(observe_confirm_v2_source, Mapping):
+        raw_observe_metadata = _coerce_mapping(observe_confirm_v2_source.get("metadata"))
+    else:
+        raw_observe_metadata = _coerce_mapping(
+            _coerce_mapping(observe_confirm_v2_source).get("metadata")
+        )
     observe_confirm_v2 = _compact_observe_confirm(payload.get("observe_confirm_v2"))
     if observe_confirm_v2:
         compact["observe_confirm_v2"] = observe_confirm_v2
@@ -1220,7 +1532,7 @@ def compact_runtime_signal_row(row: Mapping[str, Any] | None) -> dict[str, Any]:
     if threshold_shift:
         compact["wait_threshold_shift_summary"] = threshold_shift
 
-    quick_trace_source = dict(payload or {})
+    quick_trace_source = dict(compact)
     if "observe_reason" not in quick_trace_source:
         quick_trace_source["observe_reason"] = compact.get("observe_reason", "")
     if "blocked_by" not in quick_trace_source:
@@ -1253,6 +1565,9 @@ def compact_runtime_signal_row(row: Mapping[str, Any] | None) -> dict[str, Any]:
             generated_ts = payload.get("runtime_snapshot_generated_ts")
             if isinstance(generated_ts, (int, float)) and float(generated_ts) > 0:
                 compact["timestamp"] = datetime.fromtimestamp(float(generated_ts)).isoformat()
+
+    compact["legacy_raw_score_v1"] = build_legacy_raw_score_surface_v1(compact)
+    compact["position_energy_surface_v1"] = build_position_energy_surface_v1(compact)
 
     return compact
 
@@ -1302,6 +1617,24 @@ def build_entry_decision_hot_payload(
     hot_payload["forecast_assist_v1"] = _dump_compact_json(
         compact_trace_mapping(full_payload.get("forecast_assist_v1"))
     )
+    hot_payload["forecast_state25_runtime_bridge_v1"] = _dump_compact_json(
+        compact_forecast_state25_runtime_bridge_v1(
+            full_payload.get("forecast_state25_runtime_bridge_v1")
+        )
+    )
+    hot_payload["belief_state25_runtime_bridge_v1"] = _dump_compact_json(
+        compact_belief_state25_runtime_bridge_v1(
+            full_payload.get("belief_state25_runtime_bridge_v1")
+        )
+    )
+    hot_payload["barrier_state25_runtime_bridge_v1"] = _dump_compact_json(
+        compact_barrier_state25_runtime_bridge_v1(
+            full_payload.get("barrier_state25_runtime_bridge_v1")
+        )
+    )
+    hot_payload["forecast_state25_log_only_overlay_trace_v1"] = _dump_compact_json(
+        compact_trace_mapping(full_payload.get("forecast_state25_log_only_overlay_trace_v1"))
+    )
     hot_payload["entry_default_side_gate_v1"] = _dump_compact_json(
         compact_trace_mapping(full_payload.get("entry_default_side_gate_v1"))
     )
@@ -1317,9 +1650,29 @@ def build_entry_decision_hot_payload(
     hot_payload["p7_guarded_size_overlay_v1"] = _dump_compact_json(
         compact_trace_mapping(full_payload.get("p7_guarded_size_overlay_v1"))
     )
-    hot_payload["consumer_check_state_v1"] = _dump_compact_json(
-        compact_trace_mapping(full_payload.get("consumer_check_state_v1"))
-    )
+    consumer_check_state = compact_trace_mapping(full_payload.get("consumer_check_state_v1"))
+    hot_payload["consumer_check_state_v1"] = _dump_compact_json(consumer_check_state)
+    if hot_payload.get("consumer_check_display_score", "") in {"", None}:
+        display_score = consumer_check_state.get("display_score")
+        if display_score not in {"", None}:
+            hot_payload["consumer_check_display_score"] = float(display_score or 0.0)
+    if hot_payload.get("consumer_check_display_repeat_count", "") in {"", None}:
+        display_repeat_count = consumer_check_state.get("display_repeat_count")
+        if display_repeat_count not in {"", None}:
+            hot_payload["consumer_check_display_repeat_count"] = int(display_repeat_count or 0)
+    if hot_payload.get("chart_event_kind_hint", "") in {"", None}:
+        hot_payload["chart_event_kind_hint"] = str(
+            consumer_check_state.get("chart_event_kind_hint", "") or ""
+        )
+    if hot_payload.get("chart_display_mode", "") in {"", None}:
+        hot_payload["chart_display_mode"] = str(
+            consumer_check_state.get("chart_display_mode", "") or ""
+        )
+    if hot_payload.get("chart_display_reason", "") in {"", None}:
+        hot_payload["chart_display_reason"] = str(
+            consumer_check_state.get("chart_display_reason", "") or ""
+        )
+    hot_payload.update(_extract_micro_structure_hot_surface(full_payload))
     compact_wait_context = _compact_wait_context_surface(full_payload.get("entry_wait_context_v1"))
     _, context_wait_bias_bundle, context_wait_policy_input = _resolve_wait_surface_from_context(compact_wait_context)
     hot_payload["entry_wait_context_v1"] = _dump_compact_json(compact_wait_context)
@@ -1369,6 +1722,94 @@ def build_entry_decision_hot_payload(
     return hot_payload
 
 
+def build_entry_decision_hot_payload_lean(
+    payload: Mapping[str, Any] | None,
+    *,
+    detail_row_key: str,
+    compact_runtime_row: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    full_payload = payload if isinstance(payload, Mapping) else {}
+    compact_row = (
+        compact_runtime_row
+        if isinstance(compact_runtime_row, Mapping)
+        else compact_runtime_signal_row(full_payload)
+    ) or {}
+    hot_payload: dict[str, Any] = {}
+    for key, value in full_payload.items():
+        key_text = str(key)
+        if key_text in ENTRY_DECISION_DETAIL_ONLY_COLUMNS:
+            continue
+        if value in ("", None):
+            continue
+        if isinstance(value, Mapping):
+            continue
+        if isinstance(value, (list, tuple, set, dict)):
+            continue
+        hot_payload[key_text] = value
+
+    nested_json_fields = {
+        "position_snapshot_v2",
+        "response_vector_v2",
+        "state_vector_v2",
+        "evidence_vector_v1",
+        "belief_state_v1",
+        "barrier_state_v1",
+        "forecast_features_v1",
+        "transition_forecast_v1",
+        "trade_management_forecast_v1",
+        "forecast_gap_metrics_v1",
+        "observe_confirm_v1",
+        "observe_confirm_v2",
+        "energy_helper_v2",
+        "entry_decision_context_v1",
+        "entry_decision_result_v1",
+        "forecast_assist_v1",
+        "forecast_state25_runtime_bridge_v1",
+        "belief_state25_runtime_bridge_v1",
+        "barrier_state25_runtime_bridge_v1",
+        "forecast_state25_log_only_overlay_trace_v1",
+        "state25_candidate_context_bridge_v1",
+        "directional_continuation_overlay_v1",
+        "entry_default_side_gate_v1",
+        "entry_probe_plan_v1",
+        "edge_pair_law_v1",
+        "probe_candidate_v1",
+        "p7_guarded_size_overlay_v1",
+        "consumer_check_state_v1",
+        "entry_wait_context_v1",
+        "entry_wait_bias_bundle_v1",
+        "entry_wait_state_policy_input_v1",
+        "entry_wait_energy_usage_trace_v1",
+        "entry_wait_decision_energy_usage_trace_v1",
+        "r0_row_interpretation_v1",
+        "legacy_raw_score_v1",
+        "position_energy_surface_v1",
+        "exit_manage_context_v1",
+        "exit_wait_state_surface_v1",
+        "exit_wait_taxonomy_v1",
+    }
+    for key in nested_json_fields:
+        value = compact_row.get(key)
+        if isinstance(value, Mapping):
+            if value:
+                hot_payload[str(key)] = _dump_compact_json(value)
+        elif isinstance(value, str):
+            text = value.strip()
+            if text and text not in {"{}", "[]", "null", "None"}:
+                hot_payload[str(key)] = text
+
+    for key, value in compact_row.items():
+        key_text = str(key)
+        if key_text in nested_json_fields:
+            continue
+        if hot_payload.get(key_text, "") in {"", None} and _is_simple_value(value):
+            hot_payload[key_text] = value
+
+    hot_payload["detail_schema_version"] = ENTRY_DECISION_DETAIL_SCHEMA_VERSION
+    hot_payload["detail_row_key"] = str(detail_row_key or "")
+    return hot_payload
+
+
 def build_entry_decision_detail_record(
     payload: Mapping[str, Any] | None,
     *,
@@ -1378,7 +1819,7 @@ def build_entry_decision_detail_record(
         "record_type": ENTRY_DECISION_DETAIL_SCHEMA_VERSION,
         "schema_version": ENTRY_DECISION_DETAIL_SCHEMA_VERSION,
         "row_key": str(row_key or ""),
-        "payload": dict(payload or {}),
+        "payload": payload if isinstance(payload, Mapping) else {},
     }
 
 

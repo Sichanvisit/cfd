@@ -583,6 +583,82 @@ def _label_event_risk_state(event_risk_score: float, collector_state: str = "") 
     return "LOW_EVENT_RISK"
 
 
+def _label_micro_breakout_readiness_state(score: float) -> str:
+    value = float(score)
+    if value >= 0.72:
+        return "BREAKOUT_READY"
+    if value >= 0.45:
+        return "BREAKOUT_WATCH"
+    return "BREAKOUT_NEUTRAL"
+
+
+def _label_micro_reversal_risk_state(score: float) -> str:
+    value = float(score)
+    if value >= 0.72:
+        return "REVERSAL_RISK_HIGH"
+    if value >= 0.45:
+        return "REVERSAL_RISK_WATCH"
+    return "REVERSAL_RISK_LOW"
+
+
+def _label_micro_participation_state(burst_score: float, decay_score: float) -> str:
+    burst = float(burst_score)
+    decay = float(decay_score)
+    if burst >= 0.65 and decay <= 0.35:
+        return "BURST_CONFIRMED"
+    if burst >= 0.45 and decay >= 0.45:
+        return "BURST_FADING"
+    if burst <= 0.20:
+        return "QUIET_PARTICIPATION"
+    return "NORMAL_PARTICIPATION"
+
+
+def _label_micro_gap_context_state(gap_fill_progress: float | None) -> str:
+    if gap_fill_progress is None:
+        return "GAP_CONTEXT_MISSING"
+    value = float(gap_fill_progress)
+    if value < 0.33:
+        return "EARLY_GAP_FILL"
+    if value < 0.85:
+        return "ACTIVE_GAP_FILL"
+    return "LATE_GAP_FILL"
+
+
+def _score_micro_structure_cluster(raw: StateRawSnapshot) -> tuple[float, float, float, str, str, str, str]:
+    compression_signal = _clamp01(float(raw.s_range_compression_ratio_20))
+    burst_signal = _clamp01(max(float(raw.s_volume_burst_ratio_20) - 1.0, 0.0) / 1.5)
+    decay_signal = _clamp01(float(raw.s_volume_burst_decay_20))
+    doji_signal = _clamp01(float(raw.s_doji_ratio_20) * 2.0)
+    run_signal = _clamp01(float(raw.s_same_color_run_current) / 5.0)
+    wick_signal = _clamp01(max(float(raw.s_upper_wick_ratio_20), float(raw.s_lower_wick_ratio_20)))
+    retest_signal = _clamp01(max(float(raw.s_swing_high_retest_count_20), float(raw.s_swing_low_retest_count_20)) / 3.0)
+
+    breakout_readiness = _clamp01(
+        (compression_signal * 0.38)
+        + (burst_signal * 0.34)
+        + (run_signal * 0.18)
+        - (doji_signal * 0.12)
+        - (decay_signal * 0.08)
+    )
+    reversal_risk = _clamp01(
+        (wick_signal * 0.38)
+        + (retest_signal * 0.32)
+        + (doji_signal * 0.18)
+        + (decay_signal * 0.12)
+    )
+    participation_score = _clamp01((burst_signal * 0.65) + ((1.0 - decay_signal) * 0.35))
+
+    return (
+        breakout_readiness,
+        reversal_risk,
+        participation_score,
+        _label_micro_breakout_readiness_state(breakout_readiness),
+        _label_micro_reversal_risk_state(reversal_risk),
+        _label_micro_participation_state(burst_signal, decay_signal),
+        _label_micro_gap_context_state(raw.s_gap_fill_progress),
+    )
+
+
 def build_state_vector_v2(
     raw: StateRawSnapshot,
     *,
@@ -644,6 +720,60 @@ def build_state_vector_v2(
         alignment_basis=alignment_basis,
         liquidity_penalty=liquidity_penalty,
         countertrend_penalty=countertrend_penalty,
+    )
+    (
+        micro_breakout_readiness_score,
+        micro_reversal_risk_score,
+        micro_participation_score,
+        micro_breakout_readiness_state,
+        micro_reversal_risk_state,
+        micro_participation_state,
+        micro_gap_context_state,
+    ) = _score_micro_structure_cluster(raw)
+    range_reversal_gain = _clamp(
+        range_reversal_gain + (micro_reversal_risk_score * 0.16) - (micro_breakout_readiness_score * 0.07),
+        0.70,
+        1.45,
+    )
+    trend_pullback_gain = _clamp(
+        trend_pullback_gain + (_clamp01(float(raw.s_same_color_run_current) / 5.0) * 0.05) - (_clamp01(float(raw.s_doji_ratio_20) * 2.0) * 0.03),
+        0.70,
+        1.45,
+    )
+    breakout_continuation_gain = _clamp(
+        breakout_continuation_gain
+        + (micro_breakout_readiness_score * 0.18)
+        + (micro_participation_score * 0.06)
+        - (micro_reversal_risk_score * 0.08),
+        0.70,
+        1.45,
+    )
+    wait_patience_gain = _clamp(
+        wait_patience_gain
+        + (_clamp01(float(raw.s_range_compression_ratio_20)) * 0.06)
+        - (micro_participation_score * 0.03),
+        0.85,
+        1.48,
+    )
+    confirm_aggression_gain = _clamp(
+        confirm_aggression_gain
+        + (micro_breakout_readiness_score * 0.10)
+        + (micro_participation_score * 0.04)
+        - (micro_reversal_risk_score * 0.06),
+        0.72,
+        1.34,
+    )
+    hold_patience_gain = _clamp(
+        hold_patience_gain
+        - (micro_reversal_risk_score * 0.05)
+        + (_clamp01(float(raw.s_same_color_run_current) / 5.0) * 0.03),
+        0.70,
+        1.38,
+    )
+    fast_exit_risk_penalty = _clamp01(
+        fast_exit_risk_penalty
+        + (micro_reversal_risk_score * 0.12)
+        + (_clamp01(float(raw.s_volume_burst_decay_20)) * 0.05)
     )
     activity_quality_score, activity_quality_label, activity_quality_reason = _score_activity_quality(
         recent_range_mean=float(raw.s_recent_range_mean),
@@ -806,6 +936,23 @@ def build_state_vector_v2(
         "volatility_penalty": (
             f"s_volatility={raw.s_volatility:.4f}, market_mode={mode} "
             f"-> volatility_penalty={volatility_penalty:.4f}"
+        ),
+        "micro_structure_breakout_readiness": (
+            f"compression={raw.s_range_compression_ratio_20:.4f}, burst_ratio={raw.s_volume_burst_ratio_20:.4f}, "
+            f"burst_decay={raw.s_volume_burst_decay_20:.4f}, run_current={raw.s_same_color_run_current:.4f}, "
+            f"doji_ratio={raw.s_doji_ratio_20:.4f} -> breakout_readiness={micro_breakout_readiness_score:.4f}"
+        ),
+        "micro_structure_reversal_risk": (
+            f"upper_wick={raw.s_upper_wick_ratio_20:.4f}, lower_wick={raw.s_lower_wick_ratio_20:.4f}, "
+            f"retest_high={raw.s_swing_high_retest_count_20:.4f}, retest_low={raw.s_swing_low_retest_count_20:.4f}, "
+            f"doji_ratio={raw.s_doji_ratio_20:.4f} -> reversal_risk={micro_reversal_risk_score:.4f}"
+        ),
+        "micro_structure_participation": (
+            f"volume_burst_ratio={raw.s_volume_burst_ratio_20:.4f}, volume_burst_decay={raw.s_volume_burst_decay_20:.4f} "
+            f"-> participation_score={micro_participation_score:.4f}, participation_state={micro_participation_state}"
+        ),
+        "micro_structure_gap_context": (
+            f"gap_fill_progress={raw.s_gap_fill_progress!r} -> micro_gap_context_state={micro_gap_context_state}"
         ),
         "momentum_quality_detail": momentum_quality_reason,
         "activity_quality_detail": activity_quality_reason,
@@ -987,6 +1134,20 @@ def build_state_vector_v2(
             "source_current_minus_di": float(raw.s_current_minus_di),
             "source_recent_range_mean": float(raw.s_recent_range_mean),
             "source_recent_body_mean": float(raw.s_recent_body_mean),
+            "source_micro_body_size_pct_20": float(raw.s_body_size_pct_20),
+            "source_micro_upper_wick_ratio_20": float(raw.s_upper_wick_ratio_20),
+            "source_micro_lower_wick_ratio_20": float(raw.s_lower_wick_ratio_20),
+            "source_micro_doji_ratio_20": float(raw.s_doji_ratio_20),
+            "source_micro_same_color_run_current": float(raw.s_same_color_run_current),
+            "source_micro_same_color_run_max_20": float(raw.s_same_color_run_max_20),
+            "source_micro_bull_ratio_20": float(raw.s_bull_ratio_20),
+            "source_micro_bear_ratio_20": float(raw.s_bear_ratio_20),
+            "source_micro_range_compression_ratio_20": float(raw.s_range_compression_ratio_20),
+            "source_micro_volume_burst_ratio_20": float(raw.s_volume_burst_ratio_20),
+            "source_micro_volume_burst_decay_20": float(raw.s_volume_burst_decay_20),
+            "source_micro_swing_high_retest_count_20": float(raw.s_swing_high_retest_count_20),
+            "source_micro_swing_low_retest_count_20": float(raw.s_swing_low_retest_count_20),
+            "source_micro_gap_fill_progress": raw.s_gap_fill_progress,
             "source_sr_level_rank": float(raw.s_sr_level_rank),
             "source_sr_touch_count": float(raw.s_sr_touch_count),
             "source_session_box_height_ratio": float(raw.s_session_box_height_ratio),
@@ -1013,6 +1174,20 @@ def build_state_vector_v2(
             "position_secondary_context_label": position_secondary_context_label,
             "position_conflict_score": position_conflict_score,
             "regime_state_label": regime_state_label,
+            "micro_breakout_readiness_score": micro_breakout_readiness_score,
+            "micro_reversal_risk_score": micro_reversal_risk_score,
+            "micro_participation_score": micro_participation_score,
+            "micro_breakout_readiness_state": micro_breakout_readiness_state,
+            "micro_reversal_risk_state": micro_reversal_risk_state,
+            "micro_participation_state": micro_participation_state,
+            "micro_gap_context_state": micro_gap_context_state,
+            "micro_structure_detail_v1": {
+                "data_state": str((raw.metadata or {}).get("micro_structure_data_state", "MISSING") or "MISSING"),
+                "anchor_state": str((raw.metadata or {}).get("micro_structure_anchor_state", "MISSING") or "MISSING"),
+                "volume_source": str((raw.metadata or {}).get("micro_structure_volume_source", "") or ""),
+                "lookback_bars": int((raw.metadata or {}).get("micro_structure_lookback_bars", 0) or 0),
+                "window_size": int((raw.metadata or {}).get("micro_structure_window_size", 0) or 0),
+            },
             "quality_state_label": quality_state_label,
             "quality_composite_score": quality_composite_score,
             "quality_state_detail_v1": {

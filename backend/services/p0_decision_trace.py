@@ -156,6 +156,18 @@ def build_p0_decision_trace_v1(row: Mapping[str, Any] | None) -> dict[str, Any]:
     action_none_reason = _coerce_text(row_local.get("action_none_reason"))
     quick_trace_state = _coerce_text(row_local.get("quick_trace_state"))
     quick_trace_reason = _coerce_text(row_local.get("quick_trace_reason"))
+    active_action_conflict_detected = _coerce_text(
+        row_local.get("active_action_conflict_detected")
+    ).lower() in {"true", "1", "yes", "y", "on"}
+    active_action_conflict_guard_applied = _coerce_text(
+        row_local.get("active_action_conflict_guard_applied")
+    ).lower() in {"true", "1", "yes", "y", "on"}
+    active_action_conflict_resolution_state = _coerce_text(
+        row_local.get("active_action_conflict_resolution_state")
+    )
+    active_action_conflict_kind = _coerce_text(
+        row_local.get("active_action_conflict_kind")
+    )
     consumer_stage = _coerce_text(
         row_local.get("consumer_check_stage")
         or consumer_open_guard.get("check_stage")
@@ -196,6 +208,10 @@ def build_p0_decision_trace_v1(row: Mapping[str, Any] | None) -> dict[str, Any]:
         "action_none_reason": action_none_reason,
         "quick_trace_state": quick_trace_state,
         "quick_trace_reason": quick_trace_reason,
+        "active_action_conflict_detected": active_action_conflict_detected,
+        "active_action_conflict_guard_applied": active_action_conflict_guard_applied,
+        "active_action_conflict_resolution_state": active_action_conflict_resolution_state,
+        "active_action_conflict_kind": active_action_conflict_kind,
         "consumer_check_stage": consumer_stage,
         "guard_failures": guard_failures,
         "active_guards": active_guards,

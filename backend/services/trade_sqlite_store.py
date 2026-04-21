@@ -236,6 +236,40 @@ class TradeSqliteStore:
             conn.executemany(sql, values)
             conn.commit()
 
+    def get_open_trade_context(self, ticket: int) -> dict | None:
+        t = int(ticket or 0)
+        if t <= 0:
+            return None
+        sql = f"""
+            SELECT {','.join(TRADE_COLUMNS)}
+            FROM open_trades
+            WHERE ticket_int = ?
+            LIMIT 1
+        """
+        with self._connect() as conn:
+            row = conn.execute(sql, (t,)).fetchone()
+        if not row:
+            return None
+        return {c: row[c] for c in TRADE_COLUMNS}
+
+    def patch_open_trade_fields(self, ticket: int, fields: dict[str, object] | None) -> bool:
+        t = int(ticket or 0)
+        field_map = dict(fields or {})
+        if t <= 0 or not field_map:
+            return False
+        allowed = {str(k): self._to_text(v) for k, v in field_map.items() if str(k) in TRADE_COLUMNS}
+        if not allowed:
+            return False
+        set_sql = ",".join([f"{col}=?" for col in allowed.keys()] + ["updated_at=?"])
+        params = [*allowed.values(), int(time.time()), t]
+        with self._connect() as conn:
+            cur = conn.execute(
+                f"UPDATE open_trades SET {set_sql} WHERE ticket_int = ?",
+                params,
+            )
+            conn.commit()
+            return int(getattr(cur, "rowcount", 0) or 0) > 0
+
     def replace_closed_rows(self, rows_df: pd.DataFrame) -> None:
         src = self._with_row_ts(rows_df if rows_df is not None else pd.DataFrame(columns=TRADE_COLUMNS))
         src = src[src["status"].astype(str).str.upper() == "CLOSED"].copy() if not src.empty else src
@@ -374,22 +408,6 @@ class TradeSqliteStore:
         with self._connect() as conn:
             rows = conn.execute(sql, (sym, sym, lim)).fetchall()
         return self._rows_to_df(rows)
-
-    def get_open_trade_context(self, ticket: int) -> dict[str, object] | None:
-        ticket_int = int(ticket or 0)
-        if ticket_int <= 0:
-            return None
-        sql = f"""
-            SELECT {','.join(TRADE_COLUMNS)}
-            FROM open_trades
-            WHERE ticket_int = ?
-            LIMIT 1
-        """
-        with self._connect() as conn:
-            row = conn.execute(sql, (ticket_int,)).fetchone()
-        if row is None:
-            return None
-        return {str(column): row[column] for column in TRADE_COLUMNS}
 
     def query_latest_closed(self, symbol: str = "", limit: int = 1) -> pd.DataFrame:
         lim = max(1, min(1000, int(limit)))

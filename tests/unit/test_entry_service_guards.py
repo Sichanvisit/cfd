@@ -112,6 +112,32 @@ def _core_result(
     }
 
 
+def _nas_clean_confirm_probe_plan(**overrides) -> dict:
+    payload = {
+        "active": True,
+        "scene_id": "nas_clean_confirm_probe",
+        "symbol_scene_relief": "nas_clean_confirm_probe",
+        "near_confirm": True,
+        "near_confirm_pair_gap": 0.10,
+        "pair_gap": 0.24,
+        "candidate_support": 0.34,
+        "action_confirm_score": 0.10,
+        "confirm_fake_gap": -0.24,
+        "wait_confirm_gap": -0.18,
+        "continue_fail_gap": -0.26,
+        "same_side_barrier": 0.40,
+        "structural_relief_active": True,
+        "structural_relief_candidate_support": 0.11,
+        "structural_relief_action_confirm_score": 0.08,
+        "structural_relief_confirm_fake_gap": -0.26,
+        "structural_relief_wait_confirm_gap": -0.21,
+        "structural_relief_continue_fail_gap": -0.28,
+        "structural_relief_max_side_barrier": 0.56,
+    }
+    payload.update(dict(overrides))
+    return payload
+
+
 def test_bb_guard_blocks_buy_below_midline(monkeypatch):
     svc = _svc()
     tick = SimpleNamespace(bid=99.0, ask=99.1)
@@ -306,6 +332,210 @@ def test_cluster_guard_relieves_semantic_same_thesis_edge_buy(monkeypatch):
     assert reason == ""
     trace = svc.runtime.latest_signal_by_symbol["XAUUSD"]["entry_cluster_semantic_guard_v1"]
     assert trace["semantic_relief_applied"] is True
+
+
+def test_cluster_guard_relieves_nas_clean_lower_buy_repeat_semantic_same_thesis(monkeypatch):
+    svc = _svc()
+    tick = SimpleNamespace(bid=100.015, ask=100.02)
+
+    monkeypatch.setattr(Config, "ENTRY_CLUSTER_GUARD_ENABLED", True)
+    monkeypatch.setattr(Config, "ENTRY_CLUSTER_WINDOW_SECONDS", 300)
+    monkeypatch.setattr(Config, "ENTRY_CLUSTER_MIN_MOVE_PCT", 0.0010)
+    monkeypatch.setattr(Config, "ENTRY_CLUSTER_SEMANTIC_RELIEF_ENABLED", True)
+    monkeypatch.setattr("backend.services.entry_engines.time.time", lambda: 10**12)
+
+    semantic_row = {
+        "setup_id": "range_lower_reversal_buy",
+        "box_state": "LOWER",
+        "bb_state": "LOWER_EDGE",
+        "observe_confirm_v2": {
+            "state": "CONFIRM",
+            "action": "BUY",
+            "side": "BUY",
+            "confidence": 0.74,
+            "reason": "lower_rebound_confirm",
+            "archetype_id": "lower_hold_buy",
+        },
+        "belief_state_v1": {
+            "dominant_side": "BUY",
+            "dominant_mode": "reversal",
+            "buy_persistence": 0.10,
+            "buy_streak": 1,
+        },
+        "barrier_state_v1": {
+            "buy_barrier": 0.21,
+        },
+        "transition_confirm_fake_gap": 0.16,
+        "management_continue_fail_gap": 0.20,
+    }
+    svc.runtime.latest_signal_by_symbol = {"NAS100": dict(semantic_row)}
+    svc.guard_engine.mark_entry(
+        "NAS100",
+        "BUY",
+        100.0,
+        10**12 - 1,
+        semantic_signature=svc.guard_engine.build_cluster_semantic_signature(semantic_row, action="BUY"),
+    )
+
+    ok, reason = svc._pass_cluster_guard(
+        "NAS100",
+        "BUY",
+        tick,
+        setup_id="range_lower_reversal_buy",
+        preflight_allowed_action="BUY_ONLY",
+    )
+    assert ok is True
+    assert reason == ""
+    trace = svc.runtime.latest_signal_by_symbol["NAS100"]["entry_cluster_semantic_guard_v1"]
+    assert trace["semantic_relief_applied"] is True
+
+
+def test_cluster_guard_relieves_btc_upper_sell_repeat_semantic_same_thesis(monkeypatch):
+    svc = _svc()
+    tick = SimpleNamespace(bid=100.03, ask=100.04)
+
+    monkeypatch.setattr(Config, "ENTRY_CLUSTER_GUARD_ENABLED", True)
+    monkeypatch.setattr(Config, "ENTRY_CLUSTER_WINDOW_SECONDS", 300)
+    monkeypatch.setattr(Config, "ENTRY_CLUSTER_MIN_MOVE_PCT", 0.0010)
+    monkeypatch.setattr(Config, "ENTRY_CLUSTER_SEMANTIC_RELIEF_ENABLED", True)
+    monkeypatch.setattr("backend.services.entry_engines.time.time", lambda: 10**12)
+
+    semantic_row = {
+        "setup_id": "range_upper_reversal_sell",
+        "setup_reason": "shadow_upper_break_fail_confirm",
+        "box_state": "UPPER",
+        "bb_state": "UPPER_EDGE",
+        "observe_confirm_v2": {
+            "state": "CONFIRM",
+            "action": "SELL",
+            "side": "SELL",
+            "confidence": 0.78,
+            "reason": "upper_reject_confirm",
+            "archetype_id": "upper_reject_sell",
+        },
+        "belief_state_v1": {
+            "dominant_side": "SELL",
+            "dominant_mode": "reversal",
+            "sell_persistence": 0.24,
+            "sell_streak": 2,
+        },
+        "barrier_state_v1": {
+            "sell_barrier": 0.18,
+        },
+        "transition_confirm_fake_gap": 0.18,
+        "management_continue_fail_gap": 0.24,
+    }
+    svc.runtime.latest_signal_by_symbol = {"BTCUSD": dict(semantic_row)}
+    svc.guard_engine.mark_entry(
+        "BTCUSD",
+        "SELL",
+        100.0,
+        10**12 - 1,
+        semantic_signature=svc.guard_engine.build_cluster_semantic_signature(semantic_row, action="SELL"),
+    )
+
+    ok, reason = svc._pass_cluster_guard(
+        "BTCUSD",
+        "SELL",
+        tick,
+        setup_id="range_upper_reversal_sell",
+        setup_reason="shadow_upper_break_fail_confirm",
+        preflight_allowed_action="BOTH",
+    )
+    assert ok is True
+    assert reason == ""
+    trace = svc.runtime.latest_signal_by_symbol["BTCUSD"]["entry_cluster_semantic_guard_v1"]
+    assert trace["semantic_relief_applied"] is True
+    assert trace["btc_upper_sell_repeat_relief"] is True
+
+
+def test_check_hard_no_trade_guard_relieves_nas_clean_confirm_low_vol(monkeypatch):
+    svc = _svc()
+    svc.runtime.latest_signal_by_symbol = {
+        "NAS100": {
+            "observe_reason": "upper_reject_probe_observe",
+            "probe_scene_id": "nas_clean_confirm_probe",
+            "entry_probe_plan_v1": _nas_clean_confirm_probe_plan(),
+        }
+    }
+    monkeypatch.setattr(
+        svc.threshold_engine,
+        "check_hard_no_trade_guard",
+        lambda _symbol, _regime: "hard_guard_volatility_too_low",
+    )
+
+    reason = svc._check_hard_no_trade_guard("NAS100", {"name": "RANGE", "volatility_ratio": 0.41})
+
+    assert reason == ""
+    trace = svc.runtime.latest_signal_by_symbol["NAS100"]["entry_hard_guard_relief_v1"]
+    assert trace["applied"] is True
+    assert trace["reason"] == "nas_clean_confirm_low_vol_relief"
+
+
+def test_check_hard_no_trade_guard_keeps_low_vol_block_when_probe_not_ready(monkeypatch):
+    svc = _svc()
+    svc.runtime.latest_signal_by_symbol = {
+        "NAS100": {
+            "observe_reason": "upper_reject_probe_observe",
+            "probe_scene_id": "nas_clean_confirm_probe",
+            "entry_probe_plan_v1": _nas_clean_confirm_probe_plan(
+                near_confirm=False,
+                pair_gap=0.02,
+                candidate_support=0.08,
+                action_confirm_score=0.04,
+            ),
+        }
+    }
+    monkeypatch.setattr(
+        svc.threshold_engine,
+        "check_hard_no_trade_guard",
+        lambda _symbol, _regime: "hard_guard_volatility_too_low",
+    )
+
+    reason = svc._check_hard_no_trade_guard("NAS100", {"name": "RANGE", "volatility_ratio": 0.41})
+
+    assert reason == "hard_guard_volatility_too_low"
+    trace = svc.runtime.latest_signal_by_symbol["NAS100"]["entry_hard_guard_relief_v1"]
+    assert trace["applied"] is False
+    assert trace["criteria"]["near_confirm"] is False
+    assert trace["criteria"]["pair_support"] is False
+
+
+def test_check_hard_no_trade_guard_relieves_nas_clean_confirm_low_vol_when_plan_ready(monkeypatch):
+    svc = _svc()
+    svc.runtime.latest_signal_by_symbol = {
+        "NAS100": {
+            "observe_reason": "upper_reject_probe_observe",
+            "probe_scene_id": "nas_clean_confirm_probe",
+            "probe_plan_ready": True,
+            "entry_probe_plan_v1": _nas_clean_confirm_probe_plan(
+                intended_action="SELL",
+                ready_for_entry=True,
+                structural_relief_active=False,
+                candidate_support=0.34,
+                pair_gap=0.31,
+                action_confirm_score=0.05,
+                confirm_fake_gap=-0.27,
+                wait_confirm_gap=-0.25,
+                continue_fail_gap=-0.31,
+                same_side_barrier=0.79,
+                nas_clean_confirm_against_default_relief=True,
+            ),
+        }
+    }
+    monkeypatch.setattr(
+        svc.threshold_engine,
+        "check_hard_no_trade_guard",
+        lambda _symbol, _regime: "hard_guard_volatility_too_low",
+    )
+
+    reason = svc._check_hard_no_trade_guard("NAS100", {"name": "RANGE", "volatility_ratio": 0.39})
+
+    assert reason == ""
+    trace = svc.runtime.latest_signal_by_symbol["NAS100"]["entry_hard_guard_relief_v1"]
+    assert trace["applied"] is True
+    assert trace["criteria"]["plan_ready"] is True
+    assert trace["criteria"]["plan_ready_support"] is True
 
 
 def test_try_open_entry_max_positions_skip_does_not_crash_without_consumer_ids(monkeypatch):
@@ -591,6 +821,7 @@ def test_try_open_entry_blocks_consumer_stage_misalignment_before_order_submit(m
 
     monkeypatch.setattr(Config, "get_max_positions", staticmethod(lambda _symbol: 3))
     monkeypatch.setattr(Config, "ENTRY_COOLDOWN", 0)
+    monkeypatch.setattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_ENABLED", False, raising=False)
     monkeypatch.setattr(Config, "ENABLE_ENTRY_BB_CHANNEL_BREAK_GUARD", False)
     monkeypatch.setattr(Config, "ENABLE_ENTRY_EDGE_DIRECTION_HARD_GUARD", False, raising=False)
     monkeypatch.setattr(Config, "ENTRY_TOPDOWN_GATE_MODE", "soft")
@@ -752,6 +983,234 @@ def test_try_open_entry_blocks_consumer_stage_misalignment_before_order_submit(m
     assert out["consumer_open_guard_v1"]["guard_active"] is True
     assert out["consumer_open_guard_v1"]["allows_open"] is False
     assert out["consumer_open_guard_v1"]["failure_code"] == "consumer_stage_blocked"
+
+
+def test_try_open_entry_teacher_label_exploration_bypasses_consumer_entry_not_ready(monkeypatch):
+    svc = _svc()
+    tick = SimpleNamespace(bid=100.0, ask=100.1)
+    df_all = {"15M": pd.DataFrame(), "1M": pd.DataFrame([{"close": 100.0}])}
+    logged_rows: list[dict] = []
+    sent_lots: list[float] = []
+
+    svc.runtime.last_entry_time = {}
+    svc.runtime.latest_signal_by_symbol = {
+        "XAUUSD": {
+            "probe_scene_id": "xau_second_support_buy_probe",
+        }
+    }
+    svc.runtime.get_lot_size = lambda _symbol: 0.10
+    svc.runtime.entry_indicator_snapshot = lambda *_args, **_kwargs: {}
+    svc.runtime.ai_runtime = None
+    svc.runtime.semantic_shadow_runtime = None
+    svc.runtime.semantic_shadow_runtime_diagnostics = {}
+    svc.runtime.semantic_promotion_guard = SimpleNamespace(
+        evaluate_entry_rollout=lambda **_: {
+            "mode": "threshold_only",
+            "fallback_reason": "baseline_no_action",
+            "fallback_applied": True,
+            "threshold_before": 1,
+            "threshold_after": 1,
+            "threshold_adjustment_points": 0,
+            "threshold_applied": False,
+            "partial_live_weight": 0.0,
+            "partial_live_applied": False,
+            "alert_active": False,
+            "reason": "baseline_no_action",
+            "symbol_allowed": True,
+            "entry_stage_allowed": True,
+        }
+    )
+    svc.runtime.get_order_block_status = lambda _symbol: {"active": False}
+    svc.runtime.execute_order = lambda _symbol, _action, lot: sent_lots.append(float(lot)) or None
+
+    monkeypatch.setattr(Config, "get_max_positions", staticmethod(lambda _symbol: 3))
+    monkeypatch.setattr(Config, "ENTRY_COOLDOWN", 0)
+    monkeypatch.setattr(Config, "ENABLE_ENTRY_BB_CHANNEL_BREAK_GUARD", False)
+    monkeypatch.setattr(Config, "ENABLE_ENTRY_EDGE_DIRECTION_HARD_GUARD", False, raising=False)
+    monkeypatch.setattr(Config, "ENTRY_TOPDOWN_GATE_MODE", "soft")
+    monkeypatch.setattr(Config, "ENTRY_H1_GATE_MODE", "soft")
+    monkeypatch.setattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_ENABLED", True, raising=False)
+    monkeypatch.setattr(
+        Config,
+        "ENTRY_TEACHER_LABEL_EXPLORATION_ALLOWED_SYMBOLS",
+        ("XAUUSD",),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        Config,
+        "ENTRY_TEACHER_LABEL_EXPLORATION_ALLOWED_OBSERVE_REASONS",
+        ("lower_rebound_probe_observe",),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        Config,
+        "ENTRY_TEACHER_LABEL_EXPLORATION_ALLOWED_SOFT_BLOCKS",
+        ("probe_promotion_gate", "forecast_guard", "barrier_guard", "consumer_entry_not_ready"),
+        raising=False,
+    )
+    monkeypatch.setattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_REQUIRE_FLAT_POSITION", True, raising=False)
+    monkeypatch.setattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_MIN_SCORE_RATIO", 0.80, raising=False)
+    monkeypatch.setattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_MAX_THRESHOLD_GAP", 12.0, raising=False)
+    monkeypatch.setattr(
+        Config,
+        "ENTRY_TEACHER_LABEL_EXPLORATION_SIZE_MULTIPLIER_BY_SYMBOL",
+        {"XAUUSD": 0.40, "DEFAULT": 0.40},
+        raising=False,
+    )
+    monkeypatch.setattr(svc, "_append_entry_decision_log", lambda row: logged_rows.append(dict(row)) or dict(row))
+    monkeypatch.setattr(svc, "_store_runtime_snapshot", lambda **kwargs: None)
+    monkeypatch.setattr(svc, "_check_hard_no_trade_guard", lambda **_: "")
+    monkeypatch.setattr(svc, "_regime_name", lambda _regime: "TREND")
+    monkeypatch.setattr(svc, "_zone_from_regime", lambda _regime: "LOWER")
+    monkeypatch.setattr(svc, "_volatility_state_from_ratio", lambda _ratio: "NORMAL")
+
+    _bind_context(
+        svc,
+        context=_core_context(
+            symbol="XAUUSD",
+            market_mode="TREND",
+            direction_policy="BUY_ONLY",
+            box_state="LOWER",
+            bb_state="LOWER_EDGE",
+        ),
+        allowed_action="BUY_ONLY",
+        regime="TREND",
+    )
+    svc._component_extractor = SimpleNamespace(
+        extract=lambda **_: SimpleNamespace(
+            entry_h1_context_score=15,
+            entry_h1_context_opposite=0,
+            entry_m1_trigger_score=12,
+            entry_m1_trigger_opposite=0,
+        )
+    )
+    svc._setup_detector = SimpleNamespace(
+        detect_entry_setup=lambda **_: SimpleNamespace(
+            setup_id="trend_pullback_buy",
+            side="BUY",
+            status="matched",
+            trigger_state="OBSERVE",
+            entry_quality=0.74,
+            score=1.25,
+            metadata={"reason": "unit_test"},
+        )
+    )
+    svc._entry_predictor = SimpleNamespace(predict=lambda **_: {})
+    svc._wait_predictor = SimpleNamespace(predict_entry_wait=lambda **_: {})
+    svc._session_policy = SimpleNamespace(
+        get_threshold_mult=lambda **_: SimpleNamespace(
+            session_name="london",
+            weekday=2,
+            threshold_mult=1.0,
+        )
+    )
+    svc._atr_policy = SimpleNamespace(
+        get_threshold_mult=lambda **_: SimpleNamespace(
+            atr_ratio=1.0,
+            threshold_mult=1.0,
+        )
+    )
+    svc._topdown_gate_policy = SimpleNamespace(
+        evaluate=lambda **_: SimpleNamespace(ok=True, reason="", align=1, conflict=0, seen=1)
+    )
+    svc._h1_gate_policy = SimpleNamespace(
+        evaluate=lambda **_: SimpleNamespace(ok=True, reason="")
+    )
+    monkeypatch.setattr(
+        svc,
+        "_core_action_decision",
+        lambda **_: {
+            "action": "BUY",
+            "observe_reason": "lower_rebound_probe_observe",
+            "action_none_reason": "",
+            "blocked_by": "",
+            "core_pass": 1,
+            "core_reason": "core_shadow_probe_action",
+            "core_allowed_action": "BUY",
+            "h1_bias_strength": 0.6,
+            "m1_trigger_strength": 0.5,
+            "box_state": "LOWER",
+            "bb_state": "LOWER_EDGE",
+            "core_score": 1.8,
+            "core_buy_raw": 1.8,
+            "core_sell_raw": 0.2,
+            "core_best_raw": 1.8,
+            "core_min_raw": 0.2,
+            "core_margin_raw": 1.6,
+            "core_tie_band_raw": 0.1,
+            "wait_score": 54.0,
+            "wait_conflict": 0.0,
+            "wait_noise": 0.0,
+            "wait_penalty": 0.0,
+            "learn_buy_penalty": 0.0,
+            "learn_sell_penalty": 0.0,
+            "preflight_regime": "TREND",
+            "preflight_liquidity": "GOOD",
+            "preflight_allowed_action": "BUY_ONLY",
+            "preflight_approach_mode": "MIX",
+            "preflight_reason": "unit_test",
+            "preflight_direction_penalty_applied": 0.0,
+            "consumer_layer_mode_hard_block_active": False,
+            "consumer_layer_mode_suppressed": False,
+            "consumer_policy_live_gate_applied": False,
+            "consumer_policy_block_layer": "",
+            "consumer_policy_block_effect": "",
+            "consumer_energy_action_readiness": 0.0,
+            "consumer_energy_wait_vs_enter_hint": "",
+            "consumer_energy_soft_block_active": False,
+            "consumer_energy_soft_block_reason": "",
+            "consumer_energy_soft_block_strength": 0.0,
+            "consumer_energy_live_gate_applied": False,
+            "consumer_archetype_id": "lower_hold_buy",
+            "consumer_invalidation_id": "lower_support_fail",
+            "consumer_management_profile_id": "support_hold_profile",
+            "entry_default_side_gate_v1": {},
+            "entry_probe_plan_v1": {},
+            "compatibility_mode": "native_v2",
+            "consumer_check_candidate": True,
+            "consumer_check_display_ready": True,
+            "consumer_check_entry_ready": False,
+            "consumer_check_side": "BUY",
+            "consumer_check_stage": "OBSERVE",
+            "consumer_check_reason": "lower_rebound_probe_observe",
+            "consumer_check_display_strength_level": 6,
+            "consumer_check_state_v1": {
+                "contract_version": "consumer_check_state_v1",
+                "check_candidate": True,
+                "check_display_ready": True,
+                "entry_ready": False,
+                "check_side": "BUY",
+                "check_stage": "OBSERVE",
+                "check_reason": "lower_rebound_probe_observe",
+                "entry_block_reason": "forecast_guard",
+                "blocked_display_reason": "forecast_guard",
+                "probe_scene_id": "xau_second_support_buy_probe",
+                "display_strength_level": 6,
+            },
+        },
+    )
+
+    helper_try_open_entry(
+        svc,
+        symbol="XAUUSD",
+        tick=tick,
+        df_all=df_all,
+        result={},
+        my_positions=[],
+        pos_count=0,
+        scorer=_DummyScorer(),
+        buy_s=1.3,
+        sell_s=0.2,
+        entry_threshold=1.0,
+    )
+
+    assert sent_lots == [0.04]
+    assert logged_rows
+    out = logged_rows[-1]
+    assert out["teacher_label_exploration_active"] is True
+    assert out["teacher_label_exploration_family"] == "xauusd_lower_rebound_probe_buy"
+    assert out["teacher_label_exploration_reason"] == "teacher_label_exploration_soft_guard_bypass"
+    assert out["blocked_by"] != "consumer_entry_not_ready"
 
 
 def test_try_open_entry_blocks_when_action_survives_with_blocked_by_guard(monkeypatch):
@@ -986,6 +1445,7 @@ def test_try_open_entry_blocks_probe_promotion_when_plan_is_not_ready(monkeypatc
 
     monkeypatch.setattr(Config, "get_max_positions", staticmethod(lambda _symbol: 3))
     monkeypatch.setattr(Config, "ENTRY_COOLDOWN", 0)
+    monkeypatch.setattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_ENABLED", False, raising=False)
     monkeypatch.setattr(Config, "ENABLE_ENTRY_BB_CHANNEL_BREAK_GUARD", False)
     monkeypatch.setattr(Config, "ENABLE_ENTRY_EDGE_DIRECTION_HARD_GUARD", False, raising=False)
     monkeypatch.setattr(Config, "ENTRY_TOPDOWN_GATE_MODE", "soft")
@@ -1150,6 +1610,1583 @@ def test_try_open_entry_blocks_probe_promotion_when_plan_is_not_ready(monkeypatc
     assert out["probe_promotion_guard_v1"]["failure_code"] == "probe_promotion_gate"
     assert out["probe_promotion_guard_v1"]["plan_ready_for_entry"] is False
     assert out["probe_promotion_guard_v1"]["quick_trace_state"] == "PROBE"
+
+
+def test_try_open_entry_teacher_label_exploration_bypasses_probe_promotion_guard(monkeypatch):
+    svc = _svc()
+    tick = SimpleNamespace(bid=100.0, ask=100.1)
+    df_all = {"15M": pd.DataFrame(), "1M": pd.DataFrame([{"close": 100.0}])}
+    logged_rows: list[dict] = []
+    sent_lots: list[float] = []
+
+    svc.runtime.last_entry_time = {}
+    svc.runtime.latest_signal_by_symbol = {
+        "XAUUSD": {
+            "quick_trace_state": "PROBE",
+            "quick_trace_reason": "probe_candidate_active",
+            "probe_scene_id": "xau_upper_sell_probe",
+        }
+    }
+    svc.runtime.get_lot_size = lambda _symbol: 0.10
+    svc.runtime.entry_indicator_snapshot = lambda *_args, **_kwargs: {}
+    svc.runtime.ai_runtime = None
+    svc.runtime.semantic_shadow_runtime = None
+    svc.runtime.semantic_shadow_runtime_diagnostics = {}
+    svc.runtime.semantic_promotion_guard = SimpleNamespace(
+        evaluate_entry_rollout=lambda **_: {
+            "mode": "threshold_only",
+            "fallback_reason": "baseline_no_action",
+            "fallback_applied": True,
+            "threshold_before": 1,
+            "threshold_after": 1,
+            "threshold_adjustment_points": 0,
+            "threshold_applied": False,
+            "partial_live_weight": 0.0,
+            "partial_live_applied": False,
+            "alert_active": False,
+            "reason": "baseline_no_action",
+            "symbol_allowed": True,
+            "entry_stage_allowed": True,
+        }
+    )
+    svc.runtime.get_order_block_status = lambda _symbol: {"active": False}
+    svc.runtime.execute_order = lambda _symbol, _action, lot: sent_lots.append(float(lot)) or None
+
+    monkeypatch.setattr(Config, "get_max_positions", staticmethod(lambda _symbol: 3))
+    monkeypatch.setattr(Config, "ENTRY_COOLDOWN", 0)
+    monkeypatch.setattr(Config, "ENABLE_ENTRY_BB_CHANNEL_BREAK_GUARD", False)
+    monkeypatch.setattr(Config, "ENABLE_ENTRY_EDGE_DIRECTION_HARD_GUARD", False, raising=False)
+    monkeypatch.setattr(Config, "ENTRY_TOPDOWN_GATE_MODE", "soft")
+    monkeypatch.setattr(Config, "ENTRY_H1_GATE_MODE", "soft")
+    monkeypatch.setattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_ENABLED", True, raising=False)
+    monkeypatch.setattr(
+        Config,
+        "ENTRY_TEACHER_LABEL_EXPLORATION_ALLOWED_SYMBOLS",
+        ("XAUUSD",),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        Config,
+        "ENTRY_TEACHER_LABEL_EXPLORATION_ALLOWED_OBSERVE_REASONS",
+        ("upper_reject_probe_observe",),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        Config,
+        "ENTRY_TEACHER_LABEL_EXPLORATION_ALLOWED_SOFT_BLOCKS",
+        ("probe_promotion_gate", "forecast_guard", "barrier_guard", "consumer_entry_not_ready"),
+        raising=False,
+    )
+    monkeypatch.setattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_REQUIRE_FLAT_POSITION", True, raising=False)
+    monkeypatch.setattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_MIN_SCORE_RATIO", 0.80, raising=False)
+    monkeypatch.setattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_MAX_THRESHOLD_GAP", 12.0, raising=False)
+    monkeypatch.setattr(
+        Config,
+        "ENTRY_TEACHER_LABEL_EXPLORATION_SIZE_MULTIPLIER_BY_SYMBOL",
+        {"XAUUSD": 0.40, "DEFAULT": 0.40},
+        raising=False,
+    )
+    monkeypatch.setattr(svc, "_append_entry_decision_log", lambda row: logged_rows.append(dict(row)) or dict(row))
+    monkeypatch.setattr(svc, "_store_runtime_snapshot", lambda **kwargs: None)
+    monkeypatch.setattr(svc, "_check_hard_no_trade_guard", lambda **_: "")
+    monkeypatch.setattr(svc, "_regime_name", lambda _regime: "RANGE")
+    monkeypatch.setattr(svc, "_zone_from_regime", lambda _regime: "UPPER")
+    monkeypatch.setattr(svc, "_volatility_state_from_ratio", lambda _ratio: "NORMAL")
+
+    _bind_context(
+        svc,
+        context=_core_context(
+            symbol="XAUUSD",
+            market_mode="RANGE",
+            direction_policy="SELL_ONLY",
+            box_state="UPPER",
+            bb_state="UPPER_EDGE",
+        ),
+        allowed_action="SELL_ONLY",
+        regime="RANGE",
+    )
+    svc._component_extractor = SimpleNamespace(
+        extract=lambda **_: SimpleNamespace(
+            entry_h1_context_score=14,
+            entry_h1_context_opposite=0,
+            entry_m1_trigger_score=11,
+            entry_m1_trigger_opposite=0,
+        )
+    )
+    svc._setup_detector = SimpleNamespace(
+        detect_entry_setup=lambda **_: SimpleNamespace(
+            setup_id="range_upper_reversal_sell",
+            side="SELL",
+            status="matched",
+            trigger_state="PROBE",
+            entry_quality=0.69,
+            score=1.18,
+            metadata={"reason": "unit_test"},
+        )
+    )
+    svc._entry_predictor = SimpleNamespace(predict=lambda **_: {})
+    svc._wait_predictor = SimpleNamespace(predict_entry_wait=lambda **_: {})
+    svc._session_policy = SimpleNamespace(
+        get_threshold_mult=lambda **_: SimpleNamespace(
+            session_name="london",
+            weekday=2,
+            threshold_mult=1.0,
+        )
+    )
+    svc._atr_policy = SimpleNamespace(
+        get_threshold_mult=lambda **_: SimpleNamespace(
+            atr_ratio=1.0,
+            threshold_mult=1.0,
+        )
+    )
+    svc._topdown_gate_policy = SimpleNamespace(
+        evaluate=lambda **_: SimpleNamespace(ok=True, reason="", align=1, conflict=0, seen=1)
+    )
+    svc._h1_gate_policy = SimpleNamespace(
+        evaluate=lambda **_: SimpleNamespace(ok=True, reason="")
+    )
+    monkeypatch.setattr(
+        svc,
+        "_core_action_decision",
+        lambda **_: {
+            "action": "SELL",
+            "observe_reason": "upper_reject_probe_observe",
+            "action_none_reason": "probe_not_promoted",
+            "blocked_by": "",
+            "core_pass": 1,
+            "core_reason": "core_shadow_probe_action",
+            "core_allowed_action": "SELL",
+            "h1_bias_strength": 0.6,
+            "m1_trigger_strength": 0.5,
+            "box_state": "UPPER",
+            "bb_state": "UPPER_EDGE",
+            "core_score": 1.9,
+            "core_buy_raw": 0.1,
+            "core_sell_raw": 1.9,
+            "core_best_raw": 1.9,
+            "core_min_raw": 0.1,
+            "core_margin_raw": 1.8,
+            "core_tie_band_raw": 0.1,
+            "wait_score": 52.0,
+            "wait_conflict": 0.0,
+            "wait_noise": 0.0,
+            "wait_penalty": 0.0,
+            "learn_buy_penalty": 0.0,
+            "learn_sell_penalty": 0.0,
+            "preflight_regime": "RANGE",
+            "preflight_liquidity": "GOOD",
+            "preflight_allowed_action": "SELL_ONLY",
+            "preflight_approach_mode": "MIX",
+            "preflight_reason": "unit_test",
+            "preflight_direction_penalty_applied": 0.0,
+            "consumer_layer_mode_hard_block_active": False,
+            "consumer_layer_mode_suppressed": False,
+            "consumer_policy_live_gate_applied": False,
+            "consumer_policy_block_layer": "",
+            "consumer_policy_block_effect": "",
+            "consumer_energy_action_readiness": 0.0,
+            "consumer_energy_wait_vs_enter_hint": "",
+            "consumer_energy_soft_block_active": False,
+            "consumer_energy_soft_block_reason": "",
+            "consumer_energy_soft_block_strength": 0.0,
+            "consumer_energy_live_gate_applied": False,
+            "consumer_archetype_id": "upper_reject_sell",
+            "consumer_invalidation_id": "upper_break_fail",
+            "consumer_management_profile_id": "upper_reject_profile",
+            "entry_default_side_gate_v1": {},
+            "entry_probe_plan_v1": {
+                "active": True,
+                "ready_for_entry": False,
+                "reason": "probe_forecast_not_ready",
+                "intended_action": "SELL",
+                "symbol_scene_relief": "xau_upper_sell_probe",
+            },
+            "compatibility_mode": "native_v2",
+            "consumer_check_candidate": False,
+            "consumer_check_display_ready": False,
+            "consumer_check_entry_ready": False,
+            "consumer_check_side": "",
+            "consumer_check_stage": "",
+            "consumer_check_reason": "",
+            "consumer_check_display_strength_level": 0,
+            "consumer_check_state_v1": {
+                "contract_version": "consumer_check_state_v1",
+                "check_candidate": False,
+                "check_display_ready": False,
+                "entry_ready": False,
+                "check_side": "",
+                "check_stage": "",
+                "check_reason": "",
+                "entry_block_reason": "",
+                "display_strength_level": 0,
+            },
+        },
+    )
+
+    helper_try_open_entry(
+        svc,
+        symbol="XAUUSD",
+        tick=tick,
+        df_all=df_all,
+        result={},
+        my_positions=[],
+        pos_count=0,
+        scorer=_DummyScorer(),
+        buy_s=0.2,
+        sell_s=1.4,
+        entry_threshold=1.0,
+    )
+
+    assert sent_lots == [0.04]
+    assert logged_rows
+    out = logged_rows[-1]
+    assert out["teacher_label_exploration_active"] is True
+    assert out["teacher_label_exploration_family"] == "xauusd_upper_reject_probe_sell"
+    assert out["teacher_label_exploration_reason"] == "teacher_label_exploration_soft_guard_bypass"
+    assert out["blocked_by"] != "probe_promotion_gate"
+
+
+def test_try_open_entry_teacher_label_exploration_bypasses_upper_break_fail_forecast_guard(monkeypatch):
+    svc = _svc()
+    tick = SimpleNamespace(bid=100.0, ask=100.1)
+    df_all = {"15M": pd.DataFrame(), "1M": pd.DataFrame([{"close": 100.0}])}
+    logged_rows: list[dict] = []
+    sent_lots: list[float] = []
+
+    svc.runtime.last_entry_time = {}
+    svc.runtime.latest_signal_by_symbol = {"NAS100": {}}
+    svc.runtime.get_lot_size = lambda _symbol: 0.20
+    svc.runtime.entry_indicator_snapshot = lambda *_args, **_kwargs: {}
+    svc.runtime.ai_runtime = None
+    svc.runtime.semantic_shadow_runtime = None
+    svc.runtime.semantic_shadow_runtime_diagnostics = {}
+    svc.runtime.semantic_promotion_guard = SimpleNamespace(
+        evaluate_entry_rollout=lambda **_: {
+            "mode": "threshold_only",
+            "fallback_reason": "baseline_no_action",
+            "fallback_applied": True,
+            "threshold_before": 1,
+            "threshold_after": 1,
+            "threshold_adjustment_points": 0,
+            "threshold_applied": False,
+            "partial_live_weight": 0.0,
+            "partial_live_applied": False,
+            "alert_active": False,
+            "reason": "baseline_no_action",
+            "symbol_allowed": True,
+            "entry_stage_allowed": True,
+        }
+    )
+    svc.runtime.get_order_block_status = lambda _symbol: {"active": False}
+    svc.runtime.execute_order = lambda _symbol, _action, lot: sent_lots.append(float(lot)) or None
+
+    monkeypatch.setattr(Config, "get_max_positions", staticmethod(lambda _symbol: 3))
+    monkeypatch.setattr(Config, "ENTRY_COOLDOWN", 0)
+    monkeypatch.setattr(Config, "ENABLE_ENTRY_BB_CHANNEL_BREAK_GUARD", False)
+    monkeypatch.setattr(Config, "ENABLE_ENTRY_EDGE_DIRECTION_HARD_GUARD", False, raising=False)
+    monkeypatch.setattr(Config, "ENTRY_TOPDOWN_GATE_MODE", "soft")
+    monkeypatch.setattr(Config, "ENTRY_H1_GATE_MODE", "soft")
+    monkeypatch.setattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_ENABLED", True, raising=False)
+    monkeypatch.setattr(
+        Config,
+        "ENTRY_TEACHER_LABEL_EXPLORATION_ALLOWED_SYMBOLS",
+        ("NAS100",),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        Config,
+        "ENTRY_TEACHER_LABEL_EXPLORATION_ALLOWED_OBSERVE_REASONS",
+        ("upper_break_fail_confirm",),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        Config,
+        "ENTRY_TEACHER_LABEL_EXPLORATION_ALLOWED_SOFT_BLOCKS",
+        ("forecast_guard", "barrier_guard", "outer_band_guard", "energy_soft_block", "execution_soft_blocked", "consumer_entry_not_ready"),
+        raising=False,
+    )
+    monkeypatch.setattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_REQUIRE_FLAT_POSITION", True, raising=False)
+    monkeypatch.setattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_MIN_SCORE_RATIO", 0.80, raising=False)
+    monkeypatch.setattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_MAX_THRESHOLD_GAP", 12.0, raising=False)
+    monkeypatch.setattr(
+        Config,
+        "ENTRY_TEACHER_LABEL_EXPLORATION_SIZE_MULTIPLIER_BY_SYMBOL",
+        {"NAS100": 0.45, "DEFAULT": 0.40},
+        raising=False,
+    )
+    monkeypatch.setattr(svc, "_append_entry_decision_log", lambda row: logged_rows.append(dict(row)) or dict(row))
+    monkeypatch.setattr(svc, "_store_runtime_snapshot", lambda **kwargs: None)
+    monkeypatch.setattr(svc, "_check_hard_no_trade_guard", lambda **_: "")
+    monkeypatch.setattr(svc, "_regime_name", lambda _regime: "TREND")
+    monkeypatch.setattr(svc, "_zone_from_regime", lambda _regime: "UPPER")
+    monkeypatch.setattr(svc, "_volatility_state_from_ratio", lambda _ratio: "NORMAL")
+
+    _bind_context(
+        svc,
+        context=_core_context(
+            symbol="NAS100",
+            market_mode="TREND",
+            direction_policy="SELL_ONLY",
+            box_state="UPPER",
+            bb_state="UPPER_EDGE",
+        ),
+        allowed_action="SELL_ONLY",
+        regime="TREND",
+    )
+    svc._component_extractor = SimpleNamespace(
+        extract=lambda **_: SimpleNamespace(
+            entry_h1_context_score=15,
+            entry_h1_context_opposite=0,
+            entry_m1_trigger_score=12,
+            entry_m1_trigger_opposite=0,
+        )
+    )
+    svc._setup_detector = SimpleNamespace(
+        detect_entry_setup=lambda **_: SimpleNamespace(
+            setup_id="trend_upper_break_fail_sell",
+            side="SELL",
+            status="matched",
+            trigger_state="OBSERVE",
+            entry_quality=0.76,
+            score=1.28,
+            metadata={"reason": "unit_test"},
+        )
+    )
+    svc._entry_predictor = SimpleNamespace(predict=lambda **_: {})
+    svc._wait_predictor = SimpleNamespace(predict_entry_wait=lambda **_: {})
+    svc._session_policy = SimpleNamespace(
+        get_threshold_mult=lambda **_: SimpleNamespace(
+            session_name="london",
+            weekday=2,
+            threshold_mult=1.0,
+        )
+    )
+    svc._atr_policy = SimpleNamespace(
+        get_threshold_mult=lambda **_: SimpleNamespace(
+            atr_ratio=1.0,
+            threshold_mult=1.0,
+        )
+    )
+    svc._topdown_gate_policy = SimpleNamespace(
+        evaluate=lambda **_: SimpleNamespace(ok=True, reason="", align=1, conflict=0, seen=1)
+    )
+    svc._h1_gate_policy = SimpleNamespace(
+        evaluate=lambda **_: SimpleNamespace(ok=True, reason="")
+    )
+    monkeypatch.setattr(
+        svc,
+        "_core_action_decision",
+        lambda **_: {
+            "action": "SELL",
+            "observe_reason": "upper_break_fail_confirm",
+            "action_none_reason": "",
+            "blocked_by": "",
+            "core_pass": 1,
+            "core_reason": "core_shadow_confirm_action",
+            "core_allowed_action": "SELL",
+            "h1_bias_strength": 0.6,
+            "m1_trigger_strength": 0.5,
+            "box_state": "UPPER",
+            "bb_state": "UPPER_EDGE",
+            "core_score": 1.9,
+            "core_buy_raw": 0.1,
+            "core_sell_raw": 1.9,
+            "core_best_raw": 1.9,
+            "core_min_raw": 0.1,
+            "core_margin_raw": 1.8,
+            "core_tie_band_raw": 0.1,
+            "wait_score": 52.0,
+            "wait_conflict": 0.0,
+            "wait_noise": 0.0,
+            "wait_penalty": 0.0,
+            "learn_buy_penalty": 0.0,
+            "learn_sell_penalty": 0.0,
+            "preflight_regime": "TREND",
+            "preflight_liquidity": "GOOD",
+            "preflight_allowed_action": "SELL_ONLY",
+            "preflight_approach_mode": "MIX",
+            "preflight_reason": "unit_test",
+            "preflight_direction_penalty_applied": 0.0,
+            "consumer_layer_mode_hard_block_active": False,
+            "consumer_layer_mode_suppressed": False,
+            "consumer_policy_live_gate_applied": False,
+            "consumer_policy_block_layer": "",
+            "consumer_policy_block_effect": "",
+            "consumer_energy_action_readiness": 0.0,
+            "consumer_energy_wait_vs_enter_hint": "",
+            "consumer_energy_soft_block_active": False,
+            "consumer_energy_soft_block_reason": "",
+            "consumer_energy_soft_block_strength": 0.0,
+            "consumer_energy_live_gate_applied": False,
+            "consumer_archetype_id": "upper_reject_sell",
+            "consumer_invalidation_id": "upper_break_fail",
+            "consumer_management_profile_id": "upper_reject_profile",
+            "entry_default_side_gate_v1": {},
+            "entry_probe_plan_v1": {},
+            "compatibility_mode": "native_v2",
+            "consumer_check_candidate": True,
+            "consumer_check_display_ready": True,
+            "consumer_check_entry_ready": False,
+            "consumer_check_side": "SELL",
+            "consumer_check_stage": "OBSERVE",
+            "consumer_check_reason": "upper_break_fail_confirm",
+            "consumer_check_display_strength_level": 6,
+            "consumer_check_state_v1": {
+                "contract_version": "consumer_check_state_v1",
+                "check_candidate": True,
+                "check_display_ready": True,
+                "entry_ready": False,
+                "check_side": "SELL",
+                "check_stage": "OBSERVE",
+                "check_reason": "upper_break_fail_confirm",
+                "entry_block_reason": "forecast_guard",
+                "blocked_display_reason": "forecast_guard",
+                "display_strength_level": 6,
+            },
+        },
+    )
+
+    helper_try_open_entry(
+        svc,
+        symbol="NAS100",
+        tick=tick,
+        df_all=df_all,
+        result={},
+        my_positions=[],
+        pos_count=0,
+        scorer=_DummyScorer(),
+        buy_s=0.2,
+        sell_s=1.3,
+        entry_threshold=1.0,
+    )
+
+    assert sent_lots == [0.09]
+    assert logged_rows
+    out = logged_rows[-1]
+    assert out["teacher_label_exploration_active"] is True
+    assert out["teacher_label_exploration_family"] == "nas100_upper_break_fail_confirm_sell"
+    assert out["teacher_label_exploration_reason"] == "teacher_label_exploration_soft_guard_bypass"
+    assert out["blocked_by"] != "consumer_entry_not_ready"
+
+
+def test_try_open_entry_teacher_label_exploration_bypasses_outer_band_guard(monkeypatch):
+    svc = _svc()
+    tick = SimpleNamespace(bid=100.0, ask=100.1)
+    df_all = {"15M": pd.DataFrame(), "1M": pd.DataFrame([{"close": 100.0}])}
+    logged_rows: list[dict] = []
+    sent_lots: list[float] = []
+
+    svc.runtime.last_entry_time = {}
+    svc.runtime.latest_signal_by_symbol = {"XAUUSD": {}}
+    svc.runtime.get_lot_size = lambda _symbol: 0.20
+    svc.runtime.entry_indicator_snapshot = lambda *_args, **_kwargs: {}
+    svc.runtime.ai_runtime = None
+    svc.runtime.semantic_shadow_runtime = None
+    svc.runtime.semantic_shadow_runtime_diagnostics = {}
+    svc.runtime.semantic_promotion_guard = SimpleNamespace(
+        evaluate_entry_rollout=lambda **_: {
+            "mode": "threshold_only",
+            "fallback_reason": "baseline_no_action",
+            "fallback_applied": True,
+            "threshold_before": 1,
+            "threshold_after": 1,
+            "threshold_adjustment_points": 0,
+            "threshold_applied": False,
+            "partial_live_weight": 0.0,
+            "partial_live_applied": False,
+            "alert_active": False,
+            "reason": "baseline_no_action",
+            "symbol_allowed": True,
+            "entry_stage_allowed": True,
+        }
+    )
+    svc.runtime.get_order_block_status = lambda _symbol: {"active": False}
+    svc.runtime.execute_order = lambda _symbol, _action, lot: sent_lots.append(float(lot)) or None
+
+    monkeypatch.setattr(Config, "get_max_positions", staticmethod(lambda _symbol: 3))
+    monkeypatch.setattr(Config, "ENTRY_COOLDOWN", 0)
+    monkeypatch.setattr(Config, "ENABLE_ENTRY_BB_CHANNEL_BREAK_GUARD", False)
+    monkeypatch.setattr(Config, "ENABLE_ENTRY_EDGE_DIRECTION_HARD_GUARD", False, raising=False)
+    monkeypatch.setattr(Config, "ENTRY_TOPDOWN_GATE_MODE", "soft")
+    monkeypatch.setattr(Config, "ENTRY_H1_GATE_MODE", "soft")
+    monkeypatch.setattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_ENABLED", True, raising=False)
+    monkeypatch.setattr(
+        Config,
+        "ENTRY_TEACHER_LABEL_EXPLORATION_ALLOWED_SYMBOLS",
+        ("XAUUSD",),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        Config,
+        "ENTRY_TEACHER_LABEL_EXPLORATION_ALLOWED_OBSERVE_REASONS",
+        ("outer_band_reversal_support_required_observe",),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        Config,
+        "ENTRY_TEACHER_LABEL_EXPLORATION_ALLOWED_SOFT_BLOCKS",
+        ("forecast_guard", "barrier_guard", "outer_band_guard", "energy_soft_block", "observe_state_wait", "consumer_entry_not_ready"),
+        raising=False,
+    )
+    monkeypatch.setattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_REQUIRE_FLAT_POSITION", True, raising=False)
+    monkeypatch.setattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_MIN_SCORE_RATIO", 0.80, raising=False)
+    monkeypatch.setattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_MAX_THRESHOLD_GAP", 12.0, raising=False)
+    monkeypatch.setattr(
+        Config,
+        "ENTRY_TEACHER_LABEL_EXPLORATION_SIZE_MULTIPLIER_BY_SYMBOL",
+        {"XAUUSD": 0.40, "DEFAULT": 0.40},
+        raising=False,
+    )
+    monkeypatch.setattr(svc, "_append_entry_decision_log", lambda row: logged_rows.append(dict(row)) or dict(row))
+    monkeypatch.setattr(svc, "_store_runtime_snapshot", lambda **kwargs: None)
+    monkeypatch.setattr(svc, "_check_hard_no_trade_guard", lambda **_: "")
+    monkeypatch.setattr(svc, "_regime_name", lambda _regime: "RANGE")
+    monkeypatch.setattr(svc, "_zone_from_regime", lambda _regime: "UPPER")
+    monkeypatch.setattr(svc, "_volatility_state_from_ratio", lambda _ratio: "NORMAL")
+
+    _bind_context(
+        svc,
+        context=_core_context(
+            symbol="XAUUSD",
+            market_mode="RANGE",
+            direction_policy="SELL_ONLY",
+            box_state="UPPER",
+            bb_state="MID",
+        ),
+        allowed_action="SELL_ONLY",
+        regime="RANGE",
+    )
+    svc._component_extractor = SimpleNamespace(
+        extract=lambda **_: SimpleNamespace(
+            entry_h1_context_score=14,
+            entry_h1_context_opposite=0,
+            entry_m1_trigger_score=11,
+            entry_m1_trigger_opposite=0,
+        )
+    )
+    svc._setup_detector = SimpleNamespace(
+        detect_entry_setup=lambda **_: SimpleNamespace(
+            setup_id="range_outer_band_sell",
+            side="SELL",
+            status="matched",
+            trigger_state="OBSERVE",
+            entry_quality=0.72,
+            score=1.21,
+            metadata={"reason": "unit_test"},
+        )
+    )
+    svc._entry_predictor = SimpleNamespace(predict=lambda **_: {})
+    svc._wait_predictor = SimpleNamespace(predict_entry_wait=lambda **_: {})
+    svc._session_policy = SimpleNamespace(
+        get_threshold_mult=lambda **_: SimpleNamespace(
+            session_name="london",
+            weekday=2,
+            threshold_mult=1.0,
+        )
+    )
+    svc._atr_policy = SimpleNamespace(
+        get_threshold_mult=lambda **_: SimpleNamespace(
+            atr_ratio=1.0,
+            threshold_mult=1.0,
+        )
+    )
+    svc._topdown_gate_policy = SimpleNamespace(
+        evaluate=lambda **_: SimpleNamespace(ok=True, reason="", align=1, conflict=0, seen=1)
+    )
+    svc._h1_gate_policy = SimpleNamespace(
+        evaluate=lambda **_: SimpleNamespace(ok=True, reason="")
+    )
+    monkeypatch.setattr(
+        svc,
+        "_core_action_decision",
+        lambda **_: {
+            "action": "SELL",
+            "observe_reason": "outer_band_reversal_support_required_observe",
+            "action_none_reason": "observe_state_wait",
+            "blocked_by": "outer_band_guard",
+            "core_pass": 1,
+            "core_reason": "core_shadow_observe_wait",
+            "core_allowed_action": "SELL_ONLY",
+            "h1_bias_strength": 0.6,
+            "m1_trigger_strength": 0.5,
+            "box_state": "UPPER",
+            "bb_state": "MID",
+            "core_score": 1.75,
+            "core_buy_raw": 0.1,
+            "core_sell_raw": 1.75,
+            "core_best_raw": 1.75,
+            "core_min_raw": 0.1,
+            "core_margin_raw": 1.65,
+            "core_tie_band_raw": 0.1,
+            "wait_score": 50.0,
+            "wait_conflict": 0.0,
+            "wait_noise": 0.0,
+            "wait_penalty": 0.0,
+            "learn_buy_penalty": 0.0,
+            "learn_sell_penalty": 0.0,
+            "preflight_regime": "RANGE",
+            "preflight_liquidity": "GOOD",
+            "preflight_allowed_action": "SELL_ONLY",
+            "preflight_approach_mode": "MIX",
+            "preflight_reason": "unit_test",
+            "preflight_direction_penalty_applied": 0.0,
+            "consumer_layer_mode_hard_block_active": False,
+            "consumer_layer_mode_suppressed": False,
+            "consumer_policy_live_gate_applied": False,
+            "consumer_policy_block_layer": "",
+            "consumer_policy_block_effect": "",
+            "consumer_energy_action_readiness": 0.0,
+            "consumer_energy_wait_vs_enter_hint": "",
+            "consumer_energy_soft_block_active": False,
+            "consumer_energy_soft_block_reason": "",
+            "consumer_energy_soft_block_strength": 0.0,
+            "consumer_energy_live_gate_applied": False,
+            "consumer_archetype_id": "upper_reject_sell",
+            "consumer_invalidation_id": "upper_break_fail",
+            "consumer_management_profile_id": "upper_reject_profile",
+            "entry_default_side_gate_v1": {},
+            "entry_probe_plan_v1": {},
+            "compatibility_mode": "native_v2",
+            "consumer_check_candidate": True,
+            "consumer_check_display_ready": True,
+            "consumer_check_entry_ready": False,
+            "consumer_check_side": "SELL",
+            "consumer_check_stage": "BLOCKED",
+            "consumer_check_reason": "outer_band_reversal_support_required_observe",
+            "consumer_check_display_strength_level": 6,
+            "consumer_check_state_v1": {
+                "contract_version": "consumer_check_state_v1",
+                "check_candidate": True,
+                "check_display_ready": True,
+                "entry_ready": False,
+                "check_side": "SELL",
+                "check_stage": "BLOCKED",
+                "check_reason": "outer_band_reversal_support_required_observe",
+                "entry_block_reason": "outer_band_guard",
+                "blocked_display_reason": "outer_band_guard",
+                "display_strength_level": 6,
+            },
+        },
+    )
+
+    helper_try_open_entry(
+        svc,
+        symbol="XAUUSD",
+        tick=tick,
+        df_all=df_all,
+        result={},
+        my_positions=[],
+        pos_count=0,
+        scorer=_DummyScorer(),
+        buy_s=0.2,
+        sell_s=1.3,
+        entry_threshold=1.0,
+    )
+
+    assert sent_lots == [0.08]
+    assert logged_rows
+    out = logged_rows[-1]
+    assert out["teacher_label_exploration_active"] is True
+    assert out["teacher_label_exploration_family"] == "xauusd_outer_band_reversal_observe_sell"
+    assert out["teacher_label_exploration_reason"] == "teacher_label_exploration_soft_guard_bypass"
+    assert out["blocked_by"] != "consumer_entry_not_ready"
+
+
+def test_try_open_entry_teacher_label_exploration_promotes_no_action_upper_break_fail_side_hint(monkeypatch):
+    svc = _svc()
+    tick = SimpleNamespace(bid=100.0, ask=100.1)
+    df_all = {"15M": pd.DataFrame(), "1M": pd.DataFrame([{"close": 100.0}])}
+    logged_rows: list[dict] = []
+    sent_lots: list[float] = []
+
+    svc.runtime.last_entry_time = {}
+    svc.runtime.latest_signal_by_symbol = {"NAS100": {}}
+    svc.runtime.get_lot_size = lambda _symbol: 0.20
+    svc.runtime.entry_indicator_snapshot = lambda *_args, **_kwargs: {}
+    svc.runtime.ai_runtime = None
+    svc.runtime.semantic_shadow_runtime = None
+    svc.runtime.semantic_shadow_runtime_diagnostics = {}
+    svc.runtime.semantic_promotion_guard = SimpleNamespace(
+        evaluate_entry_rollout=lambda **_: {
+            "mode": "threshold_only",
+            "fallback_reason": "baseline_no_action",
+            "fallback_applied": True,
+            "threshold_before": 1,
+            "threshold_after": 1,
+            "threshold_adjustment_points": 0,
+            "threshold_applied": False,
+            "partial_live_weight": 0.0,
+            "partial_live_applied": False,
+            "alert_active": False,
+            "reason": "baseline_no_action",
+            "symbol_allowed": True,
+            "entry_stage_allowed": True,
+        }
+    )
+    svc.runtime.get_order_block_status = lambda _symbol: {"active": False}
+    svc.runtime.execute_order = lambda _symbol, _action, lot: sent_lots.append(float(lot)) or None
+
+    monkeypatch.setattr(Config, "get_max_positions", staticmethod(lambda _symbol: 3))
+    monkeypatch.setattr(Config, "ENTRY_COOLDOWN", 0)
+    monkeypatch.setattr(Config, "ENABLE_ENTRY_BB_CHANNEL_BREAK_GUARD", False)
+    monkeypatch.setattr(Config, "ENABLE_ENTRY_EDGE_DIRECTION_HARD_GUARD", False, raising=False)
+    monkeypatch.setattr(Config, "ENTRY_TOPDOWN_GATE_MODE", "soft")
+    monkeypatch.setattr(Config, "ENTRY_H1_GATE_MODE", "soft")
+    monkeypatch.setattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_ENABLED", True, raising=False)
+    monkeypatch.setattr(
+        Config,
+        "ENTRY_TEACHER_LABEL_EXPLORATION_ALLOWED_SYMBOLS",
+        ("NAS100",),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        Config,
+        "ENTRY_TEACHER_LABEL_EXPLORATION_ALLOWED_OBSERVE_REASONS",
+        ("upper_break_fail_confirm",),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        Config,
+        "ENTRY_TEACHER_LABEL_EXPLORATION_ALLOWED_SOFT_BLOCKS",
+        ("forecast_guard", "barrier_guard", "outer_band_guard", "energy_soft_block", "consumer_entry_not_ready"),
+        raising=False,
+    )
+    monkeypatch.setattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_REQUIRE_FLAT_POSITION", True, raising=False)
+    monkeypatch.setattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_MIN_SCORE_RATIO", 0.80, raising=False)
+    monkeypatch.setattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_MAX_THRESHOLD_GAP", 12.0, raising=False)
+    monkeypatch.setattr(
+        Config,
+        "ENTRY_TEACHER_LABEL_EXPLORATION_SIZE_MULTIPLIER_BY_SYMBOL",
+        {"NAS100": 0.45, "DEFAULT": 0.40},
+        raising=False,
+    )
+    monkeypatch.setattr(svc, "_append_entry_decision_log", lambda row: logged_rows.append(dict(row)) or dict(row))
+    monkeypatch.setattr(svc, "_store_runtime_snapshot", lambda **kwargs: None)
+    monkeypatch.setattr(svc, "_check_hard_no_trade_guard", lambda **_: "")
+    monkeypatch.setattr(svc, "_regime_name", lambda _regime: "TREND")
+    monkeypatch.setattr(svc, "_zone_from_regime", lambda _regime: "UPPER")
+    monkeypatch.setattr(svc, "_volatility_state_from_ratio", lambda _ratio: "NORMAL")
+
+    _bind_context(
+        svc,
+        context=_core_context(
+            symbol="NAS100",
+            market_mode="TREND",
+            direction_policy="SELL_ONLY",
+            box_state="UPPER",
+            bb_state="UPPER_EDGE",
+        ),
+        allowed_action="SELL_ONLY",
+        regime="TREND",
+    )
+    svc._component_extractor = SimpleNamespace(
+        extract=lambda **_: SimpleNamespace(
+            entry_h1_context_score=15,
+            entry_h1_context_opposite=0,
+            entry_m1_trigger_score=12,
+            entry_m1_trigger_opposite=0,
+        )
+    )
+    svc._setup_detector = SimpleNamespace(
+        detect_entry_setup=lambda **_: SimpleNamespace(
+            setup_id="trend_upper_break_fail_sell",
+            side="SELL",
+            status="matched",
+            trigger_state="OBSERVE",
+            entry_quality=0.76,
+            score=1.28,
+            metadata={"reason": "unit_test"},
+        )
+    )
+    svc._entry_predictor = SimpleNamespace(predict=lambda **_: {})
+    svc._wait_predictor = SimpleNamespace(predict_entry_wait=lambda **_: {})
+    svc._session_policy = SimpleNamespace(
+        get_threshold_mult=lambda **_: SimpleNamespace(
+            session_name="london",
+            weekday=2,
+            threshold_mult=1.0,
+        )
+    )
+    svc._atr_policy = SimpleNamespace(
+        get_threshold_mult=lambda **_: SimpleNamespace(
+            atr_ratio=1.0,
+            threshold_mult=1.0,
+        )
+    )
+    svc._topdown_gate_policy = SimpleNamespace(
+        evaluate=lambda **_: SimpleNamespace(ok=True, reason="", align=1, conflict=0, seen=1)
+    )
+    svc._h1_gate_policy = SimpleNamespace(
+        evaluate=lambda **_: SimpleNamespace(ok=True, reason="")
+    )
+    monkeypatch.setattr(
+        svc,
+        "_core_action_decision",
+        lambda **_: {
+            "action": "",
+            "observe_reason": "upper_break_fail_confirm",
+            "action_none_reason": "execution_soft_blocked",
+            "blocked_by": "energy_soft_block",
+            "core_pass": 1,
+            "core_reason": "core_shadow_observe_wait",
+            "core_allowed_action": "SELL_ONLY",
+            "h1_bias_strength": 0.6,
+            "m1_trigger_strength": 0.5,
+            "box_state": "UPPER",
+            "bb_state": "UPPER_EDGE",
+            "core_score": 1.55,
+            "core_buy_raw": 0.1,
+            "core_sell_raw": 1.55,
+            "core_best_raw": 1.55,
+            "core_min_raw": 0.1,
+            "core_margin_raw": 1.45,
+            "core_tie_band_raw": 0.1,
+            "wait_score": 52.0,
+            "wait_conflict": 0.0,
+            "wait_noise": 0.0,
+            "wait_penalty": 0.0,
+            "learn_buy_penalty": 0.0,
+            "learn_sell_penalty": 0.0,
+            "preflight_regime": "TREND",
+            "preflight_liquidity": "GOOD",
+            "preflight_allowed_action": "SELL_ONLY",
+            "preflight_approach_mode": "MIX",
+            "preflight_reason": "unit_test",
+            "preflight_direction_penalty_applied": 0.0,
+            "consumer_layer_mode_hard_block_active": False,
+            "consumer_layer_mode_suppressed": False,
+            "consumer_policy_live_gate_applied": False,
+            "consumer_policy_block_layer": "",
+            "consumer_policy_block_effect": "",
+            "consumer_energy_action_readiness": 0.0,
+            "consumer_energy_wait_vs_enter_hint": "",
+            "consumer_energy_soft_block_active": False,
+            "consumer_energy_soft_block_reason": "",
+            "consumer_energy_soft_block_strength": 0.0,
+            "consumer_energy_live_gate_applied": False,
+            "consumer_archetype_id": "upper_reject_sell",
+            "consumer_invalidation_id": "upper_break_fail",
+            "consumer_management_profile_id": "upper_reject_profile",
+            "entry_default_side_gate_v1": {},
+            "entry_probe_plan_v1": {},
+            "compatibility_mode": "native_v2",
+            "consumer_check_candidate": True,
+            "consumer_check_display_ready": True,
+            "consumer_check_entry_ready": False,
+            "consumer_check_side": "SELL",
+            "consumer_check_stage": "BLOCKED",
+            "consumer_check_reason": "upper_break_fail_confirm",
+            "consumer_check_display_strength_level": 5,
+            "consumer_check_state_v1": {
+                "contract_version": "consumer_check_state_v1",
+                "check_candidate": True,
+                "check_display_ready": True,
+                "entry_ready": False,
+                "check_side": "SELL",
+                "check_stage": "BLOCKED",
+                "check_reason": "upper_break_fail_confirm",
+                "entry_block_reason": "energy_soft_block",
+                "blocked_display_reason": "energy_soft_block",
+                "display_strength_level": 5,
+            },
+        },
+    )
+
+    helper_try_open_entry(
+        svc,
+        symbol="NAS100",
+        tick=tick,
+        df_all=df_all,
+        result={},
+        my_positions=[],
+        pos_count=0,
+        scorer=_DummyScorer(),
+        buy_s=0.2,
+        sell_s=1.3,
+        entry_threshold=1.0,
+    )
+
+    assert sent_lots == [0.09]
+    assert logged_rows
+    out = logged_rows[-1]
+    assert out["action"] == "SELL"
+    assert out["teacher_label_exploration_active"] is True
+    assert out["teacher_label_exploration_family"] == "nas100_upper_break_fail_confirm_sell"
+    assert out["teacher_label_exploration_reason"] == "teacher_label_exploration_soft_guard_bypass"
+
+
+def test_try_open_entry_teacher_label_exploration_promotes_no_action_outer_band_side_hint(monkeypatch):
+    svc = _svc()
+    tick = SimpleNamespace(bid=100.0, ask=100.1)
+    df_all = {"15M": pd.DataFrame(), "1M": pd.DataFrame([{"close": 100.0}])}
+    logged_rows: list[dict] = []
+    sent_lots: list[float] = []
+
+    svc.runtime.last_entry_time = {}
+    svc.runtime.latest_signal_by_symbol = {"XAUUSD": {}}
+    svc.runtime.get_lot_size = lambda _symbol: 0.20
+    svc.runtime.entry_indicator_snapshot = lambda *_args, **_kwargs: {}
+    svc.runtime.ai_runtime = None
+    svc.runtime.semantic_shadow_runtime = None
+    svc.runtime.semantic_shadow_runtime_diagnostics = {}
+    svc.runtime.semantic_promotion_guard = SimpleNamespace(
+        evaluate_entry_rollout=lambda **_: {
+            "mode": "threshold_only",
+            "fallback_reason": "baseline_no_action",
+            "fallback_applied": True,
+            "threshold_before": 1,
+            "threshold_after": 1,
+            "threshold_adjustment_points": 0,
+            "threshold_applied": False,
+            "partial_live_weight": 0.0,
+            "partial_live_applied": False,
+            "alert_active": False,
+            "reason": "baseline_no_action",
+            "symbol_allowed": True,
+            "entry_stage_allowed": True,
+        }
+    )
+    svc.runtime.get_order_block_status = lambda _symbol: {"active": False}
+    svc.runtime.execute_order = lambda _symbol, _action, lot: sent_lots.append(float(lot)) or None
+
+    monkeypatch.setattr(Config, "get_max_positions", staticmethod(lambda _symbol: 3))
+    monkeypatch.setattr(Config, "ENTRY_COOLDOWN", 0)
+    monkeypatch.setattr(Config, "ENABLE_ENTRY_BB_CHANNEL_BREAK_GUARD", False)
+    monkeypatch.setattr(Config, "ENABLE_ENTRY_EDGE_DIRECTION_HARD_GUARD", False, raising=False)
+    monkeypatch.setattr(Config, "ENTRY_TOPDOWN_GATE_MODE", "soft")
+    monkeypatch.setattr(Config, "ENTRY_H1_GATE_MODE", "soft")
+    monkeypatch.setattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_ENABLED", True, raising=False)
+    monkeypatch.setattr(
+        Config,
+        "ENTRY_TEACHER_LABEL_EXPLORATION_ALLOWED_SYMBOLS",
+        ("XAUUSD",),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        Config,
+        "ENTRY_TEACHER_LABEL_EXPLORATION_ALLOWED_OBSERVE_REASONS",
+        ("outer_band_reversal_support_required_observe",),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        Config,
+        "ENTRY_TEACHER_LABEL_EXPLORATION_ALLOWED_SOFT_BLOCKS",
+        ("forecast_guard", "barrier_guard", "outer_band_guard", "observe_state_wait", "consumer_entry_not_ready"),
+        raising=False,
+    )
+    monkeypatch.setattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_REQUIRE_FLAT_POSITION", True, raising=False)
+    monkeypatch.setattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_MIN_SCORE_RATIO", 0.80, raising=False)
+    monkeypatch.setattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_MAX_THRESHOLD_GAP", 12.0, raising=False)
+    monkeypatch.setattr(
+        Config,
+        "ENTRY_TEACHER_LABEL_EXPLORATION_SIZE_MULTIPLIER_BY_SYMBOL",
+        {"XAUUSD": 0.40, "DEFAULT": 0.40},
+        raising=False,
+    )
+    monkeypatch.setattr(svc, "_append_entry_decision_log", lambda row: logged_rows.append(dict(row)) or dict(row))
+    monkeypatch.setattr(svc, "_store_runtime_snapshot", lambda **kwargs: None)
+    monkeypatch.setattr(svc, "_check_hard_no_trade_guard", lambda **_: "")
+    monkeypatch.setattr(svc, "_regime_name", lambda _regime: "RANGE")
+    monkeypatch.setattr(svc, "_zone_from_regime", lambda _regime: "UPPER")
+    monkeypatch.setattr(svc, "_volatility_state_from_ratio", lambda _ratio: "NORMAL")
+
+    _bind_context(
+        svc,
+        context=_core_context(
+            symbol="XAUUSD",
+            market_mode="RANGE",
+            direction_policy="SELL_ONLY",
+            box_state="UPPER",
+            bb_state="MID",
+        ),
+        allowed_action="SELL_ONLY",
+        regime="RANGE",
+    )
+    svc._component_extractor = SimpleNamespace(
+        extract=lambda **_: SimpleNamespace(
+            entry_h1_context_score=14,
+            entry_h1_context_opposite=0,
+            entry_m1_trigger_score=11,
+            entry_m1_trigger_opposite=0,
+        )
+    )
+    svc._setup_detector = SimpleNamespace(
+        detect_entry_setup=lambda **_: SimpleNamespace(
+            setup_id="range_outer_band_sell",
+            side="SELL",
+            status="matched",
+            trigger_state="OBSERVE",
+            entry_quality=0.72,
+            score=1.21,
+            metadata={"reason": "unit_test"},
+        )
+    )
+    svc._entry_predictor = SimpleNamespace(predict=lambda **_: {})
+    svc._wait_predictor = SimpleNamespace(predict_entry_wait=lambda **_: {})
+    svc._session_policy = SimpleNamespace(
+        get_threshold_mult=lambda **_: SimpleNamespace(
+            session_name="london",
+            weekday=2,
+            threshold_mult=1.0,
+        )
+    )
+    svc._atr_policy = SimpleNamespace(
+        get_threshold_mult=lambda **_: SimpleNamespace(
+            atr_ratio=1.0,
+            threshold_mult=1.0,
+        )
+    )
+    svc._topdown_gate_policy = SimpleNamespace(
+        evaluate=lambda **_: SimpleNamespace(ok=True, reason="", align=1, conflict=0, seen=1)
+    )
+    svc._h1_gate_policy = SimpleNamespace(
+        evaluate=lambda **_: SimpleNamespace(ok=True, reason="")
+    )
+    monkeypatch.setattr(
+        svc,
+        "_core_action_decision",
+        lambda **_: {
+            "action": "",
+            "observe_reason": "outer_band_reversal_support_required_observe",
+            "action_none_reason": "observe_state_wait",
+            "blocked_by": "outer_band_guard",
+            "core_pass": 1,
+            "core_reason": "core_shadow_observe_wait",
+            "core_allowed_action": "SELL_ONLY",
+            "h1_bias_strength": 0.6,
+            "m1_trigger_strength": 0.5,
+            "box_state": "UPPER",
+            "bb_state": "MID",
+            "core_score": 1.75,
+            "core_buy_raw": 0.1,
+            "core_sell_raw": 1.75,
+            "core_best_raw": 1.75,
+            "core_min_raw": 0.1,
+            "core_margin_raw": 1.65,
+            "core_tie_band_raw": 0.1,
+            "wait_score": 50.0,
+            "wait_conflict": 0.0,
+            "wait_noise": 0.0,
+            "wait_penalty": 0.0,
+            "learn_buy_penalty": 0.0,
+            "learn_sell_penalty": 0.0,
+            "preflight_regime": "RANGE",
+            "preflight_liquidity": "GOOD",
+            "preflight_allowed_action": "SELL_ONLY",
+            "preflight_approach_mode": "MIX",
+            "preflight_reason": "unit_test",
+            "preflight_direction_penalty_applied": 0.0,
+            "consumer_layer_mode_hard_block_active": False,
+            "consumer_layer_mode_suppressed": False,
+            "consumer_policy_live_gate_applied": False,
+            "consumer_policy_block_layer": "",
+            "consumer_policy_block_effect": "",
+            "consumer_energy_action_readiness": 0.0,
+            "consumer_energy_wait_vs_enter_hint": "",
+            "consumer_energy_soft_block_active": False,
+            "consumer_energy_soft_block_reason": "",
+            "consumer_energy_soft_block_strength": 0.0,
+            "consumer_energy_live_gate_applied": False,
+            "consumer_archetype_id": "upper_reject_sell",
+            "consumer_invalidation_id": "upper_break_fail",
+            "consumer_management_profile_id": "upper_reject_profile",
+            "entry_default_side_gate_v1": {},
+            "entry_probe_plan_v1": {},
+            "compatibility_mode": "native_v2",
+            "consumer_check_candidate": True,
+            "consumer_check_display_ready": False,
+            "consumer_check_entry_ready": False,
+            "consumer_check_side": "SELL",
+            "consumer_check_stage": "OBSERVE",
+            "consumer_check_reason": "outer_band_reversal_support_required_observe",
+            "consumer_check_display_strength_level": 6,
+            "consumer_check_state_v1": {
+                "contract_version": "consumer_check_state_v1",
+                "check_candidate": True,
+                "check_display_ready": False,
+                "entry_ready": False,
+                "check_side": "SELL",
+                "check_stage": "OBSERVE",
+                "check_reason": "outer_band_reversal_support_required_observe",
+                "entry_block_reason": "observe_state_wait",
+                "blocked_display_reason": "observe_state_wait",
+                "display_strength_level": 6,
+            },
+        },
+    )
+
+    helper_try_open_entry(
+        svc,
+        symbol="XAUUSD",
+        tick=tick,
+        df_all=df_all,
+        result={},
+        my_positions=[],
+        pos_count=0,
+        scorer=_DummyScorer(),
+        buy_s=0.2,
+        sell_s=1.3,
+        entry_threshold=1.0,
+    )
+
+    assert sent_lots == [0.08]
+    assert logged_rows
+    out = logged_rows[-1]
+    assert out["action"] == "SELL"
+    assert out["teacher_label_exploration_active"] is True
+    assert out["teacher_label_exploration_family"] == "xauusd_outer_band_reversal_observe_sell"
+    assert out["teacher_label_exploration_reason"] == "teacher_label_exploration_soft_guard_bypass"
+
+
+def test_try_open_entry_teacher_label_exploration_promotes_no_action_outer_band_probe_not_promoted_side_hint(
+    monkeypatch,
+):
+    svc = _svc()
+    tick = SimpleNamespace(bid=100.0, ask=100.1)
+    df_all = {"15M": pd.DataFrame(), "1M": pd.DataFrame([{"close": 100.0}])}
+    logged_rows: list[dict] = []
+    sent_lots: list[float] = []
+
+    svc.runtime.last_entry_time = {}
+    svc.runtime.latest_signal_by_symbol = {"BTCUSD": {}}
+    svc.runtime.get_lot_size = lambda _symbol: 0.20
+    svc.runtime.entry_indicator_snapshot = lambda *_args, **_kwargs: {}
+    svc.runtime.ai_runtime = None
+    svc.runtime.semantic_shadow_runtime = None
+    svc.runtime.semantic_shadow_runtime_diagnostics = {}
+    svc.runtime.semantic_promotion_guard = SimpleNamespace(
+        evaluate_entry_rollout=lambda **_: {
+            "mode": "threshold_only",
+            "fallback_reason": "baseline_no_action",
+            "fallback_applied": True,
+            "threshold_before": 1,
+            "threshold_after": 1,
+            "threshold_adjustment_points": 0,
+            "threshold_applied": False,
+            "partial_live_weight": 0.0,
+            "partial_live_applied": False,
+            "alert_active": False,
+            "reason": "baseline_no_action",
+            "symbol_allowed": True,
+            "entry_stage_allowed": True,
+        }
+    )
+    svc.runtime.get_order_block_status = lambda _symbol: {"active": False}
+    svc.runtime.execute_order = lambda _symbol, _action, lot: sent_lots.append(float(lot)) or None
+
+    monkeypatch.setattr(Config, "get_max_positions", staticmethod(lambda _symbol: 3))
+    monkeypatch.setattr(Config, "ENTRY_COOLDOWN", 0)
+    monkeypatch.setattr(Config, "ENABLE_ENTRY_BB_CHANNEL_BREAK_GUARD", False)
+    monkeypatch.setattr(Config, "ENABLE_ENTRY_EDGE_DIRECTION_HARD_GUARD", False, raising=False)
+    monkeypatch.setattr(Config, "ENTRY_TOPDOWN_GATE_MODE", "soft")
+    monkeypatch.setattr(Config, "ENTRY_H1_GATE_MODE", "soft")
+    monkeypatch.setattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_ENABLED", True, raising=False)
+    monkeypatch.setattr(
+        Config,
+        "ENTRY_TEACHER_LABEL_EXPLORATION_ALLOWED_SYMBOLS",
+        ("BTCUSD",),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        Config,
+        "ENTRY_TEACHER_LABEL_EXPLORATION_ALLOWED_OBSERVE_REASONS",
+        ("outer_band_reversal_support_required_observe",),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        Config,
+        "ENTRY_TEACHER_LABEL_EXPLORATION_ALLOWED_SOFT_BLOCKS",
+        ("forecast_guard", "barrier_guard", "outer_band_guard", "observe_state_wait", "probe_not_promoted", "consumer_entry_not_ready"),
+        raising=False,
+    )
+    monkeypatch.setattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_REQUIRE_FLAT_POSITION", True, raising=False)
+    monkeypatch.setattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_MAX_SAME_DIR_COUNT", 1, raising=False)
+    monkeypatch.setattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_MIN_SCORE_RATIO", 0.80, raising=False)
+    monkeypatch.setattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_MAX_THRESHOLD_GAP", 12.0, raising=False)
+    monkeypatch.setattr(
+        Config,
+        "ENTRY_TEACHER_LABEL_EXPLORATION_SIZE_MULTIPLIER_BY_SYMBOL",
+        {"BTCUSD": 0.40, "DEFAULT": 0.40},
+        raising=False,
+    )
+    monkeypatch.setattr(svc, "_append_entry_decision_log", lambda row: logged_rows.append(dict(row)) or dict(row))
+    monkeypatch.setattr(svc, "_store_runtime_snapshot", lambda **kwargs: None)
+    monkeypatch.setattr(svc, "_check_hard_no_trade_guard", lambda **_: "")
+    monkeypatch.setattr(svc, "_regime_name", lambda _regime: "RANGE")
+    monkeypatch.setattr(svc, "_zone_from_regime", lambda _regime: "UPPER")
+    monkeypatch.setattr(svc, "_volatility_state_from_ratio", lambda _ratio: "NORMAL")
+
+    _bind_context(
+        svc,
+        context=_core_context(
+            symbol="BTCUSD",
+            market_mode="RANGE",
+            direction_policy="SELL_ONLY",
+            box_state="UPPER",
+            bb_state="MID",
+        ),
+        allowed_action="SELL_ONLY",
+        regime="RANGE",
+    )
+    svc._component_extractor = SimpleNamespace(
+        extract=lambda **_: SimpleNamespace(
+            entry_h1_context_score=14,
+            entry_h1_context_opposite=0,
+            entry_m1_trigger_score=11,
+            entry_m1_trigger_opposite=0,
+        )
+    )
+    svc._setup_detector = SimpleNamespace(
+        detect_entry_setup=lambda **_: SimpleNamespace(
+            setup_id="range_outer_band_sell",
+            side="SELL",
+            status="matched",
+            trigger_state="OBSERVE",
+            entry_quality=0.72,
+            score=1.21,
+            metadata={"reason": "unit_test"},
+        )
+    )
+    svc._entry_predictor = SimpleNamespace(predict=lambda **_: {})
+    svc._wait_predictor = SimpleNamespace(predict_entry_wait=lambda **_: {})
+    svc._session_policy = SimpleNamespace(
+        get_threshold_mult=lambda **_: SimpleNamespace(
+            session_name="london",
+            weekday=2,
+            threshold_mult=1.0,
+        )
+    )
+    svc._atr_policy = SimpleNamespace(
+        get_threshold_mult=lambda **_: SimpleNamespace(
+            atr_ratio=1.0,
+            threshold_mult=1.0,
+        )
+    )
+    svc._topdown_gate_policy = SimpleNamespace(
+        evaluate=lambda **_: SimpleNamespace(ok=True, reason="", align=1, conflict=0, seen=1)
+    )
+    svc._h1_gate_policy = SimpleNamespace(
+        evaluate=lambda **_: SimpleNamespace(ok=True, reason="")
+    )
+    monkeypatch.setattr(
+        svc,
+        "_core_action_decision",
+        lambda **_: {
+            "action": "",
+            "observe_reason": "outer_band_reversal_support_required_observe",
+            "action_none_reason": "probe_not_promoted",
+            "blocked_by": "outer_band_guard",
+            "core_pass": 1,
+            "core_reason": "core_shadow_observe_wait",
+            "core_allowed_action": "SELL_ONLY",
+            "h1_bias_strength": 0.6,
+            "m1_trigger_strength": 0.5,
+            "box_state": "UPPER",
+            "bb_state": "MID",
+            "core_score": 1.75,
+            "core_buy_raw": 0.1,
+            "core_sell_raw": 1.75,
+            "core_best_raw": 1.75,
+            "core_min_raw": 0.1,
+            "core_margin_raw": 1.65,
+            "core_tie_band_raw": 0.1,
+            "wait_score": 50.0,
+            "wait_conflict": 0.0,
+            "wait_noise": 0.0,
+            "wait_penalty": 0.0,
+            "learn_buy_penalty": 0.0,
+            "learn_sell_penalty": 0.0,
+            "preflight_regime": "RANGE",
+            "preflight_liquidity": "GOOD",
+            "preflight_allowed_action": "SELL_ONLY",
+            "preflight_approach_mode": "MIX",
+            "preflight_reason": "unit_test",
+            "preflight_direction_penalty_applied": 0.0,
+            "consumer_layer_mode_hard_block_active": False,
+            "consumer_layer_mode_suppressed": False,
+            "consumer_policy_live_gate_applied": False,
+            "consumer_policy_block_layer": "",
+            "consumer_policy_block_effect": "",
+            "consumer_energy_action_readiness": 0.0,
+            "consumer_energy_wait_vs_enter_hint": "",
+            "consumer_energy_soft_block_active": False,
+            "consumer_energy_soft_block_reason": "",
+            "consumer_energy_soft_block_strength": 0.0,
+            "consumer_energy_live_gate_applied": False,
+            "consumer_archetype_id": "upper_reject_sell",
+            "consumer_invalidation_id": "upper_break_fail",
+            "consumer_management_profile_id": "upper_reject_profile",
+            "entry_default_side_gate_v1": {},
+            "entry_probe_plan_v1": {},
+            "compatibility_mode": "native_v2",
+            "consumer_check_candidate": True,
+            "consumer_check_display_ready": True,
+            "consumer_check_entry_ready": False,
+            "consumer_check_side": "SELL",
+            "consumer_check_stage": "OBSERVE",
+            "consumer_check_reason": "outer_band_reversal_support_required_observe",
+            "consumer_check_display_strength_level": 5,
+            "consumer_check_state_v1": {
+                "contract_version": "consumer_check_state_v1",
+                "check_candidate": True,
+                "check_display_ready": True,
+                "entry_ready": False,
+                "check_side": "SELL",
+                "check_stage": "OBSERVE",
+                "check_reason": "outer_band_reversal_support_required_observe",
+                "entry_block_reason": "probe_not_promoted",
+                "blocked_display_reason": "outer_band_guard",
+                "display_strength_level": 5,
+            },
+        },
+    )
+
+    helper_try_open_entry(
+        svc,
+        symbol="BTCUSD",
+        tick=tick,
+        df_all=df_all,
+        result={},
+        my_positions=[SimpleNamespace(type=1)],
+        pos_count=1,
+        scorer=_DummyScorer(),
+        buy_s=0.2,
+        sell_s=1.3,
+        entry_threshold=1.0,
+    )
+
+    assert sent_lots == [0.08]
+    assert logged_rows
+    out = logged_rows[-1]
+    assert out["action"] == "SELL"
+    assert out["teacher_label_exploration_active"] is True
+    assert out["teacher_label_exploration_family"] == "btcusd_outer_band_reversal_observe_sell"
+    assert out["teacher_label_exploration_reason"] == "teacher_label_exploration_soft_guard_bypass"
+
+
+def test_try_open_entry_teacher_label_exploration_promotes_outer_band_side_hint_without_consumer_candidate(
+    monkeypatch,
+):
+    svc = _svc()
+    tick = SimpleNamespace(bid=100.0, ask=100.1)
+    df_all = {"15M": pd.DataFrame(), "1M": pd.DataFrame([{"close": 100.0}])}
+    logged_rows: list[dict] = []
+    sent_lots: list[float] = []
+
+    svc.runtime.last_entry_time = {}
+    svc.runtime.latest_signal_by_symbol = {"BTCUSD": {}}
+    svc.runtime.get_lot_size = lambda _symbol: 0.20
+    svc.runtime.entry_indicator_snapshot = lambda *_args, **_kwargs: {}
+    svc.runtime.ai_runtime = None
+    svc.runtime.semantic_shadow_runtime = None
+    svc.runtime.semantic_shadow_runtime_diagnostics = {}
+    svc.runtime.semantic_promotion_guard = SimpleNamespace(
+        evaluate_entry_rollout=lambda **_: {
+            "mode": "threshold_only",
+            "fallback_reason": "baseline_no_action",
+            "fallback_applied": True,
+            "threshold_before": 1,
+            "threshold_after": 1,
+            "threshold_adjustment_points": 0,
+            "threshold_applied": False,
+            "partial_live_weight": 0.0,
+            "partial_live_applied": False,
+            "alert_active": False,
+            "reason": "baseline_no_action",
+            "symbol_allowed": True,
+            "entry_stage_allowed": True,
+        }
+    )
+    svc.runtime.get_order_block_status = lambda _symbol: {"active": False}
+    svc.runtime.execute_order = lambda _symbol, _action, lot: sent_lots.append(float(lot)) or None
+
+    monkeypatch.setattr(Config, "get_max_positions", staticmethod(lambda _symbol: 3))
+    monkeypatch.setattr(Config, "ENTRY_COOLDOWN", 0)
+    monkeypatch.setattr(Config, "ENABLE_ENTRY_BB_CHANNEL_BREAK_GUARD", False)
+    monkeypatch.setattr(Config, "ENABLE_ENTRY_EDGE_DIRECTION_HARD_GUARD", False, raising=False)
+    monkeypatch.setattr(Config, "ENTRY_TOPDOWN_GATE_MODE", "soft")
+    monkeypatch.setattr(Config, "ENTRY_H1_GATE_MODE", "soft")
+    monkeypatch.setattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_ENABLED", True, raising=False)
+    monkeypatch.setattr(
+        Config,
+        "ENTRY_TEACHER_LABEL_EXPLORATION_ALLOWED_SYMBOLS",
+        ("BTCUSD",),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        Config,
+        "ENTRY_TEACHER_LABEL_EXPLORATION_ALLOWED_OBSERVE_REASONS",
+        ("outer_band_reversal_support_required_observe",),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        Config,
+        "ENTRY_TEACHER_LABEL_EXPLORATION_ALLOWED_SOFT_BLOCKS",
+        ("forecast_guard", "barrier_guard", "outer_band_guard", "observe_state_wait", "probe_not_promoted"),
+        raising=False,
+    )
+    monkeypatch.setattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_REQUIRE_FLAT_POSITION", True, raising=False)
+    monkeypatch.setattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_MIN_SCORE_RATIO", 0.80, raising=False)
+    monkeypatch.setattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_MAX_THRESHOLD_GAP", 12.0, raising=False)
+    monkeypatch.setattr(
+        Config,
+        "ENTRY_TEACHER_LABEL_EXPLORATION_SIZE_MULTIPLIER_BY_SYMBOL",
+        {"BTCUSD": 0.40, "DEFAULT": 0.40},
+        raising=False,
+    )
+    monkeypatch.setattr(svc, "_append_entry_decision_log", lambda row: logged_rows.append(dict(row)) or dict(row))
+    monkeypatch.setattr(svc, "_store_runtime_snapshot", lambda **kwargs: None)
+    monkeypatch.setattr(svc, "_check_hard_no_trade_guard", lambda **_: "")
+    monkeypatch.setattr(svc, "_regime_name", lambda _regime: "RANGE")
+    monkeypatch.setattr(svc, "_zone_from_regime", lambda _regime: "UPPER")
+    monkeypatch.setattr(svc, "_volatility_state_from_ratio", lambda _ratio: "NORMAL")
+
+    _bind_context(
+        svc,
+        context=_core_context(
+            symbol="BTCUSD",
+            market_mode="RANGE",
+            direction_policy="SELL_ONLY",
+            box_state="UPPER",
+            bb_state="MID",
+        ),
+        allowed_action="SELL_ONLY",
+        regime="RANGE",
+    )
+    svc._component_extractor = SimpleNamespace(
+        extract=lambda **_: SimpleNamespace(
+            entry_h1_context_score=14,
+            entry_h1_context_opposite=0,
+            entry_m1_trigger_score=11,
+            entry_m1_trigger_opposite=0,
+        )
+    )
+    svc._setup_detector = SimpleNamespace(
+        detect_entry_setup=lambda **_: SimpleNamespace(
+            setup_id="range_outer_band_sell",
+            side="SELL",
+            status="matched",
+            trigger_state="OBSERVE",
+            entry_quality=0.72,
+            score=1.21,
+            metadata={"reason": "unit_test"},
+        )
+    )
+    svc._entry_predictor = SimpleNamespace(predict=lambda **_: {})
+    svc._wait_predictor = SimpleNamespace(predict_entry_wait=lambda **_: {})
+    svc._session_policy = SimpleNamespace(
+        get_threshold_mult=lambda **_: SimpleNamespace(
+            session_name="london",
+            weekday=2,
+            threshold_mult=1.0,
+        )
+    )
+    svc._atr_policy = SimpleNamespace(
+        get_threshold_mult=lambda **_: SimpleNamespace(
+            atr_ratio=1.0,
+            threshold_mult=1.0,
+        )
+    )
+    svc._topdown_gate_policy = SimpleNamespace(
+        evaluate=lambda **_: SimpleNamespace(ok=True, reason="", align=1, conflict=0, seen=1)
+    )
+    svc._h1_gate_policy = SimpleNamespace(
+        evaluate=lambda **_: SimpleNamespace(ok=True, reason="")
+    )
+    monkeypatch.setattr(
+        svc,
+        "_core_action_decision",
+        lambda **_: {
+            "action": "",
+            "observe_reason": "outer_band_reversal_support_required_observe",
+            "action_none_reason": "observe_state_wait",
+            "blocked_by": "outer_band_guard",
+            "core_pass": 1,
+            "core_reason": "core_shadow_observe_wait",
+            "core_allowed_action": "SELL_ONLY",
+            "h1_bias_strength": 0.6,
+            "m1_trigger_strength": 0.5,
+            "box_state": "UPPER",
+            "bb_state": "MID",
+            "core_score": 1.75,
+            "core_buy_raw": 0.1,
+            "core_sell_raw": 1.75,
+            "core_best_raw": 1.75,
+            "core_min_raw": 0.1,
+            "core_margin_raw": 1.65,
+            "core_tie_band_raw": 0.1,
+            "wait_score": 50.0,
+            "wait_conflict": 0.0,
+            "wait_noise": 0.0,
+            "wait_penalty": 0.0,
+            "learn_buy_penalty": 0.0,
+            "learn_sell_penalty": 0.0,
+            "preflight_regime": "RANGE",
+            "preflight_liquidity": "GOOD",
+            "preflight_allowed_action": "SELL_ONLY",
+            "preflight_approach_mode": "MIX",
+            "preflight_reason": "unit_test",
+            "preflight_direction_penalty_applied": 0.0,
+            "consumer_layer_mode_hard_block_active": False,
+            "consumer_layer_mode_suppressed": False,
+            "consumer_policy_live_gate_applied": False,
+            "consumer_policy_block_layer": "",
+            "consumer_policy_block_effect": "",
+            "consumer_energy_action_readiness": 0.0,
+            "consumer_energy_wait_vs_enter_hint": "",
+            "consumer_energy_soft_block_active": False,
+            "consumer_energy_soft_block_reason": "",
+            "consumer_energy_soft_block_strength": 0.0,
+            "consumer_energy_live_gate_applied": False,
+            "consumer_archetype_id": "upper_reject_sell",
+            "consumer_invalidation_id": "upper_break_fail",
+            "consumer_management_profile_id": "upper_reject_profile",
+            "entry_default_side_gate_v1": {},
+            "entry_probe_plan_v1": {},
+            "compatibility_mode": "native_v2",
+            "consumer_check_candidate": True,
+            "consumer_check_display_ready": False,
+            "consumer_check_entry_ready": False,
+            "consumer_check_side": "SELL",
+            "consumer_check_stage": "OBSERVE",
+            "consumer_check_reason": "outer_band_reversal_support_required_observe",
+            "consumer_check_display_strength_level": 4,
+            "consumer_check_state_v1": {
+                "contract_version": "consumer_check_state_v1",
+                "check_candidate": False,
+                "check_display_ready": False,
+                "entry_ready": False,
+                "check_side": "SELL",
+                "check_stage": "OBSERVE",
+                "check_reason": "outer_band_reversal_support_required_observe",
+                "entry_block_reason": "observe_state_wait",
+                "blocked_display_reason": "outer_band_guard",
+                "display_strength_level": 4,
+            },
+        },
+    )
+
+    helper_try_open_entry(
+        svc,
+        symbol="BTCUSD",
+        tick=tick,
+        df_all=df_all,
+        result={},
+        my_positions=[],
+        pos_count=0,
+        scorer=_DummyScorer(),
+        buy_s=0.2,
+        sell_s=1.3,
+        entry_threshold=1.0,
+    )
+
+    assert sent_lots == [0.08]
+    assert logged_rows
+    out = logged_rows[-1]
+    assert out["action"] == "SELL"
+    assert out["teacher_label_exploration_active"] is True
+    assert out["teacher_label_exploration_family"] == "btcusd_outer_band_reversal_observe_sell"
+    assert out["teacher_label_exploration_reason"] == "teacher_label_exploration_soft_guard_bypass"
 
 
 def test_try_open_entry_range_lower_skip_downgrades_ready_consumer_check_state(monkeypatch):
@@ -1554,6 +3591,146 @@ def test_append_entry_decision_log_rewrites_try_open_entry_observe_confirm_to_v2
     assert observe_v2["archetype_id"] == "lower_hold_buy"
     assert guard["resolved_field_name"] == "observe_confirm_v2"
     assert guard["used_compatibility_fallback_v1"] is False
+
+
+def test_append_entry_decision_log_uses_lean_runtime_sync_for_wait_rows(monkeypatch):
+    svc = _svc()
+    svc.runtime.latest_signal_by_symbol = {"XAUUSD": {"existing_marker": True}}
+    stored_keys: list[str] = []
+
+    def _capture_store(**kwargs):
+        stored_keys.append(str(kwargs.get("key", "") or ""))
+
+    monkeypatch.setattr(svc, "_store_runtime_snapshot", _capture_store)
+    monkeypatch.setattr(
+        svc.decision_recorder,
+        "append_entry_decision_log",
+        lambda row: dict(row),
+    )
+
+    svc._append_entry_decision_log(
+        {
+            "time": "2026-04-09T12:18:43",
+            "symbol": "XAUUSD",
+            "action": "BUY",
+            "considered": 1,
+            "outcome": "wait",
+            "observe_reason": "shadow_lower_rebound_probe_observe_xau_lower_rebound_follow_through",
+            "blocked_by": "box_middle_buy_without_bb_support",
+            "action_none_reason": "observe_state_wait",
+            "setup_id": "range_lower_reversal_buy",
+            "setup_side": "BUY",
+            "setup_status": "matched",
+            "setup_trigger_state": "observe",
+            "setup_score": 0.61,
+            "setup_entry_quality": 0.55,
+            "setup_reason": "lower_rebound_follow_through",
+            "preflight_regime": "TREND",
+            "preflight_allowed_action": "BUY_ONLY",
+            "preflight_liquidity": "GOOD",
+            "box_state": "LOWER",
+            "bb_state": "LOWER_EDGE",
+            "decision_rule_version": "utility_only",
+            "forecast_assist_v1": {
+                "contract_version": "forecast_assist_v1",
+                "decision_hint": "WAIT",
+                "wait_confirm_gap": -0.08,
+            },
+            "entry_default_side_gate_v1": {
+                "contract_version": "entry_default_side_gate_v1",
+                "decision": "BUY",
+                "winner_side": "BUY",
+            },
+            "entry_probe_plan_v1": {
+                "contract_version": "entry_probe_plan_v1",
+                "active": True,
+                "ready_for_entry": False,
+                "scene_id": "xau_lower_rebound_follow_through",
+            },
+            "edge_pair_law_v1": {
+                "contract_version": "edge_pair_law_v1",
+                "winner_side": "BUY",
+                "context_label": "lower_rebound",
+            },
+            "probe_candidate_v1": {
+                "contract_version": "probe_candidate_v1",
+                "active": True,
+                "probe_direction": "BUY",
+            },
+            "consumer_check_state_v1": {
+                "contract_version": "consumer_check_state_v1",
+                "check_candidate": True,
+                "check_display_ready": True,
+                "entry_ready": False,
+                "check_side": "BUY",
+                "check_stage": "OBSERVE",
+                "check_reason": "observe_state_wait",
+            },
+        }
+    )
+
+    live_row = svc.runtime.latest_signal_by_symbol["XAUUSD"]
+    assert live_row["entry_decision_context_v1"]["metadata"]["forecast_assist_v1"]["decision_hint"] == "WAIT"
+    assert live_row["entry_decision_result_v1"]["outcome"] == "wait"
+    assert live_row["entry_probe_plan_v1"]["scene_id"] == "xau_lower_rebound_follow_through"
+    assert live_row["edge_pair_law_v1"]["context_label"] == "lower_rebound"
+    assert live_row["probe_candidate_v1"]["probe_direction"] == "BUY"
+    assert live_row["consumer_check_state_v1"]["check_stage"] == "OBSERVE"
+    assert "forecast_assist_v1" not in live_row
+    assert "entry_default_side_gate_v1" not in live_row
+    assert stored_keys == ["entry_append_log_profile_v1"]
+
+
+def test_append_entry_decision_log_syncs_execution_diff_surface_fields(monkeypatch):
+    svc = _svc()
+    svc.runtime.latest_signal_by_symbol = {"BTCUSD": {}}
+
+    monkeypatch.setattr(svc, "_store_runtime_snapshot", lambda **kwargs: None)
+    monkeypatch.setattr(
+        svc.decision_recorder,
+        "append_entry_decision_log",
+        lambda row: dict(row),
+    )
+
+    svc._append_entry_decision_log(
+        {
+            "time": "2026-04-14T20:22:43",
+            "symbol": "BTCUSD",
+            "action": "SELL",
+            "considered": 1,
+            "outcome": "skipped",
+            "blocked_by": "dynamic_threshold_not_met",
+            "action_none_reason": "observe_state_wait",
+            "decision_rule_version": "utility_only",
+            "execution_action_diff_v1": {
+                "contract_version": "execution_action_diff_v1",
+                "original_action_side": "SELL",
+                "guarded_action_side": "SKIP",
+                "promoted_action_side": "",
+                "final_action_side": "SKIP",
+                "action_changed": True,
+                "guard_applied": True,
+                "promotion_active": False,
+                "action_change_reason_keys": ["active_action_conflict_guard"],
+            },
+            "execution_diff_original_action_side": "SELL",
+            "execution_diff_guarded_action_side": "SKIP",
+            "execution_diff_final_action_side": "SKIP",
+            "execution_diff_changed": True,
+            "execution_diff_guard_applied": True,
+            "execution_diff_promotion_active": False,
+            "execution_diff_reason_keys": ["active_action_conflict_guard"],
+        }
+    )
+
+    live_row = svc.runtime.latest_signal_by_symbol["BTCUSD"]
+    assert live_row["execution_diff_original_action_side"] == "SELL"
+    assert live_row["execution_diff_guarded_action_side"] == "SKIP"
+    assert live_row["execution_diff_final_action_side"] == "SKIP"
+    assert live_row["execution_diff_changed"] is True
+    assert live_row["execution_diff_guard_applied"] is True
+    assert live_row["execution_diff_reason_keys"] == ["active_action_conflict_guard"]
+    assert live_row["execution_action_diff_v1"]["original_action_side"] == "SELL"
 
 
 def test_box_middle_guard_blocks_when_no_bb_support(monkeypatch):

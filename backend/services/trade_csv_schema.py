@@ -45,6 +45,76 @@ REGIME_COLUMNS = [
     "regime_sell_multiplier",
 ]
 
+MICRO_STRUCTURE_SEMANTIC_COLUMNS = [
+    "micro_breakout_readiness_state",
+    "micro_reversal_risk_state",
+    "micro_participation_state",
+    "micro_gap_context_state",
+]
+
+MICRO_STRUCTURE_SOURCE_COLUMNS = [
+    "micro_body_size_pct_20",
+    "micro_doji_ratio_20",
+    "micro_same_color_run_current",
+    "micro_same_color_run_max_20",
+    "micro_range_compression_ratio_20",
+    "micro_volume_burst_ratio_20",
+    "micro_volume_burst_decay_20",
+    "micro_gap_fill_progress",
+]
+
+TEACHER_PATTERN_COLUMNS = [
+    "teacher_pattern_id",
+    "teacher_pattern_name",
+    "teacher_pattern_group",
+    "teacher_pattern_secondary_id",
+    "teacher_pattern_secondary_name",
+    "teacher_direction_bias",
+    "teacher_entry_bias",
+    "teacher_wait_bias",
+    "teacher_exit_bias",
+    "teacher_transition_risk",
+    "teacher_label_confidence",
+    "teacher_lookback_bars",
+    "teacher_label_version",
+    "teacher_label_source",
+    "teacher_label_review_status",
+]
+
+MANUAL_WAIT_TEACHER_COLUMNS = [
+    "manual_wait_teacher_label",
+    "manual_wait_teacher_polarity",
+    "manual_wait_teacher_family",
+    "manual_wait_teacher_subtype",
+    "manual_wait_teacher_usage_bucket",
+    "manual_wait_teacher_confidence",
+    "manual_wait_teacher_source",
+    "manual_wait_teacher_review_status",
+    "manual_wait_teacher_episode_id",
+    "manual_wait_teacher_anchor_time",
+    "manual_wait_teacher_anchor_price",
+    "manual_wait_teacher_entry_time",
+    "manual_wait_teacher_entry_price",
+    "manual_wait_teacher_exit_time",
+    "manual_wait_teacher_exit_price",
+    "manual_wait_teacher_reason",
+    "manual_wait_teacher_note",
+    "manual_wait_teacher_box_regime",
+    "manual_wait_teacher_revisit_flag",
+]
+
+
+def normalize_manual_reason_tag(value: object, *, max_len: int = 96) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"\s+", " ", text.replace("\r", " ").replace("\n", " ")).strip()
+    if text.upper() in {"AUTO", "AUTOTRADE", "CLOSE", "NONE", "NULL", "0"}:
+        return ""
+    if len(text) > int(max_len):
+        text = text[: int(max_len)].strip()
+    return text
+
 TRADE_COLUMNS = [
     "ticket",
     "symbol",
@@ -107,7 +177,9 @@ TRADE_COLUMNS = [
     "net_pnl_after_cost",
     "points",
     "entry_reason",
+    "manual_entry_tag",
     "exit_reason",
+    "manual_exit_tag",
     "exit_score",
     "signed_exit_score",
     "decision_winner",
@@ -158,6 +230,91 @@ TRADE_COLUMNS = [
     "wait_quality_label",
     "wait_quality_score",
     "wait_quality_reason",
+    "entry_wait_quality_label",
+    "entry_wait_quality_score",
+    "entry_wait_quality_reason",
+    "learning_entry_score",
+    "learning_wait_score",
+    "learning_exit_score",
+    "learning_total_score",
+    "learning_total_label",
+    "forecast_state25_scene_family",
+    "forecast_state25_group_hint",
+    "forecast_confirm_side",
+    "forecast_decision_hint",
+    "forecast_wait_confirm_gap",
+    "forecast_hold_exit_gap",
+    "forecast_same_side_flip_gap",
+    "forecast_belief_barrier_tension_gap",
+    "forecast_transition_outcome_status",
+    "forecast_management_outcome_status",
+    "forecast_state25_bridge_quality_status",
+    "forecast_state25_bridge_reason",
+    "belief_anchor_side",
+    "belief_anchor_context",
+    "belief_horizon_bars",
+    "belief_outcome_label",
+    "belief_label_confidence",
+    "belief_break_signature",
+    "belief_bridge_quality_status",
+    "belief_outcome_reason",
+    "barrier_anchor_side",
+    "barrier_anchor_context",
+    "barrier_horizon_bars",
+    "barrier_primary_component",
+    "barrier_outcome_label",
+    "barrier_label_confidence",
+    "barrier_bridge_quality_status",
+    "barrier_outcome_reason",
+    "barrier_cost_loss_avoided_r",
+    "barrier_cost_profit_missed_r",
+    "barrier_cost_wait_value_r",
+    "micro_breakout_readiness_state",
+    "micro_reversal_risk_state",
+    "micro_participation_state",
+    "micro_gap_context_state",
+    "micro_body_size_pct_20",
+    "micro_doji_ratio_20",
+    "micro_same_color_run_current",
+    "micro_same_color_run_max_20",
+    "micro_range_compression_ratio_20",
+    "micro_volume_burst_ratio_20",
+    "micro_volume_burst_decay_20",
+    "micro_gap_fill_progress",
+    "teacher_pattern_id",
+    "teacher_pattern_name",
+    "teacher_pattern_group",
+    "teacher_pattern_secondary_id",
+    "teacher_pattern_secondary_name",
+    "teacher_direction_bias",
+    "teacher_entry_bias",
+    "teacher_wait_bias",
+    "teacher_exit_bias",
+    "teacher_transition_risk",
+    "teacher_label_confidence",
+    "teacher_lookback_bars",
+    "teacher_label_version",
+    "teacher_label_source",
+    "teacher_label_review_status",
+    "manual_wait_teacher_label",
+    "manual_wait_teacher_polarity",
+    "manual_wait_teacher_family",
+    "manual_wait_teacher_subtype",
+    "manual_wait_teacher_usage_bucket",
+    "manual_wait_teacher_confidence",
+    "manual_wait_teacher_source",
+    "manual_wait_teacher_review_status",
+    "manual_wait_teacher_episode_id",
+    "manual_wait_teacher_anchor_time",
+    "manual_wait_teacher_anchor_price",
+    "manual_wait_teacher_entry_time",
+    "manual_wait_teacher_entry_price",
+    "manual_wait_teacher_exit_time",
+    "manual_wait_teacher_exit_price",
+    "manual_wait_teacher_reason",
+    "manual_wait_teacher_note",
+    "manual_wait_teacher_box_regime",
+    "manual_wait_teacher_revisit_flag",
     "decision_reason",
     "prediction_bundle",
     "final_outcome",
@@ -179,7 +336,9 @@ TEXT_TRADE_COLUMNS = {
     "replay_row_key",
     "compatibility_mode",
     "entry_reason",
+    "manual_entry_tag",
     "exit_reason",
+    "manual_exit_tag",
     "decision_winner",
     "exit_wait_decision",
     "regime_name",
@@ -212,6 +371,61 @@ TEXT_TRADE_COLUMNS = {
     "loss_quality_reason",
     "wait_quality_label",
     "wait_quality_reason",
+    "entry_wait_quality_label",
+    "entry_wait_quality_reason",
+    "learning_total_label",
+    "forecast_state25_scene_family",
+    "forecast_state25_group_hint",
+    "forecast_confirm_side",
+    "forecast_decision_hint",
+    "forecast_transition_outcome_status",
+    "forecast_management_outcome_status",
+    "forecast_state25_bridge_quality_status",
+    "forecast_state25_bridge_reason",
+    "belief_anchor_side",
+    "belief_anchor_context",
+    "belief_outcome_label",
+    "belief_label_confidence",
+    "belief_break_signature",
+    "belief_bridge_quality_status",
+    "belief_outcome_reason",
+    "barrier_anchor_side",
+    "barrier_anchor_context",
+    "barrier_primary_component",
+    "barrier_outcome_label",
+    "barrier_label_confidence",
+    "barrier_bridge_quality_status",
+    "barrier_outcome_reason",
+    "micro_breakout_readiness_state",
+    "micro_reversal_risk_state",
+    "micro_participation_state",
+    "micro_gap_context_state",
+    "teacher_pattern_name",
+    "teacher_pattern_group",
+    "teacher_pattern_secondary_name",
+    "teacher_direction_bias",
+    "teacher_entry_bias",
+    "teacher_wait_bias",
+    "teacher_exit_bias",
+    "teacher_transition_risk",
+    "teacher_label_version",
+    "teacher_label_source",
+    "teacher_label_review_status",
+    "manual_wait_teacher_label",
+    "manual_wait_teacher_polarity",
+    "manual_wait_teacher_family",
+    "manual_wait_teacher_subtype",
+    "manual_wait_teacher_usage_bucket",
+    "manual_wait_teacher_confidence",
+    "manual_wait_teacher_source",
+    "manual_wait_teacher_review_status",
+    "manual_wait_teacher_episode_id",
+    "manual_wait_teacher_anchor_time",
+    "manual_wait_teacher_entry_time",
+    "manual_wait_teacher_exit_time",
+    "manual_wait_teacher_reason",
+    "manual_wait_teacher_note",
+    "manual_wait_teacher_box_regime",
     "decision_reason",
     "prediction_bundle",
     "final_outcome",
@@ -452,8 +666,40 @@ def normalize_trade_df(df: pd.DataFrame) -> pd.DataFrame:
     out["shock_hold_delta_30"] = pd.to_numeric(out["shock_hold_delta_30"], errors="coerce").fillna(0.0)
     out["loss_quality_score"] = pd.to_numeric(out["loss_quality_score"], errors="coerce").fillna(0.0)
     out["wait_quality_score"] = pd.to_numeric(out["wait_quality_score"], errors="coerce").fillna(0.0)
+    out["entry_wait_quality_score"] = pd.to_numeric(out["entry_wait_quality_score"], errors="coerce").fillna(0.0)
+    out["learning_entry_score"] = pd.to_numeric(out["learning_entry_score"], errors="coerce").fillna(0.0)
+    out["learning_wait_score"] = pd.to_numeric(out["learning_wait_score"], errors="coerce").fillna(0.0)
+    out["learning_exit_score"] = pd.to_numeric(out["learning_exit_score"], errors="coerce").fillna(0.0)
+    out["learning_total_score"] = pd.to_numeric(out["learning_total_score"], errors="coerce").fillna(0.0)
+    out["forecast_wait_confirm_gap"] = pd.to_numeric(out["forecast_wait_confirm_gap"], errors="coerce").fillna(0.0)
+    out["forecast_hold_exit_gap"] = pd.to_numeric(out["forecast_hold_exit_gap"], errors="coerce").fillna(0.0)
+    out["forecast_same_side_flip_gap"] = pd.to_numeric(out["forecast_same_side_flip_gap"], errors="coerce").fillna(0.0)
+    out["forecast_belief_barrier_tension_gap"] = pd.to_numeric(
+        out["forecast_belief_barrier_tension_gap"],
+        errors="coerce",
+    ).fillna(0.0)
+    out["micro_body_size_pct_20"] = pd.to_numeric(out["micro_body_size_pct_20"], errors="coerce").fillna(0.0)
+    out["micro_doji_ratio_20"] = pd.to_numeric(out["micro_doji_ratio_20"], errors="coerce").fillna(0.0)
+    out["micro_same_color_run_current"] = pd.to_numeric(out["micro_same_color_run_current"], errors="coerce").fillna(0).astype(int)
+    out["micro_same_color_run_max_20"] = pd.to_numeric(out["micro_same_color_run_max_20"], errors="coerce").fillna(0).astype(int)
+    out["micro_range_compression_ratio_20"] = pd.to_numeric(out["micro_range_compression_ratio_20"], errors="coerce").fillna(0.0)
+    out["micro_volume_burst_ratio_20"] = pd.to_numeric(out["micro_volume_burst_ratio_20"], errors="coerce").fillna(0.0)
+    out["micro_volume_burst_decay_20"] = pd.to_numeric(out["micro_volume_burst_decay_20"], errors="coerce").fillna(0.0)
+    out["micro_gap_fill_progress"] = pd.to_numeric(out["micro_gap_fill_progress"], errors="coerce").fillna(0.0)
+    out["teacher_pattern_id"] = pd.to_numeric(out["teacher_pattern_id"], errors="coerce").fillna(0).astype(int)
+    out["teacher_pattern_secondary_id"] = pd.to_numeric(out["teacher_pattern_secondary_id"], errors="coerce").fillna(0).astype(int)
+    out["teacher_label_confidence"] = pd.to_numeric(out["teacher_label_confidence"], errors="coerce").fillna(0.0)
+    out["teacher_lookback_bars"] = pd.to_numeric(out["teacher_lookback_bars"], errors="coerce").fillna(0).astype(int)
+    out["manual_wait_teacher_anchor_price"] = pd.to_numeric(out["manual_wait_teacher_anchor_price"], errors="coerce").fillna(0.0)
+    out["manual_wait_teacher_entry_price"] = pd.to_numeric(out["manual_wait_teacher_entry_price"], errors="coerce").fillna(0.0)
+    out["manual_wait_teacher_exit_price"] = pd.to_numeric(out["manual_wait_teacher_exit_price"], errors="coerce").fillna(0.0)
+    out["manual_wait_teacher_revisit_flag"] = pd.to_numeric(
+        out["manual_wait_teacher_revisit_flag"], errors="coerce"
+    ).fillna(0).astype(int)
     out["entry_reason"] = out["entry_reason"].fillna("").astype(str)
+    out["manual_entry_tag"] = out["manual_entry_tag"].fillna("").astype(str).map(normalize_manual_reason_tag)
     out["exit_reason"] = out["exit_reason"].fillna("").astype(str)
+    out["manual_exit_tag"] = out["manual_exit_tag"].fillna("").astype(str).map(normalize_manual_reason_tag)
     out["decision_winner"] = out["decision_winner"].fillna("").astype(str).str.strip().str.lower()
     out["exit_wait_decision"] = out["exit_wait_decision"].fillna("").astype(str).str.strip().str.lower()
     out["regime_name"] = out["regime_name"].fillna("").astype(str)
@@ -486,6 +732,56 @@ def normalize_trade_df(df: pd.DataFrame) -> pd.DataFrame:
     out["loss_quality_reason"] = out["loss_quality_reason"].fillna("").astype(str).str.strip()
     out["wait_quality_label"] = out["wait_quality_label"].fillna("").astype(str).str.strip().str.lower()
     out["wait_quality_reason"] = out["wait_quality_reason"].fillna("").astype(str).str.strip()
+    out["entry_wait_quality_label"] = out["entry_wait_quality_label"].fillna("").astype(str).str.strip().str.lower()
+    out["entry_wait_quality_reason"] = out["entry_wait_quality_reason"].fillna("").astype(str).str.strip()
+    out["learning_total_label"] = out["learning_total_label"].fillna("").astype(str).str.strip().str.lower()
+    out["forecast_state25_scene_family"] = out["forecast_state25_scene_family"].fillna("").astype(str).str.strip().str.lower()
+    out["forecast_state25_group_hint"] = out["forecast_state25_group_hint"].fillna("").astype(str).str.strip()
+    out["forecast_confirm_side"] = out["forecast_confirm_side"].fillna("").astype(str).str.strip().str.upper()
+    out["forecast_decision_hint"] = out["forecast_decision_hint"].fillna("").astype(str).str.strip().str.upper()
+    out["forecast_transition_outcome_status"] = (
+        out["forecast_transition_outcome_status"].fillna("").astype(str).str.strip().str.lower()
+    )
+    out["forecast_management_outcome_status"] = (
+        out["forecast_management_outcome_status"].fillna("").astype(str).str.strip().str.lower()
+    )
+    out["forecast_state25_bridge_quality_status"] = (
+        out["forecast_state25_bridge_quality_status"].fillna("").astype(str).str.strip().str.lower()
+    )
+    out["forecast_state25_bridge_reason"] = out["forecast_state25_bridge_reason"].fillna("").astype(str).str.strip()
+    out["belief_anchor_side"] = out["belief_anchor_side"].fillna("").astype(str).str.strip().str.upper()
+    out["belief_anchor_context"] = out["belief_anchor_context"].fillna("").astype(str).str.strip().str.lower()
+    out["belief_outcome_label"] = out["belief_outcome_label"].fillna("").astype(str).str.strip().str.lower()
+    out["belief_label_confidence"] = out["belief_label_confidence"].fillna("").astype(str).str.strip().str.lower()
+    out["belief_break_signature"] = out["belief_break_signature"].fillna("").astype(str).str.strip().str.lower()
+    out["belief_bridge_quality_status"] = (
+        out["belief_bridge_quality_status"].fillna("").astype(str).str.strip().str.lower()
+    )
+    out["belief_outcome_reason"] = out["belief_outcome_reason"].fillna("").astype(str).str.strip()
+    out["barrier_anchor_side"] = out["barrier_anchor_side"].fillna("").astype(str).str.strip().str.upper()
+    out["barrier_anchor_context"] = out["barrier_anchor_context"].fillna("").astype(str).str.strip().str.lower()
+    out["barrier_primary_component"] = out["barrier_primary_component"].fillna("").astype(str).str.strip().str.lower()
+    out["barrier_outcome_label"] = out["barrier_outcome_label"].fillna("").astype(str).str.strip().str.lower()
+    out["barrier_label_confidence"] = out["barrier_label_confidence"].fillna("").astype(str).str.strip().str.lower()
+    out["barrier_bridge_quality_status"] = (
+        out["barrier_bridge_quality_status"].fillna("").astype(str).str.strip().str.lower()
+    )
+    out["barrier_outcome_reason"] = out["barrier_outcome_reason"].fillna("").astype(str).str.strip()
+    out["micro_breakout_readiness_state"] = out["micro_breakout_readiness_state"].fillna("").astype(str).str.strip()
+    out["micro_reversal_risk_state"] = out["micro_reversal_risk_state"].fillna("").astype(str).str.strip()
+    out["micro_participation_state"] = out["micro_participation_state"].fillna("").astype(str).str.strip()
+    out["micro_gap_context_state"] = out["micro_gap_context_state"].fillna("").astype(str).str.strip()
+    out["teacher_pattern_name"] = out["teacher_pattern_name"].fillna("").astype(str).str.strip()
+    out["teacher_pattern_group"] = out["teacher_pattern_group"].fillna("").astype(str).str.strip()
+    out["teacher_pattern_secondary_name"] = out["teacher_pattern_secondary_name"].fillna("").astype(str).str.strip()
+    out["teacher_direction_bias"] = out["teacher_direction_bias"].fillna("").astype(str).str.strip()
+    out["teacher_entry_bias"] = out["teacher_entry_bias"].fillna("").astype(str).str.strip()
+    out["teacher_wait_bias"] = out["teacher_wait_bias"].fillna("").astype(str).str.strip()
+    out["teacher_exit_bias"] = out["teacher_exit_bias"].fillna("").astype(str).str.strip()
+    out["teacher_transition_risk"] = out["teacher_transition_risk"].fillna("").astype(str).str.strip()
+    out["teacher_label_version"] = out["teacher_label_version"].fillna("").astype(str).str.strip()
+    out["teacher_label_source"] = out["teacher_label_source"].fillna("").astype(str).str.strip()
+    out["teacher_label_review_status"] = out["teacher_label_review_status"].fillna("").astype(str).str.strip()
     out["decision_reason"] = out["decision_reason"].fillna("").astype(str).str.strip()
     out["prediction_bundle"] = out["prediction_bundle"].fillna("").astype(str).str.strip()
     out["final_outcome"] = out["final_outcome"].fillna("").astype(str).str.strip().str.lower()
@@ -517,6 +813,10 @@ def normalize_trade_df(df: pd.DataFrame) -> pd.DataFrame:
     out["missing_feature_count"] = out["missing_feature_count"].clip(lower=0, upper=1000)
     out["data_completeness_ratio"] = out["data_completeness_ratio"].clip(lower=0.0, upper=1.0)
     out["used_fallback_count"] = out["used_fallback_count"].clip(lower=0, upper=100)
+    out["teacher_pattern_id"] = out["teacher_pattern_id"].clip(lower=0, upper=25)
+    out["teacher_pattern_secondary_id"] = out["teacher_pattern_secondary_id"].clip(lower=0, upper=25)
+    out["teacher_label_confidence"] = out["teacher_label_confidence"].clip(lower=0.0, upper=1.0)
+    out["teacher_lookback_bars"] = out["teacher_lookback_bars"].clip(lower=0, upper=500)
     out["entry_slippage_points"] = out["entry_slippage_points"].clip(lower=0.0, upper=1000000.0)
     out["exit_slippage_points"] = out["exit_slippage_points"].clip(lower=0.0, upper=1000000.0)
     out["exit_confidence"] = out["exit_confidence"].clip(lower=0.0, upper=1.0)
@@ -588,6 +888,14 @@ def add_signed_exit_score(df: pd.DataFrame) -> pd.DataFrame:
         out["wait_quality_label"] = pd.Series(dtype=str)
         out["wait_quality_score"] = pd.Series(dtype=float)
         out["wait_quality_reason"] = pd.Series(dtype=str)
+        out["entry_wait_quality_label"] = pd.Series(dtype=str)
+        out["entry_wait_quality_score"] = pd.Series(dtype=float)
+        out["entry_wait_quality_reason"] = pd.Series(dtype=str)
+        out["learning_entry_score"] = pd.Series(dtype=float)
+        out["learning_wait_score"] = pd.Series(dtype=float)
+        out["learning_exit_score"] = pd.Series(dtype=float)
+        out["learning_total_score"] = pd.Series(dtype=float)
+        out["learning_total_label"] = pd.Series(dtype=str)
         return out
     out = df.copy()
     if out.empty:
@@ -598,12 +906,42 @@ def add_signed_exit_score(df: pd.DataFrame) -> pd.DataFrame:
         out["wait_quality_label"] = pd.Series(dtype=str)
         out["wait_quality_score"] = pd.Series(dtype=float)
         out["wait_quality_reason"] = pd.Series(dtype=str)
+        out["entry_wait_quality_label"] = pd.Series(dtype=str)
+        out["entry_wait_quality_score"] = pd.Series(dtype=float)
+        out["entry_wait_quality_reason"] = pd.Series(dtype=str)
+        out["learning_entry_score"] = pd.Series(dtype=float)
+        out["learning_wait_score"] = pd.Series(dtype=float)
+        out["learning_exit_score"] = pd.Series(dtype=float)
+        out["learning_total_score"] = pd.Series(dtype=float)
+        out["learning_total_label"] = pd.Series(dtype=str)
         return out
 
-    for c in ["exit_reason", "exit_policy_stage", "loss_quality_label", "loss_quality_reason", "wait_quality_label", "wait_quality_reason"]:
+    for c in [
+        "exit_reason",
+        "exit_policy_stage",
+        "loss_quality_label",
+        "loss_quality_reason",
+        "wait_quality_label",
+        "wait_quality_reason",
+        "entry_wait_quality_label",
+        "entry_wait_quality_reason",
+    ]:
         if c not in out.columns:
             out[c] = ""
-    for c in ["exit_delay_ticks", "peak_profit_at_exit", "giveback_usd", "post_exit_mae", "post_exit_mfe", "loss_quality_score", "wait_quality_score"]:
+    for c in [
+        "exit_delay_ticks",
+        "peak_profit_at_exit",
+        "giveback_usd",
+        "post_exit_mae",
+        "post_exit_mfe",
+        "loss_quality_score",
+        "wait_quality_score",
+        "entry_wait_quality_score",
+        "learning_entry_score",
+        "learning_wait_score",
+        "learning_exit_score",
+        "learning_total_score",
+    ]:
         if c not in out.columns:
             out[c] = 0.0
 
@@ -631,6 +969,10 @@ def add_signed_exit_score(df: pd.DataFrame) -> pd.DataFrame:
     wait_timeout_penalty = float(getattr(Config, "LOSS_QUALITY_WAIT_TIMEOUT_PENALTY", 0.20))
     wait_delay_relief = float(getattr(Config, "LOSS_QUALITY_WAIT_DELAY_RELIEF", 0.20))
     wait_unnecessary_penalty = float(getattr(Config, "LOSS_QUALITY_WAIT_UNNECESSARY_PENALTY", 0.10))
+    short_timeout_seconds = float(getattr(Config, "LOSS_QUALITY_SHORT_TIMEOUT_SECONDS", 20.0))
+    short_timeout_max_delay = int(getattr(Config, "LOSS_QUALITY_SHORT_TIMEOUT_MAX_DELAY_TICKS", 3))
+    short_timeout_max_peak = float(getattr(Config, "LOSS_QUALITY_SHORT_TIMEOUT_MAX_PEAK_USD", 0.10))
+    short_timeout_max_post_exit_mfe = float(getattr(Config, "LOSS_QUALITY_SHORT_TIMEOUT_MAX_POST_EXIT_MFE", 0.50))
 
     labels: list[str] = []
     scores: list[float] = []
@@ -653,6 +995,7 @@ def add_signed_exit_score(df: pd.DataFrame) -> pd.DataFrame:
         delay = int(pd.to_numeric(row.get("exit_delay_ticks", 0), errors="coerce") or 0)
         peak = float(pd.to_numeric(row.get("peak_profit_at_exit", 0.0), errors="coerce") or 0.0)
         giveback = float(pd.to_numeric(row.get("giveback_usd", 0.0), errors="coerce") or 0.0)
+        post_exit_mfe = float(pd.to_numeric(row.get("post_exit_mfe", 0.0), errors="coerce") or 0.0)
         if giveback <= 0.0 and peak > 0.0:
             giveback = max(0.0, peak - p)
         reason = str(row.get("exit_reason", "") or "").lower()
@@ -663,6 +1006,8 @@ def add_signed_exit_score(df: pd.DataFrame) -> pd.DataFrame:
         wait_score = 0.0
         wait_why = "no_wait_signal"
         recovery_ratio = 0.0
+        timeout_seconds = 0.0
+        timeout_short_never_green = False
         if wait_recovery_hit:
             recovery_match = re.search(r"adverse_wait=recovery\(([-+]?\d+(?:\.\d+)?)\/([-+]?\d+(?:\.\d+)?)\)", reason)
             recovery_ratio = 1.0
@@ -682,9 +1027,29 @@ def add_signed_exit_score(df: pd.DataFrame) -> pd.DataFrame:
                 wait_score = max(0.30, min(1.0, 0.30 + ((recovery_ratio - 1.0) * 0.80)))
                 wait_why = "wait_recovery_effective"
         elif wait_timeout_hit:
-            wait_label = "bad_wait"
-            wait_score = -1.0
-            wait_why = "wait_timeout"
+            timeout_match = re.search(r"adverse_wait=timeout\(([-+]?\d+(?:\.\d+)?)s\)", reason)
+            if timeout_match:
+                try:
+                    timeout_seconds = float(timeout_match.group(1))
+                except Exception:
+                    timeout_seconds = 0.0
+            timeout_short_never_green = bool(
+                timeout_seconds > 0.0
+                and timeout_seconds <= float(short_timeout_seconds)
+                and delay <= int(short_timeout_max_delay)
+                and peak <= float(short_timeout_max_peak)
+                and post_exit_mfe <= float(short_timeout_max_post_exit_mfe)
+            )
+            if timeout_short_never_green:
+                # A very short timeout with no meaningful green room behaved more like
+                # a contained defensive deferral than a materially harmful hold.
+                wait_label = "unnecessary_wait"
+                wait_score = -0.15
+                wait_why = "wait_timeout_short_never_green"
+            else:
+                wait_label = "bad_wait"
+                wait_score = -1.0
+                wait_why = "wait_timeout"
 
         q = 0.0
         why = []
@@ -714,7 +1079,7 @@ def add_signed_exit_score(df: pd.DataFrame) -> pd.DataFrame:
             why.append("wait_timeout")
         elif wait_label == "unnecessary_wait":
             q -= float(wait_unnecessary_penalty)
-            why.append("wait_unnecessary")
+            why.append("wait_timeout_short_never_green" if timeout_short_never_green else "wait_unnecessary")
         if peak > 0:
             ratio = giveback / max(1e-9, peak)
             if ratio <= 0.40:
@@ -749,4 +1114,35 @@ def add_signed_exit_score(df: pd.DataFrame) -> pd.DataFrame:
     mult = mult.where(out["loss_quality_label"] != "neutral_loss", float(neutral_mult))
     mult = mult.where(out["loss_quality_label"] != "bad_loss", float(bad_mult))
     out["signed_exit_score"] = ((exit_abs * scale * sign) * mult).clip(lower=-300.0, upper=300.0).round(3)
+
+    entry_score_raw = pd.to_numeric(
+        out.get("entry_score", pd.Series(0.0, index=out.index)),
+        errors="coerce",
+    ).fillna(0.0)
+    contra_score_raw = pd.to_numeric(
+        out.get("contra_score_at_entry", pd.Series(0.0, index=out.index)),
+        errors="coerce",
+    ).fillna(0.0)
+    entry_component = ((entry_score_raw - contra_score_raw) / 100.0).clip(lower=-1.0, upper=1.0)
+    wait_component = pd.to_numeric(out["wait_quality_score"], errors="coerce").fillna(0.0).clip(lower=-1.0, upper=1.0)
+    pnl_component = profit.map(lambda p: math.tanh(float(p) / 3.0))
+    signed_component = (pd.to_numeric(out["signed_exit_score"], errors="coerce").fillna(0.0) / 120.0).clip(lower=-1.0, upper=1.0)
+    exit_component = ((out["loss_quality_score"] * 0.55) + (pnl_component * 0.30) + (signed_component * 0.15)).clip(lower=-1.0, upper=1.0)
+    total_component = ((entry_component * 0.20) + (wait_component * 0.25) + (exit_component * 0.55)).clip(lower=-1.0, upper=1.0)
+
+    total_labels = []
+    for value in total_component.tolist():
+        score = float(value)
+        if score >= 0.20:
+            total_labels.append("positive")
+        elif score <= -0.20:
+            total_labels.append("negative")
+        else:
+            total_labels.append("neutral")
+
+    out["learning_entry_score"] = entry_component.round(4)
+    out["learning_wait_score"] = wait_component.round(4)
+    out["learning_exit_score"] = exit_component.round(4)
+    out["learning_total_score"] = total_component.round(4)
+    out["learning_total_label"] = pd.Series(total_labels, index=out.index).astype(str)
     return out

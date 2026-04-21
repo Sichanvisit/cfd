@@ -2,7 +2,11 @@
 
 from types import SimpleNamespace
 
-from backend.services.symbol_temperament import canonical_symbol, resolve_probe_temperament
+from backend.services.symbol_temperament import (
+    canonical_symbol,
+    resolve_probe_scene_policy_family,
+    resolve_probe_temperament,
+)
 from backend.trading.chart_flow_policy import build_common_expression_policy_v1
 from backend.trading.chart_symbol_override_policy import build_symbol_override_policy_v1
 
@@ -171,16 +175,20 @@ def _symbol_override_float(symbol: str, *path: str, default: float) -> float:
 
 def _apply_symbol_override_probe_temperament(symbol: str, temperament: dict[str, object]) -> dict[str, object]:
     payload = dict(temperament or {})
-    scene_id = str(payload.get("scene_id", "") or "").strip()
-    override_path: tuple[str, ...] | None = None
-    if scene_id == "xau_upper_sell_probe":
-        override_path = ("router", "probe", "upper_reject")
-    elif scene_id == "btc_lower_buy_conservative_probe":
-        override_path = ("router", "probe", "lower_rebound")
-    elif scene_id == "btc_upper_sell_probe":
-        override_path = ("router", "probe", "upper_reject")
-    elif scene_id == "nas_clean_confirm_probe":
-        override_path = ("router", "probe", "clean_confirm")
+    family = resolve_probe_scene_policy_family(
+        str(payload.get("scene_id", "") or ""),
+        reason=str(payload.get("reason", "") or ""),
+        side=str(payload.get("side", "") or ""),
+        action=str(payload.get("action", "") or ""),
+        trigger_branch=str(payload.get("trigger_branch", "") or ""),
+        probe_direction=str(payload.get("probe_direction", "") or ""),
+    )
+    override_path = {
+        "upper_reject": ("router", "probe", "upper_reject"),
+        "lower_rebound": ("router", "probe", "lower_rebound"),
+        "lower_second_support": ("router", "probe", "lower_second_support"),
+        "clean_confirm": ("router", "probe", "clean_confirm"),
+    }.get(family)
 
     if override_path is None or not _symbol_override_flag(symbol, *override_path, default=True):
         return payload
@@ -1145,6 +1153,138 @@ def _state_edge_rotation_turn_exempt(snapshot: ObserveConfirmSnapshot, state: St
     return True
 
 
+def _btc_upper_break_middle_anchor_relief(
+    snapshot: ObserveConfirmSnapshot,
+    *,
+    position: PositionVector,
+    position_snapshot: PositionSnapshot,
+) -> bool:
+    metadata = dict(snapshot.metadata or {})
+    symbol = canonical_symbol(str(metadata.get("symbol", "") or position.metadata.get("symbol", "") or ""))
+    side = _directional_side(snapshot)
+    edge_pair_law = dict(metadata.get("edge_pair_law_v1") or {})
+    bridge_final = dict((metadata.get("semantic_readiness_bridge_v1") or {}).get("final") or {})
+    zones = position_snapshot.zones
+    return bool(
+        symbol == "BTCUSD"
+        and side == "BUY"
+        and str(snapshot.archetype_id or "").lower() == ARCHETYPE_UPPER_BREAK_BUY
+        and str(snapshot.reason or "") in {"upper_reclaim_strength_confirm", "upper_reclaim_strength_observe", "upper_break_confirm", "upper_break_observe"}
+        and str(edge_pair_law.get("context_label", "") or "").upper() == "UPPER_EDGE"
+        and str(edge_pair_law.get("winner_side", "") or "").upper() == "BUY"
+        and float(edge_pair_law.get("pair_gap", 0.0) or 0.0) >= 0.03
+        and str(zones.box_zone or "").upper() in {"UPPER", "UPPER_EDGE", "ABOVE"}
+        and str(zones.bb20_zone or "").upper() in {"MID", "MIDDLE"}
+        and float(position.x_box) >= 0.35
+        and float(position.x_sr) >= 0.18
+        and float(bridge_final.get("buy_support", 0.0) or 0.0) >= 0.01
+    )
+
+
+def _btc_upper_reject_outer_band_relief(
+    snapshot: ObserveConfirmSnapshot,
+    *,
+    position: PositionVector,
+    response: ResponseVector,
+    position_snapshot: PositionSnapshot,
+) -> bool:
+    metadata = dict(snapshot.metadata or {})
+    symbol = canonical_symbol(str(metadata.get("symbol", "") or position.metadata.get("symbol", "") or ""))
+    side = _directional_side(snapshot)
+    edge_pair_law = dict(metadata.get("edge_pair_law_v1") or {})
+    zones = position_snapshot.zones
+    return bool(
+        symbol == "BTCUSD"
+        and side == "SELL"
+        and str(snapshot.archetype_id or "").lower() == ARCHETYPE_UPPER_REJECT_SELL
+        and str(snapshot.reason or "") in {"upper_reject_confirm", "upper_reject_probe_observe", "upper_break_fail_confirm"}
+        and str(edge_pair_law.get("context_label", "") or "").upper() == "UPPER_EDGE"
+        and float(edge_pair_law.get("pair_gap", 0.0) or 0.0) >= 0.04
+        and str(zones.box_zone or "").upper() in {"UPPER", "UPPER_EDGE", "ABOVE"}
+        and str(zones.bb20_zone or "").upper() in {"MID", "MIDDLE", "UPPER", "UPPER_EDGE"}
+        and float(position.x_box) >= 0.35
+        and float(position.x_bb44) >= -0.08
+        and (
+            float(response.r_bb20_upper_reject) >= 0.12
+            or float(response.r_box_upper_reject) >= 0.08
+        )
+    )
+
+
+def _nas_mixed_upper_reject_barrier_relief(
+    snapshot: ObserveConfirmSnapshot,
+    *,
+    barrier_state_v1: BarrierState,
+) -> bool:
+    metadata = dict(snapshot.metadata or {})
+    symbol = canonical_symbol(str(metadata.get("symbol", "") or ""))
+    side = _directional_side(snapshot)
+    edge_pair_law = dict(metadata.get("edge_pair_law_v1") or {})
+    total_barrier = max(
+        float(barrier_state_v1.sell_barrier),
+        float(barrier_state_v1.conflict_barrier),
+        float(barrier_state_v1.middle_chop_barrier),
+        float(barrier_state_v1.direction_policy_barrier),
+        float(barrier_state_v1.liquidity_barrier),
+    )
+    return bool(
+        symbol == "NAS100"
+        and side == "SELL"
+        and str(snapshot.reason or "") == "conflict_box_lower_bb20_upper_upper_reject_confirm"
+        and float(edge_pair_law.get("pair_gap", 0.0) or 0.0) >= 0.45
+        and float(barrier_state_v1.sell_barrier) <= 0.98
+        and float(total_barrier) <= 0.98
+    )
+
+
+def _nas_lower_rebound_barrier_relief(
+    snapshot: ObserveConfirmSnapshot,
+    *,
+    barrier_state_v1: BarrierState,
+) -> bool:
+    metadata = dict(snapshot.metadata or {})
+    symbol = canonical_symbol(str(metadata.get("symbol", "") or ""))
+    side = _directional_side(snapshot)
+    edge_pair_law = dict(metadata.get("edge_pair_law_v1") or {})
+    total_barrier = max(
+        float(barrier_state_v1.buy_barrier),
+        float(barrier_state_v1.conflict_barrier),
+        float(barrier_state_v1.middle_chop_barrier),
+        float(barrier_state_v1.direction_policy_barrier),
+        float(barrier_state_v1.liquidity_barrier),
+    )
+    box_zone = str(metadata.get("box_zone", "") or "").upper()
+    bb20_zone = str(metadata.get("bb20_zone", "") or "").upper()
+    probe_candidate = dict(metadata.get("probe_candidate_v1") or {})
+    probe_temperament = dict(probe_candidate.get("symbol_probe_temperament_v1") or {})
+    probe_scene_id = str(
+        probe_temperament.get("scene_id", "")
+        or metadata.get("probe_scene_id", "")
+        or ""
+    )
+    probe_scene_family = resolve_probe_scene_policy_family(
+        probe_scene_id,
+        reason=str(snapshot.reason or ""),
+        side=side,
+        action=side,
+    )
+    return bool(
+        symbol == "NAS100"
+        and side == "BUY"
+        and str(snapshot.archetype_id or "") == ARCHETYPE_LOWER_HOLD_BUY
+        and str(snapshot.reason or "") in {"lower_rebound_confirm", "lower_rebound_probe_observe"}
+        and (
+            probe_scene_family == "clean_confirm"
+            or bool(metadata.get("nas_clean_confirm_middle_anchor_relief"))
+        )
+        and box_zone in {"LOWER", "LOWER_EDGE", "BELOW"}
+        and bb20_zone in {"LOWER", "LOWER_EDGE", "MID", "MIDDLE"}
+        and float(edge_pair_law.get("pair_gap", 0.0) or 0.0) >= 0.18
+        and float(barrier_state_v1.buy_barrier) <= 0.78
+        and float(total_barrier) <= 0.90
+    )
+
+
 def _apply_middle_sr_suppression(
     snapshot: ObserveConfirmSnapshot,
     *,
@@ -1158,11 +1298,42 @@ def _apply_middle_sr_suppression(
     if side not in {"BUY", "SELL"}:
         return snapshot
     zones = position_snapshot.zones
-    middle_sensitive = str(zones.box_zone or "").upper() == "MIDDLE" or str(zones.bb20_zone or "").upper() == "MIDDLE"
+    middle_sensitive = str(zones.box_zone or "").upper() in {"MID", "MIDDLE"} or str(zones.bb20_zone or "").upper() in {"MID", "MIDDLE"}
     if not middle_sensitive:
         return snapshot
     if _has_middle_sr_anchor(position, position_snapshot, side=side):
         return snapshot
+    if _btc_upper_break_middle_anchor_relief(
+        snapshot,
+        position=position,
+        position_snapshot=position_snapshot,
+    ):
+        metadata = dict(snapshot.metadata or {})
+        raw_contributions = dict(metadata.get("raw_contributions") or {})
+        raw_contributions["middle_sr_anchor_guard_v1"] = {
+            "suppressed": False,
+            "exempted": True,
+            "exemption_reason": "btc_upper_break_override_context",
+            "side": side,
+            "box_zone": str(zones.box_zone or ""),
+            "bb20_zone": str(zones.bb20_zone or ""),
+            "sr_zone": str(zones.sr_zone or ""),
+            "x_sr": float(position.x_sr),
+            "threshold": _MIDDLE_ENTRY_SR_ANCHOR_THRESHOLD,
+        }
+        metadata["raw_contributions"] = raw_contributions
+        metadata["middle_sr_anchor_guard_v1"] = dict(raw_contributions["middle_sr_anchor_guard_v1"])
+        return ObserveConfirmSnapshot(
+            state=snapshot.state,
+            action=snapshot.action,
+            side=snapshot.side,
+            confidence=float(snapshot.confidence),
+            reason=snapshot.reason,
+            archetype_id=snapshot.archetype_id,
+            invalidation_id=snapshot.invalidation_id,
+            management_profile_id=snapshot.management_profile_id,
+            metadata=metadata,
+        )
     if _state_edge_rotation_turn_exempt(snapshot, state):
         metadata = dict(snapshot.metadata or {})
         raw_contributions = dict(metadata.get("raw_contributions") or {})
@@ -1239,6 +1410,39 @@ def _apply_outer_band_reversal_suppression(
         return snapshot
     if _has_outer_band_reversal_support(position, response, position_snapshot, side=side):
         return snapshot
+    if _btc_upper_reject_outer_band_relief(
+        snapshot,
+        position=position,
+        response=response,
+        position_snapshot=position_snapshot,
+    ):
+        metadata = dict(snapshot.metadata or {})
+        raw_contributions = dict(metadata.get("raw_contributions") or {})
+        raw_contributions["outer_band_reversal_guard_v1"] = {
+            "suppressed": False,
+            "exempted": True,
+            "exemption_reason": "btc_upper_reject_edge_context",
+            "side": side,
+            "archetype_id": archetype_id,
+            "bb44_zone": str(position_snapshot.zones.bb44_zone or ""),
+            "x_bb44": float(position.x_bb44),
+            "sr_zone": str(position_snapshot.zones.sr_zone or ""),
+            "x_sr": float(position.x_sr),
+            "bb44_threshold": _REVERSAL_BB44_SUPPORT_THRESHOLD,
+        }
+        metadata["raw_contributions"] = raw_contributions
+        metadata["outer_band_reversal_guard_v1"] = dict(raw_contributions["outer_band_reversal_guard_v1"])
+        return ObserveConfirmSnapshot(
+            state=snapshot.state,
+            action=snapshot.action,
+            side=snapshot.side,
+            confidence=float(snapshot.confidence),
+            reason=snapshot.reason,
+            archetype_id=snapshot.archetype_id,
+            invalidation_id=snapshot.invalidation_id,
+            management_profile_id=snapshot.management_profile_id,
+            metadata=metadata,
+        )
     metadata = dict(snapshot.metadata or {})
     raw_contributions = dict(metadata.get("raw_contributions") or {})
     raw_contributions["outer_band_reversal_guard_v1"] = {
@@ -1711,6 +1915,64 @@ def _apply_barrier_suppression(
     )
     if total_barrier < 0.85:
         return snapshot
+    if _nas_mixed_upper_reject_barrier_relief(snapshot, barrier_state_v1=barrier_state_v1):
+        metadata = dict(snapshot.metadata or {})
+        effective = dict(metadata.get("effective_contributions") or {})
+        effective["barrier_state_v1"] = {
+            "side": side,
+            "side_barrier": side_barrier,
+            "total_barrier": total_barrier,
+            "suppressed_confirm": False,
+            "relief_applied": True,
+            "relief_reason": "nas_mixed_upper_reject_conflict",
+        }
+        metadata["effective_contributions"] = effective
+        metadata["barrier_relief_v1"] = {
+            "applied": True,
+            "reason": "nas_mixed_upper_reject_conflict",
+            "side_barrier": float(side_barrier),
+            "total_barrier": float(total_barrier),
+        }
+        return ObserveConfirmSnapshot(
+            state=snapshot.state,
+            action=snapshot.action,
+            side=snapshot.side,
+            confidence=float(snapshot.confidence),
+            reason=snapshot.reason,
+            archetype_id=snapshot.archetype_id,
+            invalidation_id=snapshot.invalidation_id,
+            management_profile_id=snapshot.management_profile_id,
+            metadata=metadata,
+        )
+    if _nas_lower_rebound_barrier_relief(snapshot, barrier_state_v1=barrier_state_v1):
+        metadata = dict(snapshot.metadata or {})
+        effective = dict(metadata.get("effective_contributions") or {})
+        effective["barrier_state_v1"] = {
+            "side": side,
+            "side_barrier": side_barrier,
+            "total_barrier": total_barrier,
+            "suppressed_confirm": False,
+            "relief_applied": True,
+            "relief_reason": "nas_clean_lower_rebound",
+        }
+        metadata["effective_contributions"] = effective
+        metadata["barrier_relief_v1"] = {
+            "applied": True,
+            "reason": "nas_clean_lower_rebound",
+            "side_barrier": float(side_barrier),
+            "total_barrier": float(total_barrier),
+        }
+        return ObserveConfirmSnapshot(
+            state=snapshot.state,
+            action=snapshot.action,
+            side=snapshot.side,
+            confidence=float(snapshot.confidence),
+            reason=snapshot.reason,
+            archetype_id=snapshot.archetype_id,
+            invalidation_id=snapshot.invalidation_id,
+            management_profile_id=snapshot.management_profile_id,
+            metadata=metadata,
+        )
     return _demote_confirm_to_observe(
         snapshot,
         blocked_reason=f"{side.lower()}_barrier_suppressed_confirm",
@@ -1757,7 +2019,21 @@ def _apply_forecast_modulation(
     wait_confirm_gap = float(forecast_assist.get("wait_confirm_gap", 0.0) or 0.0)
     continue_fail_gap = float(forecast_assist.get("continue_fail_gap", 0.0) or 0.0)
     decision_hint = str(forecast_assist.get("decision_hint", "") or "")
+    symbol = canonical_symbol(
+        str(
+            metadata.get("symbol", "")
+            or metadata.get("canonical_symbol", "")
+            or ""
+        )
+    )
     edge_pair_law = dict(metadata.get("edge_pair_law_v1") or {})
+    probe_candidate = dict(metadata.get("probe_candidate_v1") or {})
+    probe_temperament = dict(probe_candidate.get("symbol_probe_temperament_v1") or {})
+    probe_scene_id = str(
+        probe_temperament.get("scene_id", "")
+        or metadata.get("probe_scene_id", "")
+        or ""
+    )
     upper_reject_reason = str(snapshot.reason or "")
     upper_reject_context = str(edge_pair_law.get("context_label", "") or "").upper()
     upper_reject_box_zone = str(metadata.get("box_zone", "") or "").upper()
@@ -1775,6 +2051,16 @@ def _apply_forecast_modulation(
         and wait_confirm_gap >= -0.24
         and continue_fail_gap >= -0.30
     )
+    btc_upper_break_fail_soft_relief = bool(
+        symbol == "BTCUSD"
+        and side == "SELL"
+        and upper_reject_reason == "upper_break_fail_confirm"
+        and upper_reject_context_supported
+        and confirm_score >= 0.10
+        and fail_now_score <= 0.48
+        and wait_confirm_gap >= -0.30
+        and continue_fail_gap >= -0.36
+    )
     upper_reject_forecast_relief = bool(
         side == "SELL"
         and str(snapshot.archetype_id or "") == ARCHETYPE_UPPER_REJECT_SELL
@@ -1788,7 +2074,46 @@ def _apply_forecast_modulation(
                 and continue_fail_gap >= -0.30
             )
             or upper_break_fail_relief
+            or btc_upper_break_fail_soft_relief
         )
+    )
+    lower_rebound_box_zone = str(metadata.get("box_zone", "") or "").upper()
+    lower_rebound_bb20_zone = str(metadata.get("bb20_zone", "") or "").upper()
+    lower_rebound_context_supported = bool(
+        lower_rebound_box_zone in {"LOWER", "LOWER_EDGE", "BELOW"}
+        or lower_rebound_bb20_zone in {"LOWER", "LOWER_EDGE", "BELOW", "MID", "MIDDLE"}
+    )
+    nas_clean_confirm_forecast_relief = bool(
+        symbol == "NAS100"
+        and side == "BUY"
+        and str(snapshot.archetype_id or "") == ARCHETYPE_LOWER_HOLD_BUY
+        and str(snapshot.reason or "") in {"lower_rebound_confirm", "lower_rebound_probe_observe"}
+        and (
+            resolve_probe_scene_policy_family(
+                probe_scene_id,
+                reason=str(snapshot.reason or ""),
+                side=side,
+                action=side,
+            )
+            == "clean_confirm"
+            or bool(metadata.get("nas_clean_confirm_middle_anchor_relief"))
+        )
+        and lower_rebound_context_supported
+        and confirm_score >= 0.10
+        and fail_now_score <= 0.46
+        and wait_confirm_gap >= -0.24
+        and continue_fail_gap >= -0.32
+    )
+    nas_clean_confirm_probe_forecast_relief = bool(
+        symbol == "NAS100"
+        and side == "BUY"
+        and str(snapshot.archetype_id or "") == ARCHETYPE_LOWER_HOLD_BUY
+        and str(snapshot.reason or "") == "lower_rebound_probe_observe"
+        and lower_rebound_context_supported
+        and confirm_score >= 0.13
+        and fail_now_score <= 0.38
+        and wait_confirm_gap >= -0.13
+        and continue_fail_gap >= -0.27
     )
 
     if decision_hint == "CONFIRM_FAVOR":
@@ -1806,6 +2131,29 @@ def _apply_forecast_modulation(
             management_profile_id=snapshot.management_profile_id,
             metadata=metadata,
         )
+    if nas_clean_confirm_forecast_relief or nas_clean_confirm_probe_forecast_relief:
+        metadata["forecast_nas_clean_confirm_relief_v1"] = {
+            "applied": True,
+            "probe_scene_id": str(probe_scene_id or ""),
+            "box_zone": lower_rebound_box_zone,
+            "bb20_zone": lower_rebound_bb20_zone,
+            "confirm_score": float(confirm_score),
+            "fail_now_score": float(fail_now_score),
+            "wait_confirm_gap": float(wait_confirm_gap),
+            "continue_fail_gap": float(continue_fail_gap),
+            "probe_soft_relief": bool(nas_clean_confirm_probe_forecast_relief),
+        }
+        return ObserveConfirmSnapshot(
+            state=snapshot.state,
+            action=snapshot.action,
+            side=snapshot.side,
+            confidence=float(snapshot.confidence),
+            reason=snapshot.reason,
+            archetype_id=snapshot.archetype_id,
+            invalidation_id=snapshot.invalidation_id,
+            management_profile_id=snapshot.management_profile_id,
+            metadata=metadata,
+        )
     if upper_reject_forecast_relief:
         metadata["forecast_upper_reject_relief_v1"] = {
             "applied": True,
@@ -1817,6 +2165,7 @@ def _apply_forecast_modulation(
             "fail_now_score": float(fail_now_score),
             "wait_confirm_gap": float(wait_confirm_gap),
             "continue_fail_gap": float(continue_fail_gap),
+            "btc_soft_relief": bool(btc_upper_break_fail_soft_relief),
         }
         return ObserveConfirmSnapshot(
             state=snapshot.state,

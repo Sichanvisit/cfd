@@ -47,6 +47,7 @@ def resolve_exit_hard_guard_action_candidate_v1(
     *,
     pos_type: int,
     profit: float,
+    peak_profit: float = 0.0,
     adverse_risk: bool,
     tf_confirm: bool,
     hold_strong: bool,
@@ -124,14 +125,34 @@ def resolve_exit_hard_guard_action_candidate_v1(
     if (not bool(hold_for_adverse)) and (not bool(extreme_adverse)):
         return candidate
 
-    if bool(tf_confirm) and (not bool(hold_strong)):
+    # If the adverse-wait gate is already asking us to defer, do not short-circuit
+    # into an immediate adverse protect before that wait contract can apply.
+    if bool(wait_adverse):
+        candidate.update(
+            {
+                "defer": True,
+                "candidate_kind": "adverse_wait",
+            }
+        )
+        return candidate
+
+    weak_peak_protect = bool(
+        float(peak_profit) <= float(getattr(Config, "ADVERSE_WEAK_PEAK_USD", 0.25))
+        and float(profit) <= float(min_target_profit)
+    )
+
+    if (bool(tf_confirm) and (not bool(hold_strong))) or (bool(weak_peak_protect) and bool(protect_now)):
         if bool(protect_now) and float(profit) <= float(min_target_profit):
             candidate.update(
                 {
                     "hit": True,
-                    "candidate_kind": "adverse_protect",
+                    "candidate_kind": "adverse_weak_peak_protect" if weak_peak_protect else "adverse_protect",
                     "reason": "Protect Exit",
-                    "detail": f"{exit_detail} | hard_guard=adverse",
+                    "detail": (
+                        f"{exit_detail} | hard_guard=adverse | adverse_peak=weak"
+                        if weak_peak_protect
+                        else f"{exit_detail} | hard_guard=adverse"
+                    ),
                     "metric_keys": [
                         "risk_guard_triggered_total",
                         "risk_guard_adverse",
@@ -157,15 +178,6 @@ def resolve_exit_hard_guard_action_candidate_v1(
                 }
             )
             return candidate
-
-    if bool(wait_adverse):
-        candidate.update(
-            {
-                "defer": True,
-                "candidate_kind": "adverse_wait",
-            }
-        )
-        return candidate
 
     adverse_detail = f"{exit_detail} | hard_guard=adverse"
     if _to_str(wait_detail):

@@ -151,3 +151,235 @@ def test_entry_probe_plan_applies_xau_upper_sell_structural_relief():
     assert out["ready_for_entry"] is True
     assert out["structural_relief_applied"] is True
     assert out["symbol_scene_relief"] == "xau_upper_sell_probe"
+
+
+def test_entry_probe_plan_applies_nas_clean_confirm_structural_relief_for_near_confirm_probe():
+    out = resolve_entry_probe_plan_v1(
+        symbol="NAS100",
+        shadow_action="WAIT",
+        shadow_side="BUY",
+        shadow_stage="OBSERVE",
+        box_state="LOWER",
+        bb_state="MID",
+        observe_metadata={
+            "probe_candidate_v1": {
+                "active": True,
+                "probe_kind": "edge_probe",
+                "probe_direction": "BUY",
+                "trigger_branch": "lower_rebound",
+                "candidate_support": 0.12,
+                "near_confirm": True,
+                "symbol_probe_temperament_v1": {
+                    "scene_id": "nas_clean_confirm_probe",
+                },
+            }
+        },
+        default_side_gate_v1={
+            "winner_side": "BUY",
+            "default_side": "BUY",
+            "acting_against_default": False,
+            "confirm_fake_gap": -0.25,
+            "wait_confirm_gap": -0.20,
+            "continue_fail_gap": -0.27,
+            "action_confirm_score": 0.09,
+            "same_side_persistence": 0.0,
+            "same_side_belief": 0.012,
+            "same_side_streak": 0,
+            "dominant_side": "BALANCED",
+            "dominant_mode": "balanced",
+            "pair_gap": 0.19,
+            "same_side_barrier": 0.55,
+        },
+    )
+
+    assert out["active"] is True
+    assert out["ready_for_entry"] is True
+    assert out["structural_relief_applied"] is True
+    assert out["symbol_scene_relief"] == "nas_clean_confirm_probe"
+
+
+def test_entry_probe_plan_applies_nas_clean_confirm_forecast_relief():
+    out = resolve_entry_probe_plan_v1(
+        symbol="NAS100",
+        shadow_action="WAIT",
+        shadow_side="BUY",
+        shadow_stage="OBSERVE",
+        box_state="LOWER",
+        bb_state="MID",
+        observe_metadata={
+            "probe_candidate_v1": {
+                "active": True,
+                "probe_kind": "edge_probe",
+                "probe_direction": "BUY",
+                "trigger_branch": "lower_rebound",
+                "candidate_support": 0.59,
+                "near_confirm": True,
+                "symbol_probe_temperament_v1": {
+                    "scene_id": "nas_clean_confirm_probe",
+                },
+            }
+        },
+        default_side_gate_v1={
+            "winner_side": "BUY",
+            "default_side": "BUY",
+            "acting_against_default": False,
+            "confirm_fake_gap": -0.28,
+            "wait_confirm_gap": -0.19,
+            "continue_fail_gap": -0.27,
+            "action_confirm_score": 0.10,
+            "same_side_persistence": 0.14,
+            "same_side_belief": 0.32,
+            "same_side_streak": 1,
+            "dominant_side": "BUY",
+            "dominant_mode": "continuation",
+            "pair_gap": 0.05,
+            "same_side_barrier": 0.52,
+        },
+    )
+
+    assert out["active"] is True
+    assert out["ready_for_entry"] is True
+    assert out["forecast_support"] is True
+    assert out["nas_clean_confirm_forecast_relief"] is True
+
+
+def test_entry_probe_plan_applies_nas_clean_confirm_against_default_relief_for_upper_reject_sell():
+    out = resolve_entry_probe_plan_v1(
+        symbol="NAS100",
+        shadow_action="WAIT",
+        shadow_side="SELL",
+        shadow_stage="OBSERVE",
+        box_state="LOWER",
+        bb_state="UPPER_EDGE",
+        observe_metadata={
+            "probe_candidate_v1": {
+                "active": True,
+                "probe_kind": "edge_probe",
+                "probe_direction": "SELL",
+                "trigger_branch": "upper_reject",
+                "candidate_support": 0.34,
+                "near_confirm": True,
+                "symbol_probe_temperament_v1": {
+                    "scene_id": "nas_clean_confirm_probe",
+                },
+            }
+        },
+        default_side_gate_v1={
+            "winner_side": "SELL",
+            "winner_archetype": "upper_reject_sell",
+            "winner_clear": True,
+            "default_side": "BUY",
+            "acting_side": "SELL",
+            "acting_against_default": True,
+            "conflict_local_upper_override": True,
+            "confirm_fake_gap": -0.27,
+            "wait_confirm_gap": -0.25,
+            "continue_fail_gap": -0.31,
+            "action_confirm_score": 0.05,
+            "same_side_persistence": 0.0,
+            "same_side_belief": 0.01,
+            "same_side_streak": 0,
+            "dominant_side": "BALANCED",
+            "dominant_mode": "balanced",
+            "pair_gap": 0.31,
+            "same_side_barrier": 0.79,
+        },
+    )
+
+    assert out["active"] is True
+    assert out["ready_for_entry"] is True
+    assert out["default_side_aligned"] is True
+    assert out["nas_clean_confirm_against_default_relief"] is True
+
+
+def test_entry_probe_plan_applies_nas_clean_confirm_lower_rebound_buy_relief():
+    out = resolve_entry_probe_plan_v1(
+        symbol="NAS100",
+        shadow_action="WAIT",
+        shadow_side="BUY",
+        shadow_stage="OBSERVE",
+        box_state="BELOW",
+        bb_state="LOWER_EDGE",
+        observe_metadata={
+            "probe_candidate_v1": {
+                "active": True,
+                "probe_kind": "edge_probe",
+                "probe_direction": "BUY",
+                "trigger_branch": "lower_rebound",
+                "candidate_support": 0.67,
+                "near_confirm": True,
+                "symbol_probe_temperament_v1": {
+                    "scene_id": "nas_clean_confirm_probe",
+                },
+            }
+        },
+        default_side_gate_v1={
+            "winner_side": "BUY",
+            "default_side": "BUY",
+            "acting_against_default": False,
+            "confirm_fake_gap": -0.11,
+            "wait_confirm_gap": -0.05,
+            "continue_fail_gap": -0.19,
+            "action_confirm_score": 0.18,
+            "same_side_persistence": 0.0,
+            "same_side_belief": 0.04,
+            "same_side_streak": 0,
+            "dominant_side": "BALANCED",
+            "dominant_mode": "balanced",
+            "pair_gap": 0.167,
+            "same_side_barrier": 0.48,
+        },
+    )
+
+    assert out["active"] is True
+    assert out["ready_for_entry"] is True
+    assert out["forecast_support"] is True
+    assert out["belief_support"] is True
+    assert out["nas_clean_confirm_lower_rebound_buy_relief"] is True
+
+
+def test_entry_probe_plan_applies_nas_clean_confirm_lower_rebound_buy_relief_with_live_like_metrics():
+    out = resolve_entry_probe_plan_v1(
+        symbol="NAS100",
+        shadow_action="WAIT",
+        shadow_side="BUY",
+        shadow_stage="OBSERVE",
+        box_state="BELOW",
+        bb_state="LOWER_EDGE",
+        observe_metadata={
+            "probe_candidate_v1": {
+                "active": True,
+                "probe_kind": "edge_probe",
+                "probe_direction": "BUY",
+                "trigger_branch": "lower_rebound",
+                "candidate_support": 0.6523,
+                "near_confirm": True,
+                "symbol_probe_temperament_v1": {
+                    "scene_id": "nas_clean_confirm_probe",
+                },
+            }
+        },
+        default_side_gate_v1={
+            "winner_side": "BUY",
+            "default_side": "BUY",
+            "acting_against_default": False,
+            "confirm_fake_gap": -0.1667,
+            "wait_confirm_gap": -0.1156,
+            "continue_fail_gap": -0.2568,
+            "action_confirm_score": 0.1374,
+            "same_side_persistence": 0.0,
+            "same_side_belief": 0.0212,
+            "same_side_streak": 0,
+            "dominant_side": "BALANCED",
+            "dominant_mode": "balanced",
+            "pair_gap": 0.1530,
+            "same_side_barrier": 0.5877,
+        },
+    )
+
+    assert out["active"] is True
+    assert out["ready_for_entry"] is True
+    assert out["forecast_support"] is True
+    assert out["belief_support"] is True
+    assert out["barrier_support"] is True
+    assert out["nas_clean_confirm_lower_rebound_buy_relief"] is True

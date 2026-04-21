@@ -3,6 +3,8 @@ from backend.services.symbol_temperament import (
     resolve_archetype_implied_action,
     resolve_edge_execution_overrides,
     resolve_probe_plan_temperament,
+    resolve_probe_scene_direction,
+    resolve_probe_scene_policy_family,
     resolve_probe_temperament,
     resolve_wait_probe_temperament,
 )
@@ -63,6 +65,36 @@ def test_resolve_probe_plan_temperament_for_btc_upper_sell():
     assert payload["scene_id"] == "btc_upper_sell_probe"
     assert payload["structural_relief_active"] is True
     assert payload["min_action_confirm_score"] <= 0.20
+
+
+def test_resolve_probe_plan_temperament_for_nas_clean_confirm_enables_native_relief():
+    payload = resolve_probe_plan_temperament(
+        symbol="NAS100",
+        intended_action="BUY",
+        trigger_branch="lower_rebound",
+    )
+    assert payload["scene_id"] == "nas_clean_confirm_probe"
+    assert payload["allow_energy_relief"] is True
+    assert payload["structural_relief_active"] is True
+    assert payload["structural_relief_candidate_support"] <= 0.11
+
+
+def test_resolve_probe_scene_direction_uses_reason_context_for_nas_clean_confirm_probe():
+    assert resolve_probe_scene_direction(
+        "nas_clean_confirm_probe",
+        reason="upper_reject_probe_observe",
+    ) == "SELL"
+    assert resolve_probe_scene_direction(
+        "nas_clean_confirm_probe",
+        reason="lower_rebound_probe_observe",
+    ) == "BUY"
+
+
+def test_resolve_probe_scene_policy_family_prefers_shared_family_meaning():
+    assert resolve_probe_scene_policy_family("xau_upper_sell_probe") == "upper_reject"
+    assert resolve_probe_scene_policy_family("btc_lower_buy_conservative_probe") == "lower_rebound"
+    assert resolve_probe_scene_policy_family("nas_clean_confirm_probe") == "clean_confirm"
+    assert resolve_probe_scene_policy_family("", reason="middle_sr_anchor_required_observe") == "upper_reject"
 
 
 def test_resolve_wait_probe_temperament_for_btc_not_ready():

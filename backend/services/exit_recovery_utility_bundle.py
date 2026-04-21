@@ -64,6 +64,14 @@ def resolve_exit_recovery_utility_bundle_v1(
     roundtrip_cost = _to_float(risk.get("roundtrip_cost", 0.0), 0.0)
     exit_profile_id = _to_str(identity.get("exit_profile_id", ""), "").lower()
     state_execution_bias = _as_mapping(bias.get("state_execution_bias_v1"))
+    countertrend_with_entry = _to_bool(
+        state_execution_bias.get("countertrend_with_entry", False),
+        False,
+    )
+    topdown_state_label = _to_str(
+        state_execution_bias.get("topdown_state_label", ""),
+        "",
+    ).upper()
 
     allow_wait_be_initial = _to_bool(policy.get("allow_wait_be", True), True)
     allow_wait_tp1_initial = _to_bool(policy.get("allow_wait_tp1", False), False)
@@ -127,6 +135,22 @@ def resolve_exit_recovery_utility_bundle_v1(
         u_wait_be = -999.0
         u_wait_tp1 = -999.0
 
+    countertrend_no_green_fast_cut = bool(
+        _to_bool(getattr(Config, "EXIT_COUNTERTREND_NO_GREEN_FAST_CUT_ENABLED", True), True)
+        and countertrend_with_entry
+        and topdown_state_label in {"BULL_CONFLUENCE", "BEAR_CONFLUENCE", "TOPDOWN_CONFLICT"}
+        and profit < 0.0
+        and peak_profit <= _to_float(getattr(Config, "EXIT_COUNTERTREND_NO_GREEN_MAX_PEAK_USD", 0.10), 0.10)
+        and not bool(lower_reversal_hold_bias)
+    )
+    if countertrend_no_green_fast_cut:
+        allow_wait_be_effective = False
+        allow_wait_tp1_effective = False
+        wait_be_disable_reason = "countertrend_no_green_fast_cut"
+        wait_tp1_disable_reason = "countertrend_no_green_fast_cut"
+        u_wait_be = -999.0
+        u_wait_tp1 = -999.0
+
     return {
         "contract_version": "exit_recovery_utility_bundle_v1",
         "identity": {
@@ -158,6 +182,7 @@ def resolve_exit_recovery_utility_bundle_v1(
             "wait_be_disable_reason": str(wait_be_disable_reason),
             "wait_tp1_disable_reason": str(wait_tp1_disable_reason),
             "tight_protect_green_disable": bool(tight_protect_green_disable),
+            "countertrend_no_green_fast_cut": bool(countertrend_no_green_fast_cut),
         },
         "utilities": {
             "u_cut_now": _round6(u_cut_now, 0.0),
@@ -217,6 +242,10 @@ def compact_exit_recovery_utility_bundle_v1(
             "wait_tp1_disable_reason": _to_str(gating.get("wait_tp1_disable_reason", "")),
             "tight_protect_green_disable": _to_bool(
                 gating.get("tight_protect_green_disable", False),
+                False,
+            ),
+            "countertrend_no_green_fast_cut": _to_bool(
+                gating.get("countertrend_no_green_fast_cut", False),
                 False,
             ),
         },

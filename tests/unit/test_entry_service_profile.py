@@ -19,6 +19,15 @@ def test_build_entry_eval_profile_summarizes_dominant_stage():
             "observe_reason": "lower_rebound_probe_observe",
             "blocked_by": "forecast_guard",
             "quick_trace_state": "PROBE_WAIT",
+            "entry_helper_prefront_profile_v1": {
+                "total_ms": 88.9,
+                "current_stage": "wait_routing",
+                "exit_state": "observe_return",
+            },
+            "entry_helper_front_profile_v1": {"total_ms": 123.4},
+            "entry_helper_back_profile_v1": {"total_ms": 67.8, "current_stage": "post_threshold_guards"},
+            "entry_helper_payload_profile_v1": {"total_ms": 45.6},
+            "entry_append_log_profile_v1": {"total_ms": 12.3},
         },
         new_ticket_count=1,
         newest_ticket=12345,
@@ -30,6 +39,11 @@ def test_build_entry_eval_profile_summarizes_dominant_stage():
     assert profile["dominant_stage_ms"] == 1100.8
     assert profile["new_ticket_count"] == 1
     assert profile["newest_ticket"] == 12345
+    assert profile["helper_prefront_profile"]["total_ms"] == 88.9
+    assert profile["helper_front_profile"]["total_ms"] == 123.4
+    assert profile["helper_back_profile"]["total_ms"] == 67.8
+    assert profile["helper_internal_profile"]["total_ms"] == 45.6
+    assert profile["append_log_profile"]["total_ms"] == 12.3
     assert profile["snapshot"]["blocked_by"] == "forecast_guard"
 
 

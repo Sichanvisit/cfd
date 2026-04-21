@@ -1,4 +1,5 @@
 import copy
+from collections import deque
 import json
 import os
 from pathlib import Path
@@ -1306,6 +1307,38 @@ def test_add_decision_flow_overlay_respects_symbol_override_for_nas_clean_confir
     )
 
 
+def test_add_decision_flow_overlay_resolves_nas_clean_confirm_probe_sell_from_reason_context():
+    painter = Painter()
+    df_all = {"1M": _build_frame("1M", "min")}
+    tick = SimpleNamespace(bid=100.0, ask=100.2)
+
+    row = {
+        "observe_confirm_v2": {
+            "state": "OBSERVE",
+            "action": "WAIT",
+            "side": "",
+            "reason": "upper_reject_probe_observe",
+        },
+        "box_state": "UPPER",
+        "bb_state": "MID",
+        "probe_candidate_active": True,
+        "probe_plan_active": True,
+        "probe_plan_ready": False,
+        "probe_candidate_support": 0.24,
+        "probe_pair_gap": 0.08,
+        "probe_scene_id": "nas_clean_confirm_probe",
+        "quick_trace_state": "PROBE_WAIT",
+        "entry_decision_result_v1": {},
+        "exit_wait_state_v1": {},
+    }
+
+    painter.add_decision_flow_overlay("NAS100", row, df_all, tick)
+
+    history = list(painter._flow_history_by_symbol["NAS100"])
+    assert history[0]["event_kind"] == "SELL_PROBE"
+    assert history[0]["side"] == "SELL"
+
+
 def test_record_flow_event_keeps_enter_state_over_later_same_candle_wait():
     painter = Painter()
     df_all = {"1M": _build_frame("1M", "min")}
@@ -2275,6 +2308,52 @@ def test_add_decision_flow_overlay_renders_probe_guard_wait_relief_as_neutral_wa
     assert any("_R1_" in str(item["name"]) for item in flow_items)
 
 
+def test_add_decision_flow_overlay_renders_btc_lower_probe_guard_wait_relief_as_neutral_wait_checks():
+    painter = Painter()
+    df_all = {"1M": _build_frame("1M", "min")}
+    tick = SimpleNamespace(bid=100.0, ask=100.2)
+
+    row = {
+        "observe_confirm_v2": {
+            "state": "OBSERVE",
+            "action": "WAIT",
+            "side": "BUY",
+            "reason": "lower_rebound_probe_observe",
+        },
+        "consumer_check_state_v1": {
+            "contract_version": "consumer_check_state_v1",
+            "check_candidate": True,
+            "check_display_ready": True,
+            "entry_ready": False,
+            "check_side": "BUY",
+            "check_stage": "OBSERVE",
+            "check_reason": "lower_rebound_probe_observe",
+            "display_strength_level": 5,
+            "display_score": 0.82,
+            "display_repeat_count": 2,
+            "chart_event_kind_hint": "WAIT",
+            "chart_display_mode": "wait_check_repeat",
+            "chart_display_reason": "btc_lower_probe_guard_wait_as_wait_checks",
+        },
+        "blocked_by": "forecast_guard",
+        "action_none_reason": "probe_not_promoted",
+        "probe_scene_id": "btc_lower_buy_conservative_probe",
+        "entry_decision_result_v1": {},
+        "exit_wait_state_v1": {},
+    }
+
+    painter.add_decision_flow_overlay("BTCUSD", row, df_all, tick)
+
+    flow_items = _flow_items(painter, "FLOW_BTCUSD_0_")
+    history = list(painter._flow_history_by_symbol["BTCUSD"])
+
+    assert history[0]["event_kind"] == "WAIT"
+    assert history[0]["side"] == ""
+    assert history[0]["repeat_count"] == 2
+    assert len(flow_items) == 4
+    assert any("_R1_" in str(item["name"]) for item in flow_items)
+
+
 def test_add_decision_flow_overlay_renders_nas_outer_band_probe_guard_wait_relief_as_neutral_wait_checks():
     painter = Painter()
     df_all = {"1M": _build_frame("1M", "min")}
@@ -2313,6 +2392,51 @@ def test_add_decision_flow_overlay_renders_nas_outer_band_probe_guard_wait_relie
 
     flow_items = _flow_items(painter, "FLOW_NAS100_0_")
     history = list(painter._flow_history_by_symbol["NAS100"])
+
+    assert history[0]["event_kind"] == "WAIT"
+    assert history[0]["side"] == ""
+    assert history[0]["repeat_count"] == 1
+    assert len(flow_items) == 2
+
+
+def test_add_decision_flow_overlay_renders_xau_outer_band_probe_guard_wait_relief_as_neutral_wait_checks():
+    painter = Painter()
+    df_all = {"1M": _build_frame("1M", "min")}
+    tick = SimpleNamespace(bid=100.0, ask=100.2)
+
+    row = {
+        "observe_confirm_v2": {
+            "state": "OBSERVE",
+            "action": "WAIT",
+            "side": "BUY",
+            "reason": "outer_band_reversal_support_required_observe",
+        },
+        "consumer_check_state_v1": {
+            "contract_version": "consumer_check_state_v1",
+            "check_candidate": True,
+            "check_display_ready": True,
+            "entry_ready": False,
+            "check_side": "BUY",
+            "check_stage": "OBSERVE",
+            "check_reason": "outer_band_reversal_support_required_observe",
+            "display_strength_level": 5,
+            "display_score": 0.75,
+            "display_repeat_count": 1,
+            "chart_event_kind_hint": "WAIT",
+            "chart_display_mode": "wait_check_repeat",
+            "chart_display_reason": "probe_guard_wait_as_wait_checks",
+        },
+        "blocked_by": "outer_band_guard",
+        "action_none_reason": "probe_not_promoted",
+        "probe_scene_id": "xau_upper_sell_probe",
+        "entry_decision_result_v1": {},
+        "exit_wait_state_v1": {},
+    }
+
+    painter.add_decision_flow_overlay("XAUUSD", row, df_all, tick)
+
+    flow_items = _flow_items(painter, "FLOW_XAUUSD_0_")
+    history = list(painter._flow_history_by_symbol["XAUUSD"])
 
     assert history[0]["event_kind"] == "WAIT"
     assert history[0]["side"] == ""
@@ -2412,6 +2536,965 @@ def test_add_decision_flow_overlay_renders_xau_upper_reject_wait_relief_as_neutr
     assert any("_R1_" in str(item["name"]) for item in flow_items)
 
 
+def test_add_decision_flow_overlay_renders_xau_upper_reject_mixed_forecast_wait_relief_as_neutral_wait_checks():
+    painter = Painter()
+    df_all = {"1M": _build_frame("1M", "min")}
+    tick = SimpleNamespace(bid=100.0, ask=100.2)
+
+    row = {
+        "observe_confirm_v2": {
+            "state": "OBSERVE",
+            "action": "WAIT",
+            "side": "SELL",
+            "reason": "upper_reject_mixed_confirm",
+        },
+        "consumer_check_state_v1": {
+            "contract_version": "consumer_check_state_v1",
+            "check_candidate": True,
+            "check_display_ready": True,
+            "entry_ready": False,
+            "check_side": "SELL",
+            "check_stage": "OBSERVE",
+            "check_reason": "upper_reject_mixed_confirm",
+            "display_strength_level": 5,
+            "display_score": 0.75,
+            "display_repeat_count": 2,
+            "chart_event_kind_hint": "WAIT",
+            "chart_display_mode": "wait_check_repeat",
+            "chart_display_reason": "xau_upper_reject_mixed_guard_wait_as_wait_checks",
+        },
+        "blocked_by": "forecast_guard",
+        "action_none_reason": "observe_state_wait",
+        "probe_scene_id": "",
+        "entry_decision_result_v1": {},
+        "exit_wait_state_v1": {},
+    }
+
+    painter.add_decision_flow_overlay("XAUUSD", row, df_all, tick)
+
+    flow_items = _flow_items(painter, "FLOW_XAUUSD_0_")
+    history = list(painter._flow_history_by_symbol["XAUUSD"])
+
+    assert history[0]["event_kind"] == "WAIT"
+    assert history[0]["side"] == ""
+    assert history[0]["repeat_count"] == 2
+    assert len(flow_items) == 4
+    assert any("_R1_" in str(item["name"]) for item in flow_items)
+
+
+def test_add_decision_flow_overlay_renders_xau_upper_reject_confirm_forecast_wait_relief_as_neutral_wait_checks():
+    painter = Painter()
+    df_all = {"1M": _build_frame("1M", "min")}
+    tick = SimpleNamespace(bid=100.0, ask=100.2)
+
+    row = {
+        "observe_confirm_v2": {
+            "state": "OBSERVE",
+            "action": "WAIT",
+            "side": "SELL",
+            "reason": "upper_reject_confirm",
+        },
+        "consumer_check_state_v1": {
+            "contract_version": "consumer_check_state_v1",
+            "check_candidate": True,
+            "check_display_ready": True,
+            "entry_ready": False,
+            "check_side": "SELL",
+            "check_stage": "OBSERVE",
+            "check_reason": "upper_reject_confirm",
+            "display_strength_level": 5,
+            "display_score": 0.75,
+            "display_repeat_count": 2,
+            "chart_event_kind_hint": "WAIT",
+            "chart_display_mode": "wait_check_repeat",
+            "chart_display_reason": "xau_upper_reject_confirm_forecast_wait_as_wait_checks",
+        },
+        "blocked_by": "forecast_guard",
+        "action_none_reason": "observe_state_wait",
+        "probe_scene_id": "",
+        "entry_decision_result_v1": {},
+        "exit_wait_state_v1": {},
+    }
+
+    painter.add_decision_flow_overlay("XAUUSD", row, df_all, tick)
+
+    flow_items = _flow_items(painter, "FLOW_XAUUSD_0_")
+    history = list(painter._flow_history_by_symbol["XAUUSD"])
+
+    assert history[0]["event_kind"] == "WAIT"
+    assert history[0]["side"] == ""
+    assert history[0]["repeat_count"] == 2
+    assert len(flow_items) == 4
+    assert any("_R1_" in str(item["name"]) for item in flow_items)
+
+
+def test_add_decision_flow_overlay_renders_btc_upper_reject_confirm_forecast_wait_relief_as_neutral_wait_checks():
+    painter = Painter()
+    df_all = {"1M": _build_frame("1M", "min")}
+    tick = SimpleNamespace(bid=100.0, ask=100.2)
+
+    row = {
+        "observe_confirm_v2": {
+            "state": "OBSERVE",
+            "action": "WAIT",
+            "side": "SELL",
+            "reason": "upper_reject_confirm",
+        },
+        "consumer_check_state_v1": {
+            "contract_version": "consumer_check_state_v1",
+            "check_candidate": True,
+            "check_display_ready": True,
+            "entry_ready": False,
+            "check_side": "SELL",
+            "check_stage": "OBSERVE",
+            "check_reason": "upper_reject_confirm",
+            "display_strength_level": 5,
+            "display_score": 0.75,
+            "display_repeat_count": 2,
+            "chart_event_kind_hint": "WAIT",
+            "chart_display_mode": "wait_check_repeat",
+            "chart_display_reason": "btc_upper_reject_confirm_forecast_wait_as_wait_checks",
+        },
+        "blocked_by": "forecast_guard",
+        "action_none_reason": "observe_state_wait",
+        "probe_scene_id": "",
+        "entry_decision_result_v1": {},
+        "exit_wait_state_v1": {},
+    }
+
+    painter.add_decision_flow_overlay("BTCUSD", row, df_all, tick)
+
+    flow_items = _flow_items(painter, "FLOW_BTCUSD_0_")
+    history = list(painter._flow_history_by_symbol["BTCUSD"])
+
+    assert history[0]["event_kind"] == "WAIT"
+    assert history[0]["side"] == ""
+    assert history[0]["repeat_count"] == 2
+    assert len(flow_items) == 4
+    assert any("_R1_" in str(item["name"]) for item in flow_items)
+
+
+def test_add_decision_flow_overlay_renders_btc_upper_break_fail_confirm_forecast_wait_relief_as_neutral_wait_checks():
+    painter = Painter()
+    df_all = {"1M": _build_frame("1M", "min")}
+    tick = SimpleNamespace(bid=100.0, ask=100.2)
+
+    row = {
+        "observe_confirm_v2": {
+            "state": "OBSERVE",
+            "action": "WAIT",
+            "side": "SELL",
+            "reason": "upper_break_fail_confirm",
+        },
+        "consumer_check_state_v1": {
+            "contract_version": "consumer_check_state_v1",
+            "check_candidate": True,
+            "check_display_ready": True,
+            "entry_ready": False,
+            "check_side": "SELL",
+            "check_stage": "OBSERVE",
+            "check_reason": "upper_break_fail_confirm",
+            "display_strength_level": 5,
+            "display_score": 0.75,
+            "display_repeat_count": 2,
+            "chart_event_kind_hint": "WAIT",
+            "chart_display_mode": "wait_check_repeat",
+            "chart_display_reason": "btc_upper_break_fail_confirm_forecast_wait_as_wait_checks",
+        },
+        "blocked_by": "forecast_guard",
+        "action_none_reason": "observe_state_wait",
+        "probe_scene_id": "",
+        "entry_decision_result_v1": {},
+        "exit_wait_state_v1": {},
+    }
+
+    painter.add_decision_flow_overlay("BTCUSD", row, df_all, tick)
+
+    flow_items = _flow_items(painter, "FLOW_BTCUSD_0_")
+    history = list(painter._flow_history_by_symbol["BTCUSD"])
+
+    assert history[0]["event_kind"] == "WAIT"
+    assert history[0]["side"] == ""
+    assert history[0]["repeat_count"] == 2
+    assert len(flow_items) == 4
+    assert any("_R1_" in str(item["name"]) for item in flow_items)
+
+
+def test_add_decision_flow_overlay_renders_btc_upper_break_fail_confirm_entry_gate_wait_relief_as_neutral_wait_checks():
+    painter = Painter()
+    df_all = {"1M": _build_frame("1M", "min")}
+    tick = SimpleNamespace(bid=100.0, ask=100.2)
+
+    row = {
+        "observe_confirm_v2": {
+            "state": "OBSERVE",
+            "action": "WAIT",
+            "side": "SELL",
+            "reason": "upper_break_fail_confirm",
+        },
+        "consumer_check_state_v1": {
+            "contract_version": "consumer_check_state_v1",
+            "check_candidate": True,
+            "check_display_ready": True,
+            "entry_ready": False,
+            "check_side": "SELL",
+            "check_stage": "PROBE",
+            "check_reason": "upper_break_fail_confirm",
+            "display_strength_level": 6,
+            "display_score": 0.82,
+            "display_repeat_count": 2,
+            "chart_event_kind_hint": "WAIT",
+            "chart_display_mode": "wait_check_repeat",
+            "chart_display_reason": "btc_upper_break_fail_confirm_entry_gate_wait_as_wait_checks",
+        },
+        "blocked_by": "clustered_entry_price_zone",
+        "action_none_reason": "",
+        "probe_scene_id": "",
+        "entry_decision_result_v1": {},
+        "exit_wait_state_v1": {},
+    }
+
+    painter.add_decision_flow_overlay("BTCUSD", row, df_all, tick)
+
+    flow_items = _flow_items(painter, "FLOW_BTCUSD_0_")
+    history = list(painter._flow_history_by_symbol["BTCUSD"])
+
+    assert history[0]["event_kind"] == "WAIT"
+    assert history[0]["side"] == ""
+    assert history[0]["repeat_count"] == 2
+    assert len(flow_items) == 4
+    assert any("_R1_" in str(item["name"]) for item in flow_items)
+
+
+def test_add_decision_flow_overlay_renders_nas_upper_break_fail_confirm_entry_gate_wait_relief_as_neutral_wait_checks():
+    painter = Painter()
+    df_all = {"1M": _build_frame("1M", "min")}
+    tick = SimpleNamespace(bid=100.0, ask=100.2)
+
+    row = {
+        "observe_confirm_v2": {
+            "state": "OBSERVE",
+            "action": "WAIT",
+            "side": "SELL",
+            "reason": "upper_break_fail_confirm",
+        },
+        "consumer_check_state_v1": {
+            "contract_version": "consumer_check_state_v1",
+            "check_candidate": True,
+            "check_display_ready": True,
+            "entry_ready": False,
+            "check_side": "SELL",
+            "check_stage": "OBSERVE",
+            "check_reason": "upper_break_fail_confirm",
+            "display_strength_level": 5,
+            "display_score": 0.75,
+            "display_repeat_count": 1,
+            "chart_event_kind_hint": "WAIT",
+            "chart_display_mode": "wait_check_repeat",
+            "chart_display_reason": "nas_upper_break_fail_confirm_entry_gate_wait_as_wait_checks",
+        },
+        "blocked_by": "pyramid_not_progressed",
+        "action_none_reason": "",
+        "probe_scene_id": "",
+        "entry_decision_result_v1": {},
+        "exit_wait_state_v1": {},
+    }
+
+    painter.add_decision_flow_overlay("NAS100", row, df_all, tick)
+
+    flow_items = _flow_items(painter, "FLOW_NAS100_0_")
+    history = list(painter._flow_history_by_symbol["NAS100"])
+
+    assert history[0]["event_kind"] == "WAIT"
+    assert history[0]["side"] == ""
+    assert history[0]["repeat_count"] == 1
+    assert len(flow_items) == 2
+
+
+def test_add_decision_flow_overlay_renders_btc_upper_break_fail_confirm_energy_soft_block_wait_relief_as_neutral_wait_checks():
+    painter = Painter()
+    df_all = {"1M": _build_frame("1M", "min")}
+    tick = SimpleNamespace(bid=100.0, ask=100.2)
+
+    row = {
+        "observe_confirm_v2": {
+            "state": "OBSERVE",
+            "action": "WAIT",
+            "side": "SELL",
+            "reason": "upper_break_fail_confirm",
+        },
+        "consumer_check_state_v1": {
+            "contract_version": "consumer_check_state_v1",
+            "check_candidate": True,
+            "check_display_ready": True,
+            "entry_ready": False,
+            "check_side": "SELL",
+            "check_stage": "BLOCKED",
+            "check_reason": "upper_break_fail_confirm",
+            "display_strength_level": 5,
+            "display_score": 0.75,
+            "display_repeat_count": 1,
+            "chart_event_kind_hint": "WAIT",
+            "chart_display_mode": "wait_check_repeat",
+            "chart_display_reason": "btc_upper_break_fail_confirm_energy_soft_block_as_wait_checks",
+        },
+        "blocked_by": "energy_soft_block",
+        "action_none_reason": "execution_soft_blocked",
+        "probe_scene_id": "",
+        "entry_decision_result_v1": {},
+        "exit_wait_state_v1": {},
+    }
+
+    painter.add_decision_flow_overlay("BTCUSD", row, df_all, tick)
+
+    flow_items = _flow_items(painter, "FLOW_BTCUSD_0_")
+    history = list(painter._flow_history_by_symbol["BTCUSD"])
+
+    assert history[0]["event_kind"] == "WAIT"
+    assert history[0]["side"] == ""
+    assert history[0]["repeat_count"] == 1
+    assert len(flow_items) == 2
+
+
+def test_add_decision_flow_overlay_renders_btc_upper_reject_probe_forecast_wait_relief_as_neutral_wait_checks():
+    painter = Painter()
+    df_all = {"1M": _build_frame("1M", "min")}
+    tick = SimpleNamespace(bid=100.0, ask=100.2)
+
+    row = {
+        "observe_confirm_v2": {
+            "state": "OBSERVE",
+            "action": "WAIT",
+            "side": "SELL",
+            "reason": "upper_reject_probe_observe",
+        },
+        "consumer_check_state_v1": {
+            "contract_version": "consumer_check_state_v1",
+            "check_candidate": True,
+            "check_display_ready": True,
+            "entry_ready": False,
+            "check_side": "SELL",
+            "check_stage": "PROBE",
+            "check_reason": "upper_reject_probe_observe",
+            "display_strength_level": 6,
+            "display_score": 0.86,
+            "display_repeat_count": 2,
+            "chart_event_kind_hint": "WAIT",
+            "chart_display_mode": "wait_check_repeat",
+            "chart_display_reason": "btc_upper_reject_probe_forecast_wait_as_wait_checks",
+        },
+        "blocked_by": "forecast_guard",
+        "action_none_reason": "probe_not_promoted",
+        "probe_scene_id": "btc_upper_sell_probe",
+        "entry_decision_result_v1": {},
+        "exit_wait_state_v1": {},
+    }
+
+    painter.add_decision_flow_overlay("BTCUSD", row, df_all, tick)
+
+    flow_items = _flow_items(painter, "FLOW_BTCUSD_0_")
+    history = list(painter._flow_history_by_symbol["BTCUSD"])
+
+    assert history[0]["event_kind"] == "WAIT"
+    assert history[0]["side"] == ""
+    assert history[0]["repeat_count"] == 2
+    assert len(flow_items) == 4
+    assert any("_R1_" in str(item["name"]) for item in flow_items)
+
+
+def test_add_decision_flow_overlay_renders_btc_upper_reject_probe_preflight_wait_relief_as_neutral_wait_checks():
+    painter = Painter()
+    df_all = {"1M": _build_frame("1M", "min")}
+    tick = SimpleNamespace(bid=100.0, ask=100.2)
+
+    row = {
+        "observe_confirm_v2": {
+            "state": "OBSERVE",
+            "action": "WAIT",
+            "side": "SELL",
+            "reason": "upper_reject_probe_observe",
+        },
+        "consumer_check_state_v1": {
+            "contract_version": "consumer_check_state_v1",
+            "check_candidate": True,
+            "check_display_ready": True,
+            "entry_ready": False,
+            "check_side": "SELL",
+            "check_stage": "BLOCKED",
+            "check_reason": "upper_reject_probe_observe",
+            "display_strength_level": 5,
+            "display_score": 0.65,
+            "display_repeat_count": 2,
+            "chart_event_kind_hint": "WAIT",
+            "chart_display_mode": "wait_check_repeat",
+            "chart_display_reason": "btc_upper_reject_probe_preflight_wait_as_wait_checks",
+        },
+        "blocked_by": "preflight_action_blocked",
+        "action_none_reason": "preflight_blocked",
+        "probe_scene_id": "btc_upper_sell_probe",
+        "entry_decision_result_v1": {},
+        "exit_wait_state_v1": {},
+    }
+
+    painter.add_decision_flow_overlay("BTCUSD", row, df_all, tick)
+
+    flow_items = _flow_items(painter, "FLOW_BTCUSD_0_")
+    history = list(painter._flow_history_by_symbol["BTCUSD"])
+
+    assert history[0]["event_kind"] == "WAIT"
+    assert history[0]["side"] == ""
+    assert history[0]["repeat_count"] == 2
+    assert len(flow_items) == 4
+    assert any("_R1_" in str(item["name"]) for item in flow_items)
+
+
+def test_add_decision_flow_overlay_renders_btc_upper_reject_confirm_preflight_wait_relief_as_neutral_wait_checks():
+    painter = Painter()
+    df_all = {"1M": _build_frame("1M", "min")}
+    tick = SimpleNamespace(bid=100.0, ask=100.2)
+
+    row = {
+        "observe_confirm_v2": {
+            "state": "OBSERVE",
+            "action": "WAIT",
+            "side": "SELL",
+            "reason": "upper_reject_confirm",
+        },
+        "consumer_check_state_v1": {
+            "contract_version": "consumer_check_state_v1",
+            "check_candidate": True,
+            "check_display_ready": True,
+            "entry_ready": False,
+            "check_side": "SELL",
+            "check_stage": "BLOCKED",
+            "check_reason": "upper_reject_confirm",
+            "display_strength_level": 5,
+            "display_score": 0.75,
+            "display_repeat_count": 2,
+            "chart_event_kind_hint": "WAIT",
+            "chart_display_mode": "wait_check_repeat",
+            "chart_display_reason": "btc_upper_reject_confirm_preflight_wait_as_wait_checks",
+        },
+        "blocked_by": "preflight_action_blocked",
+        "action_none_reason": "preflight_blocked",
+        "probe_scene_id": "",
+        "entry_decision_result_v1": {},
+        "exit_wait_state_v1": {},
+    }
+
+    painter.add_decision_flow_overlay("BTCUSD", row, df_all, tick)
+
+    flow_items = _flow_items(painter, "FLOW_BTCUSD_0_")
+    history = list(painter._flow_history_by_symbol["BTCUSD"])
+
+    assert history[0]["event_kind"] == "WAIT"
+    assert history[0]["side"] == ""
+    assert history[0]["repeat_count"] == 2
+    assert len(flow_items) == 4
+    assert any("_R1_" in str(item["name"]) for item in flow_items)
+
+
+def test_add_decision_flow_overlay_renders_btc_upper_reject_probe_promotion_wait_relief_as_neutral_wait_checks():
+    painter = Painter()
+    df_all = {"1M": _build_frame("1M", "min")}
+    tick = SimpleNamespace(bid=100.0, ask=100.2)
+
+    row = {
+        "observe_confirm_v2": {
+            "state": "OBSERVE",
+            "action": "WAIT",
+            "side": "SELL",
+            "reason": "upper_reject_probe_observe",
+        },
+        "consumer_check_state_v1": {
+            "contract_version": "consumer_check_state_v1",
+            "check_candidate": True,
+            "check_display_ready": True,
+            "entry_ready": False,
+            "check_side": "SELL",
+            "check_stage": "PROBE",
+            "check_reason": "upper_reject_probe_observe",
+            "display_strength_level": 7,
+            "display_score": 0.86,
+            "display_repeat_count": 2,
+            "chart_event_kind_hint": "WAIT",
+            "chart_display_mode": "wait_check_repeat",
+            "chart_display_reason": "btc_upper_reject_probe_promotion_wait_as_wait_checks",
+        },
+        "blocked_by": "probe_promotion_gate",
+        "action_none_reason": "probe_not_promoted",
+        "probe_scene_id": "btc_upper_sell_probe",
+        "entry_decision_result_v1": {},
+        "exit_wait_state_v1": {},
+    }
+
+    painter.add_decision_flow_overlay("BTCUSD", row, df_all, tick)
+
+    flow_items = _flow_items(painter, "FLOW_BTCUSD_0_")
+    history = list(painter._flow_history_by_symbol["BTCUSD"])
+
+    assert history[0]["event_kind"] == "WAIT"
+    assert history[0]["side"] == ""
+    assert history[0]["repeat_count"] == 2
+    assert len(flow_items) == 4
+    assert any("_R1_" in str(item["name"]) for item in flow_items)
+
+
+def test_add_decision_flow_overlay_renders_btc_upper_reject_confirm_energy_soft_block_wait_relief_as_neutral_wait_checks():
+    painter = Painter()
+    df_all = {"1M": _build_frame("1M", "min")}
+    tick = SimpleNamespace(bid=100.0, ask=100.2)
+
+    row = {
+        "observe_confirm_v2": {
+            "state": "OBSERVE",
+            "action": "WAIT",
+            "side": "SELL",
+            "reason": "upper_reject_confirm",
+        },
+        "consumer_check_state_v1": {
+            "contract_version": "consumer_check_state_v1",
+            "check_candidate": True,
+            "check_display_ready": True,
+            "entry_ready": False,
+            "check_side": "SELL",
+            "check_stage": "BLOCKED",
+            "check_reason": "upper_reject_confirm",
+            "display_strength_level": 5,
+            "display_score": 0.75,
+            "display_repeat_count": 1,
+            "chart_event_kind_hint": "WAIT",
+            "chart_display_mode": "wait_check_repeat",
+            "chart_display_reason": "btc_upper_reject_confirm_energy_soft_block_as_wait_checks",
+        },
+        "blocked_by": "energy_soft_block",
+        "action_none_reason": "execution_soft_blocked",
+        "probe_scene_id": "",
+        "entry_decision_result_v1": {},
+        "exit_wait_state_v1": {},
+    }
+
+    painter.add_decision_flow_overlay("BTCUSD", row, df_all, tick)
+
+    flow_items = _flow_items(painter, "FLOW_BTCUSD_0_")
+    history = list(painter._flow_history_by_symbol["BTCUSD"])
+
+    assert history[0]["event_kind"] == "WAIT"
+    assert history[0]["side"] == ""
+    assert history[0]["repeat_count"] == 1
+    assert len(flow_items) == 2
+
+
+def test_add_decision_flow_overlay_renders_btc_upper_reject_mixed_confirm_energy_soft_block_wait_relief_as_neutral_wait_checks():
+    painter = Painter()
+    df_all = {"1M": _build_frame("1M", "min")}
+    tick = SimpleNamespace(bid=100.0, ask=100.2)
+
+    row = {
+        "observe_confirm_v2": {
+            "state": "OBSERVE",
+            "action": "WAIT",
+            "side": "SELL",
+            "reason": "upper_reject_mixed_confirm",
+        },
+        "consumer_check_state_v1": {
+            "contract_version": "consumer_check_state_v1",
+            "check_candidate": True,
+            "check_display_ready": True,
+            "entry_ready": False,
+            "check_side": "SELL",
+            "check_stage": "BLOCKED",
+            "check_reason": "upper_reject_mixed_confirm",
+            "display_strength_level": 5,
+            "display_score": 0.75,
+            "display_repeat_count": 1,
+            "chart_event_kind_hint": "WAIT",
+            "chart_display_mode": "wait_check_repeat",
+            "chart_display_reason": "btc_upper_reject_mixed_confirm_energy_soft_block_as_wait_checks",
+        },
+        "blocked_by": "energy_soft_block",
+        "action_none_reason": "execution_soft_blocked",
+        "probe_scene_id": "",
+        "entry_decision_result_v1": {},
+        "exit_wait_state_v1": {},
+    }
+
+    painter.add_decision_flow_overlay("BTCUSD", row, df_all, tick)
+
+    flow_items = _flow_items(painter, "FLOW_BTCUSD_0_")
+    history = list(painter._flow_history_by_symbol["BTCUSD"])
+
+    assert history[0]["event_kind"] == "WAIT"
+    assert history[0]["side"] == ""
+    assert history[0]["repeat_count"] == 1
+    assert len(flow_items) == 2
+
+
+def test_add_decision_flow_overlay_renders_btc_upper_reject_probe_energy_soft_block_wait_relief_as_neutral_wait_checks():
+    painter = Painter()
+    df_all = {"1M": _build_frame("1M", "min")}
+    tick = SimpleNamespace(bid=100.0, ask=100.2)
+
+    row = {
+        "observe_confirm_v2": {
+            "state": "OBSERVE",
+            "action": "WAIT",
+            "side": "SELL",
+            "reason": "upper_reject_probe_observe",
+        },
+        "consumer_check_state_v1": {
+            "contract_version": "consumer_check_state_v1",
+            "check_candidate": True,
+            "check_display_ready": True,
+            "entry_ready": False,
+            "check_side": "SELL",
+            "check_stage": "BLOCKED",
+            "check_reason": "upper_reject_probe_observe",
+            "display_strength_level": 5,
+            "display_score": 0.75,
+            "display_repeat_count": 1,
+            "chart_event_kind_hint": "WAIT",
+            "chart_display_mode": "wait_check_repeat",
+            "chart_display_reason": "btc_upper_reject_probe_energy_soft_block_as_wait_checks",
+        },
+        "blocked_by": "energy_soft_block",
+        "action_none_reason": "execution_soft_blocked",
+        "probe_scene_id": "btc_upper_sell_probe",
+        "entry_decision_result_v1": {},
+        "exit_wait_state_v1": {},
+    }
+
+    painter.add_decision_flow_overlay("BTCUSD", row, df_all, tick)
+
+    flow_items = _flow_items(painter, "FLOW_BTCUSD_0_")
+    history = list(painter._flow_history_by_symbol["BTCUSD"])
+
+    assert history[0]["event_kind"] == "WAIT"
+    assert history[0]["side"] == ""
+    assert history[0]["repeat_count"] == 1
+    assert len(flow_items) == 2
+
+
+def test_add_decision_flow_overlay_renders_xau_upper_reject_confirm_energy_soft_block_wait_relief_as_neutral_wait_checks():
+    painter = Painter()
+    df_all = {"1M": _build_frame("1M", "min")}
+    tick = SimpleNamespace(bid=100.0, ask=100.2)
+
+    row = {
+        "observe_confirm_v2": {
+            "state": "OBSERVE",
+            "action": "WAIT",
+            "side": "SELL",
+            "reason": "upper_reject_confirm",
+        },
+        "consumer_check_state_v1": {
+            "contract_version": "consumer_check_state_v1",
+            "check_candidate": True,
+            "check_display_ready": True,
+            "entry_ready": False,
+            "check_side": "SELL",
+            "check_stage": "BLOCKED",
+            "check_reason": "upper_reject_confirm",
+            "display_strength_level": 5,
+            "display_score": 0.75,
+            "display_repeat_count": 2,
+            "chart_event_kind_hint": "WAIT",
+            "chart_display_mode": "wait_check_repeat",
+            "chart_display_reason": "xau_upper_reject_confirm_energy_soft_block_as_wait_checks",
+        },
+        "blocked_by": "energy_soft_block",
+        "action_none_reason": "execution_soft_blocked",
+        "probe_scene_id": "",
+        "entry_decision_result_v1": {},
+        "exit_wait_state_v1": {},
+    }
+
+    painter.add_decision_flow_overlay("XAUUSD", row, df_all, tick)
+
+    flow_items = _flow_items(painter, "FLOW_XAUUSD_0_")
+    history = list(painter._flow_history_by_symbol["XAUUSD"])
+
+    assert history[0]["event_kind"] == "WAIT"
+    assert history[0]["side"] == ""
+    assert history[0]["repeat_count"] == 2
+    assert len(flow_items) == 4
+    assert any("_R1_" in str(item["name"]) for item in flow_items)
+
+
+def test_add_decision_flow_overlay_renders_xau_upper_reject_mixed_confirm_energy_soft_block_wait_relief_as_neutral_wait_checks():
+    painter = Painter()
+    df_all = {"1M": _build_frame("1M", "min")}
+    tick = SimpleNamespace(bid=100.0, ask=100.2)
+
+    row = {
+        "observe_confirm_v2": {
+            "state": "OBSERVE",
+            "action": "WAIT",
+            "side": "SELL",
+            "reason": "upper_reject_mixed_confirm",
+        },
+        "consumer_check_state_v1": {
+            "contract_version": "consumer_check_state_v1",
+            "check_candidate": True,
+            "check_display_ready": True,
+            "entry_ready": False,
+            "check_side": "SELL",
+            "check_stage": "BLOCKED",
+            "check_reason": "upper_reject_mixed_confirm",
+            "display_strength_level": 5,
+            "display_score": 0.82,
+            "display_repeat_count": 2,
+            "chart_event_kind_hint": "WAIT",
+            "chart_display_mode": "wait_check_repeat",
+            "chart_display_reason": "xau_upper_reject_mixed_confirm_energy_soft_block_as_wait_checks",
+        },
+        "blocked_by": "energy_soft_block",
+        "action_none_reason": "execution_soft_blocked",
+        "probe_scene_id": "",
+        "entry_decision_result_v1": {},
+        "exit_wait_state_v1": {},
+    }
+
+    painter.add_decision_flow_overlay("XAUUSD", row, df_all, tick)
+
+    flow_items = _flow_items(painter, "FLOW_XAUUSD_0_")
+    history = list(painter._flow_history_by_symbol["XAUUSD"])
+
+    assert history[0]["event_kind"] == "WAIT"
+    assert history[0]["side"] == ""
+    assert history[0]["repeat_count"] == 2
+    assert len(flow_items) == 4
+    assert any("_R1_" in str(item["name"]) for item in flow_items)
+
+
+def test_add_decision_flow_overlay_renders_xau_upper_reject_mixed_confirm_entry_gate_wait_relief_as_neutral_wait_checks():
+    painter = Painter()
+    df_all = {"1M": _build_frame("1M", "min")}
+    tick = SimpleNamespace(bid=100.0, ask=100.2)
+
+    row = {
+        "observe_confirm_v2": {
+            "state": "OBSERVE",
+            "action": "WAIT",
+            "side": "SELL",
+            "reason": "upper_reject_mixed_confirm",
+        },
+        "consumer_check_state_v1": {
+            "contract_version": "consumer_check_state_v1",
+            "check_candidate": True,
+            "check_display_ready": True,
+            "entry_ready": False,
+            "check_side": "SELL",
+            "check_stage": "OBSERVE",
+            "check_reason": "upper_reject_mixed_confirm",
+            "display_strength_level": 5,
+            "display_score": 0.82,
+            "display_repeat_count": 2,
+            "chart_event_kind_hint": "WAIT",
+            "chart_display_mode": "wait_check_repeat",
+            "chart_display_reason": "xau_upper_reject_mixed_confirm_entry_gate_wait_as_wait_checks",
+        },
+        "blocked_by": "clustered_entry_price_zone",
+        "action_none_reason": "",
+        "probe_scene_id": "",
+        "entry_decision_result_v1": {},
+        "exit_wait_state_v1": {},
+    }
+
+    painter.add_decision_flow_overlay("XAUUSD", row, df_all, tick)
+
+    flow_items = _flow_items(painter, "FLOW_XAUUSD_0_")
+    history = list(painter._flow_history_by_symbol["XAUUSD"])
+
+    assert history[0]["event_kind"] == "WAIT"
+    assert history[0]["side"] == ""
+    assert history[0]["repeat_count"] == 2
+    assert len(flow_items) == 4
+    assert any("_R1_" in str(item["name"]) for item in flow_items)
+
+
+def test_add_decision_flow_overlay_renders_xau_outer_band_probe_entry_gate_wait_relief_as_neutral_wait_checks():
+    painter = Painter()
+    df_all = {"1M": _build_frame("1M", "min")}
+    tick = SimpleNamespace(bid=100.0, ask=100.2)
+
+    row = {
+        "observe_confirm_v2": {
+            "state": "OBSERVE",
+            "action": "WAIT",
+            "side": "SELL",
+            "reason": "outer_band_reversal_support_required_observe",
+        },
+        "consumer_check_state_v1": {
+            "contract_version": "consumer_check_state_v1",
+            "check_candidate": True,
+            "check_display_ready": True,
+            "entry_ready": False,
+            "check_side": "SELL",
+            "check_stage": "OBSERVE",
+            "check_reason": "outer_band_reversal_support_required_observe",
+            "display_strength_level": 4,
+            "display_score": 0.75,
+            "display_repeat_count": 2,
+            "chart_event_kind_hint": "WAIT",
+            "chart_display_mode": "wait_check_repeat",
+            "chart_display_reason": "xau_outer_band_probe_entry_gate_wait_as_wait_checks",
+        },
+        "blocked_by": "clustered_entry_price_zone",
+        "action_none_reason": "",
+        "probe_scene_id": "xau_upper_sell_probe",
+        "entry_decision_result_v1": {},
+        "exit_wait_state_v1": {},
+    }
+
+    painter.add_decision_flow_overlay("XAUUSD", row, df_all, tick)
+
+    flow_items = _flow_items(painter, "FLOW_XAUUSD_0_")
+    history = list(painter._flow_history_by_symbol["XAUUSD"])
+
+    assert history[0]["event_kind"] == "WAIT"
+    assert history[0]["side"] == ""
+    assert history[0]["repeat_count"] == 2
+    assert len(flow_items) == 4
+    assert any("_R1_" in str(item["name"]) for item in flow_items)
+
+
+def test_add_decision_flow_overlay_renders_nas_upper_reject_mixed_confirm_energy_soft_block_wait_relief_as_neutral_wait_checks():
+    painter = Painter()
+    df_all = {"1M": _build_frame("1M", "min")}
+    tick = SimpleNamespace(bid=100.0, ask=100.2)
+
+    row = {
+        "observe_confirm_v2": {
+            "state": "OBSERVE",
+            "action": "WAIT",
+            "side": "SELL",
+            "reason": "upper_reject_mixed_confirm",
+        },
+        "consumer_check_state_v1": {
+            "contract_version": "consumer_check_state_v1",
+            "check_candidate": True,
+            "check_display_ready": True,
+            "entry_ready": False,
+            "check_side": "SELL",
+            "check_stage": "BLOCKED",
+            "check_reason": "upper_reject_mixed_confirm",
+            "display_strength_level": 5,
+            "display_score": 0.75,
+            "display_repeat_count": 1,
+            "chart_event_kind_hint": "WAIT",
+            "chart_display_mode": "wait_check_repeat",
+            "chart_display_reason": "nas_upper_reject_mixed_confirm_energy_soft_block_as_wait_checks",
+        },
+        "blocked_by": "energy_soft_block",
+        "action_none_reason": "execution_soft_blocked",
+        "probe_scene_id": "",
+        "entry_decision_result_v1": {},
+        "exit_wait_state_v1": {},
+    }
+
+    painter.add_decision_flow_overlay("NAS100", row, df_all, tick)
+
+    flow_items = _flow_items(painter, "FLOW_NAS100_0_")
+    history = list(painter._flow_history_by_symbol["NAS100"])
+
+    assert history[0]["event_kind"] == "WAIT"
+    assert history[0]["side"] == ""
+    assert history[0]["repeat_count"] == 1
+    assert len(flow_items) == 2
+
+
+def test_add_decision_flow_overlay_renders_xau_upper_break_fail_confirm_energy_soft_block_wait_relief_as_neutral_wait_checks():
+    painter = Painter()
+    df_all = {"1M": _build_frame("1M", "min")}
+    tick = SimpleNamespace(bid=100.0, ask=100.2)
+
+    row = {
+        "observe_confirm_v2": {
+            "state": "OBSERVE",
+            "action": "WAIT",
+            "side": "SELL",
+            "reason": "upper_break_fail_confirm",
+        },
+        "consumer_check_state_v1": {
+            "contract_version": "consumer_check_state_v1",
+            "check_candidate": True,
+            "check_display_ready": True,
+            "entry_ready": False,
+            "check_side": "SELL",
+            "check_stage": "BLOCKED",
+            "check_reason": "upper_break_fail_confirm",
+            "display_strength_level": 5,
+            "display_score": 0.75,
+            "display_repeat_count": 2,
+            "chart_event_kind_hint": "WAIT",
+            "chart_display_mode": "wait_check_repeat",
+            "chart_display_reason": "xau_upper_break_fail_confirm_energy_soft_block_as_wait_checks",
+        },
+        "blocked_by": "energy_soft_block",
+        "action_none_reason": "execution_soft_blocked",
+        "probe_scene_id": "",
+        "entry_decision_result_v1": {},
+        "exit_wait_state_v1": {},
+    }
+
+    painter.add_decision_flow_overlay("XAUUSD", row, df_all, tick)
+
+    flow_items = _flow_items(painter, "FLOW_XAUUSD_0_")
+    history = list(painter._flow_history_by_symbol["XAUUSD"])
+
+    assert history[0]["event_kind"] == "WAIT"
+    assert history[0]["side"] == ""
+    assert history[0]["repeat_count"] == 2
+    assert len(flow_items) == 4
+    assert any("_R1_" in str(item["name"]) for item in flow_items)
+
+
+def test_add_decision_flow_overlay_renders_nas_upper_break_fail_confirm_energy_soft_block_wait_relief_as_neutral_wait_checks():
+    painter = Painter()
+    df_all = {"1M": _build_frame("1M", "min")}
+    tick = SimpleNamespace(bid=100.0, ask=100.2)
+
+    row = {
+        "observe_confirm_v2": {
+            "state": "OBSERVE",
+            "action": "WAIT",
+            "side": "SELL",
+            "reason": "upper_break_fail_confirm",
+        },
+        "consumer_check_state_v1": {
+            "contract_version": "consumer_check_state_v1",
+            "check_candidate": True,
+            "check_display_ready": True,
+            "entry_ready": False,
+            "check_side": "SELL",
+            "check_stage": "BLOCKED",
+            "check_reason": "upper_break_fail_confirm",
+            "display_strength_level": 5,
+            "display_score": 0.75,
+            "display_repeat_count": 1,
+            "chart_event_kind_hint": "WAIT",
+            "chart_display_mode": "wait_check_repeat",
+            "chart_display_reason": "nas_upper_break_fail_confirm_energy_soft_block_as_wait_checks",
+        },
+        "blocked_by": "energy_soft_block",
+        "action_none_reason": "execution_soft_blocked",
+        "probe_scene_id": "",
+        "entry_decision_result_v1": {},
+        "exit_wait_state_v1": {},
+    }
+
+    painter.add_decision_flow_overlay("NAS100", row, df_all, tick)
+
+    flow_items = _flow_items(painter, "FLOW_NAS100_0_")
+    history = list(painter._flow_history_by_symbol["NAS100"])
+
+    assert history[0]["event_kind"] == "WAIT"
+    assert history[0]["side"] == ""
+    assert history[0]["repeat_count"] == 1
+    assert len(flow_items) == 2
+
+
 def test_add_decision_flow_overlay_renders_xau_middle_anchor_guard_wait_relief_as_neutral_wait_checks():
     painter = Painter()
     df_all = {"1M": _build_frame("1M", "min")}
@@ -2504,6 +3587,98 @@ def test_add_decision_flow_overlay_renders_xau_probe_energy_soft_block_wait_reli
     assert any("_R1_" in str(item["name"]) for item in flow_items)
 
 
+def test_add_decision_flow_overlay_renders_xau_probe_forecast_wait_relief_as_neutral_wait_checks():
+    painter = Painter()
+    df_all = {"1M": _build_frame("1M", "min")}
+    tick = SimpleNamespace(bid=100.0, ask=100.2)
+
+    row = {
+        "observe_confirm_v2": {
+            "state": "OBSERVE",
+            "action": "WAIT",
+            "side": "SELL",
+            "reason": "upper_reject_probe_observe",
+        },
+        "consumer_check_state_v1": {
+            "contract_version": "consumer_check_state_v1",
+            "check_candidate": True,
+            "check_display_ready": True,
+            "entry_ready": False,
+            "check_side": "SELL",
+            "check_stage": "PROBE",
+            "check_reason": "upper_reject_probe_observe",
+            "display_strength_level": 6,
+            "display_score": 0.82,
+            "display_repeat_count": 2,
+            "chart_event_kind_hint": "WAIT",
+            "chart_display_mode": "wait_check_repeat",
+            "chart_display_reason": "xau_upper_reject_probe_forecast_wait_as_wait_checks",
+        },
+        "blocked_by": "forecast_guard",
+        "action_none_reason": "probe_not_promoted",
+        "probe_scene_id": "xau_upper_sell_probe",
+        "entry_decision_result_v1": {},
+        "exit_wait_state_v1": {},
+    }
+
+    painter.add_decision_flow_overlay("XAUUSD", row, df_all, tick)
+
+    flow_items = _flow_items(painter, "FLOW_XAUUSD_0_")
+    history = list(painter._flow_history_by_symbol["XAUUSD"])
+
+    assert history[0]["event_kind"] == "WAIT"
+    assert history[0]["side"] == ""
+    assert history[0]["repeat_count"] == 2
+    assert len(flow_items) == 4
+    assert any("_R1_" in str(item["name"]) for item in flow_items)
+
+
+def test_add_decision_flow_overlay_renders_xau_upper_reject_probe_promotion_wait_relief_as_neutral_wait_checks():
+    painter = Painter()
+    df_all = {"1M": _build_frame("1M", "min")}
+    tick = SimpleNamespace(bid=100.0, ask=100.2)
+
+    row = {
+        "observe_confirm_v2": {
+            "state": "OBSERVE",
+            "action": "WAIT",
+            "side": "SELL",
+            "reason": "upper_reject_probe_observe",
+        },
+        "consumer_check_state_v1": {
+            "contract_version": "consumer_check_state_v1",
+            "check_candidate": True,
+            "check_display_ready": True,
+            "entry_ready": False,
+            "check_side": "SELL",
+            "check_stage": "PROBE",
+            "check_reason": "upper_reject_probe_observe",
+            "display_strength_level": 6,
+            "display_score": 0.82,
+            "display_repeat_count": 2,
+            "chart_event_kind_hint": "WAIT",
+            "chart_display_mode": "wait_check_repeat",
+            "chart_display_reason": "xau_upper_reject_probe_promotion_wait_as_wait_checks",
+        },
+        "blocked_by": "probe_promotion_gate",
+        "action_none_reason": "probe_not_promoted",
+        "probe_scene_id": "xau_upper_sell_probe",
+        "entry_decision_result_v1": {},
+        "exit_wait_state_v1": {},
+    }
+
+    painter.add_decision_flow_overlay("XAUUSD", row, df_all, tick)
+
+    flow_items = _flow_items(painter, "FLOW_XAUUSD_0_")
+    history = list(painter._flow_history_by_symbol["XAUUSD"])
+
+    assert history[0]["event_kind"] == "WAIT"
+    assert history[0]["side"] == ""
+    assert history[0]["repeat_count"] == 2
+    assert len(flow_items) == 4
+    assert any("_R1_" in str(item["name"]) for item in flow_items)
+
+
 def test_add_decision_flow_overlay_renders_xau_middle_anchor_probe_energy_soft_block_wait_relief_as_neutral_wait_checks():
     painter = Painter()
     df_all = {"1M": _build_frame("1M", "min")}
@@ -2533,6 +3708,98 @@ def test_add_decision_flow_overlay_renders_xau_middle_anchor_probe_energy_soft_b
         },
         "blocked_by": "energy_soft_block",
         "action_none_reason": "execution_soft_blocked",
+        "probe_scene_id": "xau_second_support_buy_probe",
+        "entry_decision_result_v1": {},
+        "exit_wait_state_v1": {},
+    }
+
+    painter.add_decision_flow_overlay("XAUUSD", row, df_all, tick)
+
+    flow_items = _flow_items(painter, "FLOW_XAUUSD_0_")
+    history = list(painter._flow_history_by_symbol["XAUUSD"])
+
+    assert history[0]["event_kind"] == "WAIT"
+    assert history[0]["side"] == ""
+    assert history[0]["repeat_count"] == 2
+    assert len(flow_items) == 4
+    assert any("_R1_" in str(item["name"]) for item in flow_items)
+
+
+def test_add_decision_flow_overlay_renders_xau_lower_probe_guard_wait_relief_as_neutral_wait_checks():
+    painter = Painter()
+    df_all = {"1M": _build_frame("1M", "min")}
+    tick = SimpleNamespace(bid=100.0, ask=100.2)
+
+    row = {
+        "observe_confirm_v2": {
+            "state": "OBSERVE",
+            "action": "WAIT",
+            "side": "BUY",
+            "reason": "lower_rebound_probe_observe",
+        },
+        "consumer_check_state_v1": {
+            "contract_version": "consumer_check_state_v1",
+            "check_candidate": True,
+            "check_display_ready": True,
+            "entry_ready": False,
+            "check_side": "BUY",
+            "check_stage": "PROBE",
+            "check_reason": "lower_rebound_probe_observe",
+            "display_strength_level": 7,
+            "display_score": 0.86,
+            "display_repeat_count": 2,
+            "chart_event_kind_hint": "WAIT",
+            "chart_display_mode": "wait_check_repeat",
+            "chart_display_reason": "xau_lower_probe_guard_wait_as_wait_checks",
+        },
+        "blocked_by": "forecast_guard",
+        "action_none_reason": "probe_not_promoted",
+        "probe_scene_id": "xau_second_support_buy_probe",
+        "entry_decision_result_v1": {},
+        "exit_wait_state_v1": {},
+    }
+
+    painter.add_decision_flow_overlay("XAUUSD", row, df_all, tick)
+
+    flow_items = _flow_items(painter, "FLOW_XAUUSD_0_")
+    history = list(painter._flow_history_by_symbol["XAUUSD"])
+
+    assert history[0]["event_kind"] == "WAIT"
+    assert history[0]["side"] == ""
+    assert history[0]["repeat_count"] == 2
+    assert len(flow_items) == 4
+    assert any("_R1_" in str(item["name"]) for item in flow_items)
+
+
+def test_add_decision_flow_overlay_renders_xau_middle_anchor_probe_guard_wait_relief_as_neutral_wait_checks():
+    painter = Painter()
+    df_all = {"1M": _build_frame("1M", "min")}
+    tick = SimpleNamespace(bid=100.0, ask=100.2)
+
+    row = {
+        "observe_confirm_v2": {
+            "state": "OBSERVE",
+            "action": "WAIT",
+            "side": "BUY",
+            "reason": "middle_sr_anchor_required_observe",
+        },
+        "consumer_check_state_v1": {
+            "contract_version": "consumer_check_state_v1",
+            "check_candidate": True,
+            "check_display_ready": True,
+            "entry_ready": False,
+            "check_side": "BUY",
+            "check_stage": "OBSERVE",
+            "check_reason": "middle_sr_anchor_required_observe",
+            "display_strength_level": 5,
+            "display_score": 0.82,
+            "display_repeat_count": 2,
+            "chart_event_kind_hint": "WAIT",
+            "chart_display_mode": "wait_check_repeat",
+            "chart_display_reason": "probe_guard_wait_as_wait_checks",
+        },
+        "blocked_by": "middle_sr_anchor_guard",
+        "action_none_reason": "probe_not_promoted",
         "probe_scene_id": "xau_second_support_buy_probe",
         "entry_decision_result_v1": {},
         "exit_wait_state_v1": {},
@@ -2826,7 +4093,7 @@ def test_add_decision_flow_overlay_renders_btc_structural_probe_energy_soft_bloc
     assert any("_R1_" in str(item["name"]) for item in flow_items)
 
 
-def test_add_decision_flow_overlay_skips_hidden_nas_sell_outer_band_wait_without_probe():
+def test_add_decision_flow_overlay_renders_hidden_nas_sell_outer_band_wait_without_probe():
     painter = Painter()
     df_all = {"1M": _build_frame("1M", "min")}
     tick = SimpleNamespace(bid=100.0, ask=100.2)
@@ -2860,11 +4127,49 @@ def test_add_decision_flow_overlay_skips_hidden_nas_sell_outer_band_wait_without
 
     painter.add_decision_flow_overlay("NAS100", row, df_all, tick)
 
+    assert len(_flow_items(painter, "FLOW_NAS100_0_")) == 2
+    assert list(painter._flow_history_by_symbol.get("NAS100", []))[0]["event_kind"] == "SELL_WAIT"
+
+
+def test_add_decision_flow_overlay_skips_hidden_balanced_conflict_wait_without_probe():
+    painter = Painter()
+    df_all = {"1M": _build_frame("1M", "min")}
+    tick = SimpleNamespace(bid=100.0, ask=100.2)
+
+    row = {
+        "observe_confirm_v2": {
+            "state": "NONE",
+            "action": "WAIT",
+            "side": "",
+            "reason": "conflict_box_upper_bb20_lower_lower_dominant_observe",
+        },
+        "consumer_check_state_v1": {
+            "contract_version": "consumer_check_state_v1",
+            "check_candidate": False,
+            "check_display_ready": False,
+            "entry_ready": False,
+            "check_side": "",
+            "check_stage": "",
+            "check_reason": "conflict_box_upper_bb20_lower_lower_dominant_observe",
+            "display_strength_level": 0,
+            "display_score": 0.0,
+            "display_repeat_count": 0,
+            "modifier_primary_reason": "",
+        },
+        "blocked_by": "",
+        "action_none_reason": "observe_state_wait",
+        "probe_scene_id": "",
+        "entry_decision_result_v1": {},
+        "exit_wait_state_v1": {},
+    }
+
+    painter.add_decision_flow_overlay("NAS100", row, df_all, tick)
+
     assert _flow_items(painter, "FLOW_NAS100_0_") == []
     assert not list(painter._flow_history_by_symbol.get("NAS100", []))
 
 
-def test_add_decision_flow_overlay_skips_hidden_nas_sell_middle_anchor_wait_without_probe():
+def test_add_decision_flow_overlay_renders_hidden_nas_sell_middle_anchor_wait_without_probe():
     painter = Painter()
     df_all = {"1M": _build_frame("1M", "min")}
     tick = SimpleNamespace(bid=100.0, ask=100.2)
@@ -2898,11 +4203,87 @@ def test_add_decision_flow_overlay_skips_hidden_nas_sell_middle_anchor_wait_with
 
     painter.add_decision_flow_overlay("NAS100", row, df_all, tick)
 
-    assert _flow_items(painter, "FLOW_NAS100_0_") == []
-    assert not list(painter._flow_history_by_symbol.get("NAS100", []))
+    assert len(_flow_items(painter, "FLOW_NAS100_0_")) == 2
+    assert list(painter._flow_history_by_symbol.get("NAS100", []))[0]["event_kind"] == "SELL_WAIT"
 
 
-def test_add_decision_flow_overlay_skips_hidden_nas_upper_reject_wait_without_probe():
+def test_add_decision_flow_overlay_renders_hidden_btc_sell_middle_anchor_wait_without_probe():
+    painter = Painter()
+    df_all = {"1M": _build_frame("1M", "min")}
+    tick = SimpleNamespace(bid=100.0, ask=100.2)
+
+    row = {
+        "observe_confirm_v2": {
+            "state": "OBSERVE",
+            "action": "WAIT",
+            "side": "SELL",
+            "reason": "middle_sr_anchor_required_observe",
+        },
+        "consumer_check_state_v1": {
+            "contract_version": "consumer_check_state_v1",
+            "check_candidate": True,
+            "check_display_ready": False,
+            "entry_ready": False,
+            "check_side": "SELL",
+            "check_stage": "OBSERVE",
+            "check_reason": "middle_sr_anchor_required_observe",
+            "display_strength_level": 0,
+            "display_score": 0.0,
+            "display_repeat_count": 0,
+            "modifier_primary_reason": "btc_sell_middle_anchor_wait_hide_without_probe",
+        },
+        "blocked_by": "middle_sr_anchor_guard",
+        "action_none_reason": "observe_state_wait",
+        "probe_scene_id": "",
+        "entry_decision_result_v1": {},
+        "exit_wait_state_v1": {},
+    }
+
+    painter.add_decision_flow_overlay("BTCUSD", row, df_all, tick)
+
+    assert len(_flow_items(painter, "FLOW_BTCUSD_0_")) == 2
+    assert list(painter._flow_history_by_symbol.get("BTCUSD", []))[0]["event_kind"] == "SELL_WAIT"
+
+
+def test_add_decision_flow_overlay_renders_hidden_btc_structural_wait_without_probe():
+    painter = Painter()
+    df_all = {"1M": _build_frame("1M", "min")}
+    tick = SimpleNamespace(bid=100.0, ask=100.2)
+
+    row = {
+        "observe_confirm_v2": {
+            "state": "OBSERVE",
+            "action": "WAIT",
+            "side": "BUY",
+            "reason": "middle_sr_anchor_required_observe",
+        },
+        "consumer_check_state_v1": {
+            "contract_version": "consumer_check_state_v1",
+            "check_candidate": True,
+            "check_display_ready": False,
+            "entry_ready": False,
+            "check_side": "BUY",
+            "check_stage": "OBSERVE",
+            "check_reason": "middle_sr_anchor_required_observe",
+            "display_strength_level": 0,
+            "display_score": 0.0,
+            "display_repeat_count": 0,
+            "modifier_primary_reason": "structural_wait_hide_without_probe",
+        },
+        "blocked_by": "middle_sr_anchor_guard",
+        "action_none_reason": "observe_state_wait",
+        "probe_scene_id": "",
+        "entry_decision_result_v1": {},
+        "exit_wait_state_v1": {},
+    }
+
+    painter.add_decision_flow_overlay("BTCUSD", row, df_all, tick)
+
+    assert len(_flow_items(painter, "FLOW_BTCUSD_0_")) == 2
+    assert list(painter._flow_history_by_symbol.get("BTCUSD", []))[0]["event_kind"] == "BUY_WAIT"
+
+
+def test_add_decision_flow_overlay_renders_hidden_nas_upper_reject_wait_without_probe():
     painter = Painter()
     df_all = {"1M": _build_frame("1M", "min")}
     tick = SimpleNamespace(bid=100.0, ask=100.2)
@@ -2936,11 +4317,11 @@ def test_add_decision_flow_overlay_skips_hidden_nas_upper_reject_wait_without_pr
 
     painter.add_decision_flow_overlay("NAS100", row, df_all, tick)
 
-    assert _flow_items(painter, "FLOW_NAS100_0_") == []
-    assert not list(painter._flow_history_by_symbol.get("NAS100", []))
+    assert len(_flow_items(painter, "FLOW_NAS100_0_")) == 2
+    assert list(painter._flow_history_by_symbol.get("NAS100", []))[0]["event_kind"] == "SELL_WAIT"
 
 
-def test_add_decision_flow_overlay_skips_hidden_nas_upper_break_fail_wait_without_probe():
+def test_add_decision_flow_overlay_renders_hidden_nas_upper_break_fail_wait_without_probe():
     painter = Painter()
     df_all = {"1M": _build_frame("1M", "min")}
     tick = SimpleNamespace(bid=100.0, ask=100.2)
@@ -2974,11 +4355,11 @@ def test_add_decision_flow_overlay_skips_hidden_nas_upper_break_fail_wait_withou
 
     painter.add_decision_flow_overlay("NAS100", row, df_all, tick)
 
-    assert _flow_items(painter, "FLOW_NAS100_0_") == []
-    assert not list(painter._flow_history_by_symbol.get("NAS100", []))
+    assert len(_flow_items(painter, "FLOW_NAS100_0_")) == 2
+    assert list(painter._flow_history_by_symbol.get("NAS100", []))[0]["event_kind"] == "SELL_WAIT"
 
 
-def test_add_decision_flow_overlay_skips_hidden_nas_upper_reclaim_wait_without_probe():
+def test_add_decision_flow_overlay_renders_hidden_nas_upper_reclaim_wait_without_probe():
     painter = Painter()
     df_all = {"1M": _build_frame("1M", "min")}
     tick = SimpleNamespace(bid=100.0, ask=100.2)
@@ -3012,11 +4393,49 @@ def test_add_decision_flow_overlay_skips_hidden_nas_upper_reclaim_wait_without_p
 
     painter.add_decision_flow_overlay("NAS100", row, df_all, tick)
 
-    assert _flow_items(painter, "FLOW_NAS100_0_") == []
-    assert not list(painter._flow_history_by_symbol.get("NAS100", []))
+    assert len(_flow_items(painter, "FLOW_NAS100_0_")) == 2
+    assert list(painter._flow_history_by_symbol.get("NAS100", []))[0]["event_kind"] == "BUY_WAIT"
 
 
-def test_add_decision_flow_overlay_skips_hidden_btc_lower_rebound_forecast_wait_without_probe():
+def test_add_decision_flow_overlay_renders_hidden_xau_upper_reclaim_wait_without_probe():
+    painter = Painter()
+    df_all = {"1M": _build_frame("1M", "min")}
+    tick = SimpleNamespace(bid=100.0, ask=100.2)
+
+    row = {
+        "observe_confirm_v2": {
+            "state": "OBSERVE",
+            "action": "WAIT",
+            "side": "BUY",
+            "reason": "upper_reclaim_strength_confirm",
+        },
+        "consumer_check_state_v1": {
+            "contract_version": "consumer_check_state_v1",
+            "check_candidate": True,
+            "check_display_ready": False,
+            "entry_ready": False,
+            "check_side": "BUY",
+            "check_stage": "OBSERVE",
+            "check_reason": "upper_reclaim_strength_confirm",
+            "display_strength_level": 0,
+            "display_score": 0.0,
+            "display_repeat_count": 0,
+            "modifier_primary_reason": "xau_upper_reclaim_wait_hide_without_probe",
+        },
+        "blocked_by": "forecast_guard",
+        "action_none_reason": "observe_state_wait",
+        "probe_scene_id": "",
+        "entry_decision_result_v1": {},
+        "exit_wait_state_v1": {},
+    }
+
+    painter.add_decision_flow_overlay("XAUUSD", row, df_all, tick)
+
+    assert len(_flow_items(painter, "FLOW_XAUUSD_0_")) == 2
+    assert list(painter._flow_history_by_symbol.get("XAUUSD", []))[0]["event_kind"] == "BUY_WAIT"
+
+
+def test_add_decision_flow_overlay_renders_hidden_btc_lower_rebound_forecast_wait_without_probe():
     painter = Painter()
     df_all = {"1M": _build_frame("1M", "min")}
     tick = SimpleNamespace(bid=100.0, ask=100.2)
@@ -3050,5 +4469,426 @@ def test_add_decision_flow_overlay_skips_hidden_btc_lower_rebound_forecast_wait_
 
     painter.add_decision_flow_overlay("BTCUSD", row, df_all, tick)
 
-    assert _flow_items(painter, "FLOW_BTCUSD_0_") == []
-    assert not list(painter._flow_history_by_symbol.get("BTCUSD", []))
+    assert len(_flow_items(painter, "FLOW_BTCUSD_0_")) == 4
+    assert list(painter._flow_history_by_symbol.get("BTCUSD", []))[0]["event_kind"] == "BUY_PROBE"
+
+
+def test_add_decision_flow_overlay_uses_directional_continuation_overlay_watch_over_blocked_consumer_check():
+    painter = Painter()
+    df_all = {"1M": _build_frame("1M", "min")}
+    tick = SimpleNamespace(bid=100.0, ask=100.2)
+
+    row = {
+        "observe_confirm_v2": {
+            "state": "OBSERVE",
+            "action": "WAIT",
+            "side": "SELL",
+            "reason": "upper_reject_probe_observe",
+        },
+        "consumer_check_state_v1": {
+            "contract_version": "consumer_check_state_v1",
+            "check_candidate": True,
+            "check_display_ready": True,
+            "entry_ready": False,
+            "check_side": "SELL",
+            "check_stage": "BLOCKED",
+            "check_reason": "upper_reject_probe_observe",
+            "entry_block_reason": "energy_soft_block",
+            "display_strength_level": 5,
+        },
+        "blocked_by": "energy_soft_block",
+        "action_none_reason": "execution_soft_blocked",
+        "directional_continuation_overlay_v1": {
+            "contract_version": "directional_continuation_chart_overlay_v1",
+            "overlay_enabled": True,
+            "overlay_direction": "UP",
+            "overlay_side": "BUY",
+            "overlay_event_kind_hint": "BUY_WATCH",
+            "overlay_reason": "directional_up_continuation_watch",
+            "overlay_score": 0.82,
+            "overlay_repeat_count": 3,
+            "overlay_candidate_key": "candidate-btc-up",
+            "overlay_selection_state": "UP_SELECTED",
+        },
+        "entry_decision_result_v1": {},
+        "exit_wait_state_v1": {},
+    }
+
+    painter.add_decision_flow_overlay("BTCUSD", row, df_all, tick)
+
+    history = list(painter._flow_history_by_symbol["BTCUSD"])
+    assert history[0]["event_kind"] == "BUY_WATCH"
+    assert history[0]["repeat_count"] == 3
+    assert history[0]["display_score"] >= 0.82
+    assert all(int(item["color"]) == Painter._FLOW_EVENT_COLORS["BUY_WATCH"] for item in _flow_items(painter, "FLOW_BTCUSD_0_"))
+
+
+def test_add_decision_flow_overlay_prefers_explicit_chart_event_hint_when_present():
+    painter = Painter()
+    df_all = {"1M": _build_frame("1M", "min")}
+    tick = SimpleNamespace(bid=100.0, ask=100.2)
+
+    row = {
+        "observe_confirm_v2": {
+            "state": "OBSERVE",
+            "action": "WAIT",
+            "side": "",
+            "reason": "middle_sr_anchor_required_observe",
+        },
+        "chart_event_kind_hint": "SELL_WATCH",
+        "chart_event_reason_hint": "directional_down_continuation_watch",
+        "entry_decision_result_v1": {},
+        "exit_wait_state_v1": {},
+    }
+
+    painter.add_decision_flow_overlay("BTCUSD", row, df_all, tick)
+
+    history = list(painter._flow_history_by_symbol["BTCUSD"])
+
+    assert history[0]["event_kind"] == "SELL_WATCH"
+    assert history[0]["side"] == "SELL"
+    assert history[0]["reason"] == "directional_down_continuation_watch"
+
+
+def test_sync_flow_history_from_runtime_row_records_consumer_check_when_shadow_emit_disabled():
+    painter = Painter()
+    row = {
+        "symbol": "BTCUSD",
+        "time": "2026-04-14T21:40:11+09:00",
+        "current_close": 74311.09,
+        "live_price": 74316.98,
+        "bid": 74311.09,
+        "ask": 74322.87,
+        "chart_event_kind_hint": "BUY_WATCH",
+        "chart_event_reason_hint": "directional_up_continuation_watch",
+        "flow_shadow_chart_event_ownership_v1": "SHADOW_DISPLAY",
+        "flow_shadow_chart_event_final_kind_v1": "BUY_WATCH",
+        "flow_shadow_chart_event_emit_v1": False,
+        "flow_shadow_chart_event_emit_state_v1": "SUPPRESSED",
+        "flow_shadow_chart_event_emit_reason_v1": "not_specific_enough_for_chart_emit",
+        "flow_shadow_chart_event_emit_key_v1": "",
+        "directional_continuation_overlay_selection_state": "CONFIRMED",
+        "action_none_reason": "observe_state_wait",
+        "consumer_check_state_v1": {
+            "check_candidate": True,
+            "check_display_ready": True,
+            "check_side": "BUY",
+            "check_stage": "OBSERVE",
+            "check_reason": "lower_rebound_probe_observe",
+        },
+    }
+
+    painter.sync_flow_history_from_runtime_row("BTCUSD", row)
+
+    history = list(painter._flow_history_by_symbol.get("BTCUSD", []))
+    assert history[-1]["event_kind"] == "BUY_WAIT"
+    assert history[-1]["side"] == "BUY"
+
+
+def test_sync_flow_history_from_runtime_row_skips_generic_shadow_event_when_emit_disabled():
+    painter = Painter()
+    row = {
+        "symbol": "BTCUSD",
+        "time": "2026-04-14T21:40:11+09:00",
+        "current_close": 74311.09,
+        "live_price": 74316.98,
+        "bid": 74311.09,
+        "ask": 74322.87,
+        "chart_event_kind_hint": "BUY_WATCH",
+        "chart_event_reason_hint": "directional_up_continuation_watch",
+        "flow_shadow_chart_event_ownership_v1": "SHADOW_DISPLAY",
+        "flow_shadow_chart_event_final_kind_v1": "BUY_WATCH",
+        "flow_shadow_chart_event_emit_v1": False,
+        "flow_shadow_chart_event_emit_state_v1": "SUPPRESSED",
+        "flow_shadow_chart_event_emit_reason_v1": "not_specific_enough_for_chart_emit",
+        "flow_shadow_chart_event_emit_key_v1": "",
+        "directional_continuation_overlay_selection_state": "CONFIRMED",
+        "action_none_reason": "observe_state_wait",
+        "consumer_check_state_v1": {
+            "check_candidate": False,
+            "check_display_ready": False,
+            "check_side": "",
+            "check_stage": "",
+            "check_reason": "",
+        },
+    }
+
+    painter.sync_flow_history_from_runtime_row("BTCUSD", row)
+
+    assert list(painter._flow_history_by_symbol.get("BTCUSD", [])) == []
+
+
+def test_sync_flow_history_from_runtime_row_records_shadow_display_event_when_emit_enabled():
+    painter = Painter()
+    row = {
+        "symbol": "NAS100",
+        "time": "2026-04-14T21:40:11+09:00",
+        "current_close": 26311.09,
+        "live_price": 26316.98,
+        "bid": 26311.09,
+        "ask": 26322.87,
+        "chart_event_kind_hint": "BUY_WAIT",
+        "chart_event_reason_hint": "breakout_late_risk_downgrade",
+        "flow_shadow_chart_event_ownership_v1": "SHADOW_DISPLAY",
+        "flow_shadow_chart_event_final_kind_v1": "BUY_WAIT",
+        "flow_shadow_chart_event_emit_v1": True,
+        "flow_shadow_chart_event_emit_state_v1": "TURN_WAIT",
+        "flow_shadow_chart_event_emit_reason_v1": "late_risk_caution_transition",
+        "flow_shadow_chart_event_emit_key_v1": "BUY|BUY_WAIT|BREAKOUT_LATE_RISK|TURN_WAIT",
+        "action_none_reason": "observe_state_wait",
+        "consumer_check_state_v1": {
+            "check_candidate": True,
+            "check_display_ready": True,
+            "check_side": "BUY",
+            "check_stage": "OBSERVE",
+            "check_reason": "outer_band_reversal_support_required_observe",
+        },
+    }
+
+    painter.sync_flow_history_from_runtime_row("NAS100", row)
+
+    history = list(painter._flow_history_by_symbol["NAS100"])
+    assert history[-1]["event_kind"] == "BUY_WAIT"
+    assert history[-1]["reason"] == "late_risk_caution_transition"
+
+
+def test_sync_flow_history_from_runtime_row_repairs_stale_persisted_signature(tmp_path):
+    painter = Painter()
+    painter.save_dir = str(tmp_path)
+    row = {
+        "symbol": "NAS100",
+        "time": "2026-04-14T21:40:11+09:00",
+        "current_close": 26311.09,
+        "live_price": 26316.98,
+        "bid": 26311.09,
+        "ask": 26322.87,
+        "chart_event_kind_hint": "BUY_WAIT",
+        "chart_event_reason_hint": "breakout_late_risk_downgrade",
+        "flow_shadow_chart_event_ownership_v1": "SHADOW_DISPLAY",
+        "flow_shadow_chart_event_final_kind_v1": "BUY_WAIT",
+        "flow_shadow_chart_event_emit_v1": True,
+        "flow_shadow_chart_event_emit_state_v1": "TURN_WAIT",
+        "flow_shadow_chart_event_emit_reason_v1": "late_risk_caution_transition",
+        "flow_shadow_chart_event_emit_key_v1": "BUY|BUY_WAIT|BREAKOUT_LATE_RISK|TURN_WAIT",
+        "action_none_reason": "observe_state_wait",
+    }
+
+    painter.sync_flow_history_from_runtime_row("NAS100", row)
+    history_path = tmp_path / "NAS100_flow_history.json"
+    persisted = json.loads(history_path.read_text(encoding="utf-8"))
+    persisted["last_signature"] = "stale-signature"
+    history_path.write_text(json.dumps(persisted), encoding="utf-8")
+
+    painter.sync_flow_history_from_runtime_row("NAS100", row)
+
+    repaired = json.loads(history_path.read_text(encoding="utf-8"))
+    assert repaired["last_signature"] == Painter._flow_event_signature(row)
+
+
+def test_consumer_check_hidden_flow_suppressed_allows_explicit_directional_watch_hint():
+    row = {
+        "consumer_check_state_v1": {
+            "check_candidate": False,
+            "check_display_ready": False,
+            "check_side": "",
+            "check_stage": "",
+            "check_reason": "conflict_box_upper_bb20_lower_upper_dominant_observe",
+        },
+        "action_none_reason": "observe_state_wait",
+        "chart_event_kind_hint": "BUY_WATCH",
+        "chart_event_reason_hint": "directional_up_continuation_watch",
+    }
+
+    assert Painter._consumer_check_hidden_flow_suppressed(row) is False
+
+
+def test_consumer_check_hidden_flow_suppressed_allows_enabled_overlay_watch_hint():
+    row = {
+        "consumer_check_state_v1": {
+            "check_candidate": False,
+            "check_display_ready": False,
+            "check_side": "",
+            "check_stage": "",
+            "check_reason": "conflict_box_upper_bb20_lower_upper_dominant_observe",
+        },
+        "action_none_reason": "observe_state_wait",
+        "directional_continuation_overlay_v1": {
+            "overlay_enabled": True,
+            "overlay_event_kind_hint": "SELL_WATCH",
+        },
+    }
+
+    assert Painter._consumer_check_hidden_flow_suppressed(row) is False
+
+
+def test_sync_flow_history_from_runtime_row_records_explicit_directional_watch():
+    painter = Painter()
+    row = {
+        "symbol": "BTCUSD",
+        "time": "2026-04-14T21:40:11+09:00",
+        "current_close": 74311.09,
+        "live_price": 74316.98,
+        "bid": 74311.09,
+        "ask": 74322.87,
+        "chart_event_kind_hint": "BUY_WATCH",
+        "chart_event_reason_hint": "directional_up_continuation_watch",
+        "action_none_reason": "observe_state_wait",
+        "consumer_check_state_v1": {
+            "check_candidate": False,
+            "check_display_ready": False,
+            "check_side": "",
+            "check_stage": "",
+            "check_reason": "conflict_box_upper_bb20_lower_balanced_observe",
+        },
+    }
+
+    painter.sync_flow_history_from_runtime_row("BTCUSD", row)
+
+    history = list(painter._flow_history_by_symbol["BTCUSD"])
+    assert history[-1]["event_kind"] == "BUY_WATCH"
+    assert history[-1]["reason"] == "directional_up_continuation_watch"
+
+
+def test_sync_flow_history_from_runtime_row_replaces_stale_directional_watch_with_wait_when_selection_is_unresolved():
+    painter = Painter()
+    painter._flow_history_by_symbol["BTCUSD"] = deque(
+        [
+            {
+                "ts": 1776170000,
+                "price": 74500.0,
+                "event_kind": "BUY_WATCH",
+                "side": "BUY",
+                "reason": "directional_up_continuation_watch",
+                "blocked_by": "",
+                "action_none_reason": "",
+                "priority": 55,
+                "score": 0.77,
+                "display_score": 0.77,
+                "repeat_count": 1,
+                "level": 8,
+                "box_state": "UPPER",
+                "bb_state": "MID",
+                "probe_scene_id": "",
+                "my_position_count": 0.0,
+            }
+        ],
+        maxlen=Painter._FLOW_HISTORY_MAXLEN,
+    )
+    painter._last_flow_signature_by_symbol["BTCUSD"] = "previous-signature"
+    row = {
+        "symbol": "BTCUSD",
+        "time": "2026-04-14T21:50:11+09:00",
+        "current_close": 74461.21,
+        "live_price": 74461.21,
+        "bid": 74458.0,
+        "ask": 74464.4,
+        "consumer_check_reason": "conflict_box_upper_bb20_lower_upper_dominant_observe",
+        "action_none_reason": "observe_state_wait",
+        "consumer_check_state_v1": {
+            "check_candidate": False,
+            "check_display_ready": False,
+            "check_side": "",
+            "check_stage": "",
+            "check_reason": "conflict_box_upper_bb20_lower_upper_dominant_observe",
+        },
+        "directional_continuation_overlay_v1": {
+            "contract_version": "directional_continuation_chart_overlay_v1",
+            "overlay_enabled": False,
+            "overlay_direction": "",
+            "overlay_side": "",
+            "overlay_event_kind_hint": "",
+            "overlay_selection_state": "DIRECTION_TIE",
+        },
+        "directional_continuation_overlay_selection_state": "DIRECTION_TIE",
+        "quick_trace_state": "OBSERVE",
+    }
+
+    painter.sync_flow_history_from_runtime_row("BTCUSD", row)
+
+    history = list(painter._flow_history_by_symbol["BTCUSD"])
+    assert history[-1]["event_kind"] == "WAIT"
+    assert history[-1]["reason"] == "observe_state_wait"
+
+
+def test_sync_flow_history_from_runtime_row_ignores_stale_enter_when_execution_diff_conflicts():
+    painter = Painter()
+    row = {
+        "symbol": "NAS100",
+        "time": "2026-04-14T22:10:11+09:00",
+        "current_close": 25511.25,
+        "live_price": 25511.25,
+        "bid": 25510.9,
+        "ask": 25511.6,
+        "entry_decision_result_v1": {
+            "outcome": "entered",
+            "action": "SELL",
+            "core_reason": "legacy_sell_entry",
+        },
+        "execution_diff_final_action_side": "SKIP",
+        "directional_continuation_overlay_v1": {
+            "contract_version": "directional_continuation_chart_overlay_v1",
+            "overlay_enabled": True,
+            "overlay_direction": "UP",
+            "overlay_side": "BUY",
+            "overlay_event_kind_hint": "BUY_WATCH",
+            "overlay_reason": "directional_up_continuation_watch",
+            "overlay_selection_state": "UP_SELECTED",
+            "overlay_score": 0.74,
+        },
+        "consumer_check_state_v1": {
+            "check_candidate": False,
+            "check_display_ready": False,
+            "check_side": "",
+            "check_stage": "",
+            "check_reason": "upper_break_fail_confirm",
+        },
+    }
+
+    painter.sync_flow_history_from_runtime_row("NAS100", row)
+
+    history = list(painter._flow_history_by_symbol["NAS100"])
+    assert history[-1]["event_kind"] == "BUY_WATCH"
+    assert history[-1]["side"] == "BUY"
+
+
+def test_add_decision_flow_overlay_keeps_consumer_ready_over_directional_continuation_overlay():
+    painter = Painter()
+    df_all = {"1M": _build_frame("1M", "min")}
+    tick = SimpleNamespace(bid=100.0, ask=100.2)
+
+    row = {
+        "observe_confirm_v2": {
+            "state": "CONFIRM",
+            "action": "BUY",
+            "side": "BUY",
+            "reason": "lower_rebound_confirm",
+        },
+        "consumer_check_state_v1": {
+            "contract_version": "consumer_check_state_v1",
+            "check_candidate": True,
+            "check_display_ready": True,
+            "entry_ready": True,
+            "check_side": "BUY",
+            "check_stage": "READY",
+            "check_reason": "lower_rebound_confirm",
+            "display_strength_level": 8,
+        },
+        "directional_continuation_overlay_v1": {
+            "contract_version": "directional_continuation_chart_overlay_v1",
+            "overlay_enabled": True,
+            "overlay_direction": "DOWN",
+            "overlay_side": "SELL",
+            "overlay_event_kind_hint": "SELL_WATCH",
+            "overlay_reason": "directional_down_continuation_watch",
+            "overlay_score": 0.75,
+            "overlay_candidate_key": "candidate-btc-down",
+            "overlay_selection_state": "DOWN_SELECTED",
+        },
+        "entry_decision_result_v1": {},
+        "exit_wait_state_v1": {},
+    }
+
+    painter.add_decision_flow_overlay("BTCUSD", row, df_all, tick)
+
+    history = list(painter._flow_history_by_symbol["BTCUSD"])
+    assert history[0]["event_kind"] == "BUY_READY"

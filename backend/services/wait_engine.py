@@ -437,6 +437,9 @@ class WaitEngine:
         state = str(state_policy.get("state", "NONE"))
         reason = str(state_policy.get("reason", ""))
         hard_wait = bool(state_policy.get("hard_wait", False))
+        lower_rebound_probe_active = bool(state_policy.get("lower_rebound_probe_active", False))
+        upper_reject_probe_active = bool(state_policy.get("upper_reject_probe_active", False))
+        lower_soft_wait_candidate = bool(state_policy.get("lower_soft_wait_candidate", False))
         btc_lower_strong_score_soft_wait = bool(state_policy.get("btc_lower_strong_score_soft_wait", False))
         xau_second_support_probe = bool(state_policy.get("xau_second_support_probe", False))
         xau_upper_sell_probe = bool(state_policy.get("xau_upper_sell_probe", False))
@@ -444,6 +447,9 @@ class WaitEngine:
             "state": str(state or ""),
             "reason": str(reason or ""),
             "hard_wait": bool(hard_wait),
+            "lower_rebound_probe_active": bool(lower_rebound_probe_active),
+            "upper_reject_probe_active": bool(upper_reject_probe_active),
+            "lower_soft_wait_candidate": bool(lower_soft_wait_candidate),
             "btc_lower_strong_score_soft_wait": bool(btc_lower_strong_score_soft_wait),
             "xau_second_support_probe": bool(xau_second_support_probe),
             "xau_upper_sell_probe": bool(xau_upper_sell_probe),
@@ -487,6 +493,9 @@ class WaitEngine:
                 "setup_trigger_state": str(setup_trigger_state),
                 "wait_soft_threshold": float(wait_soft),
                 "wait_hard_threshold": float(wait_hard),
+                "lower_rebound_probe_active": bool(lower_rebound_probe_active),
+                "upper_reject_probe_active": bool(upper_reject_probe_active),
+                "lower_soft_wait_candidate": bool(lower_soft_wait_candidate),
                 "btc_lower_strong_score_soft_wait": bool(btc_lower_strong_score_soft_wait),
                 "action_readiness": float(action_readiness),
                 "has_action_readiness_hint": bool(has_action_readiness_hint),

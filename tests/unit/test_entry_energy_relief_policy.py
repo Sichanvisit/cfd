@@ -126,3 +126,68 @@ def test_energy_relief_policy_applies_xau_upper_mixed_confirm_relief():
     assert out["xau_upper_mixed_confirm_energy_relief"] is True
     assert out["relief_flags"] == ["xau_upper_mixed_confirm_energy_relief"]
     assert out["energy_soft_block_should_block"] is False
+
+
+def test_energy_relief_policy_applies_nas_clean_confirm_probe_relief():
+    out = resolve_entry_energy_soft_block_policy_v1(
+        symbol="NAS100",
+        shadow_action="BUY",
+        shadow_reason="middle_sr_anchor_required_observe",
+        box_state="LOWER",
+        bb_state="MID",
+        probe_plan_v1={
+            "ready_for_entry": True,
+            "symbol_scene_relief": "nas_clean_confirm_probe",
+            "intended_action": "BUY",
+            "candidate_support": 0.13,
+            "pair_gap": 0.19,
+            "action_confirm_score": 0.09,
+            "wait_confirm_gap": -0.20,
+            "continue_fail_gap": -0.27,
+            "same_side_barrier": 0.55,
+            "near_confirm": True,
+        },
+        energy_soft_block_active=True,
+        energy_soft_block_reason="forecast_gap_wait_bias",
+        energy_soft_block_strength=0.42,
+        energy_action_readiness=0.24,
+        effective_priority_rank=1,
+        adjusted_core_score=0.51,
+    )
+
+    assert out["nas_clean_confirm_energy_relief"] is True
+    assert out["relief_flags"] == ["nas_clean_confirm_energy_relief"]
+    assert out["energy_soft_block_should_block"] is False
+
+
+def test_energy_relief_policy_applies_nas_clean_confirm_lower_rebound_probe_relief_with_live_like_metrics():
+    out = resolve_entry_energy_soft_block_policy_v1(
+        symbol="NAS100",
+        shadow_action="BUY",
+        shadow_reason="lower_rebound_probe_observe",
+        box_state="BELOW",
+        bb_state="LOWER_EDGE",
+        probe_plan_v1={
+            "ready_for_entry": True,
+            "symbol_scene_relief": "nas_clean_confirm_probe",
+            "intended_action": "BUY",
+            "candidate_support": 0.6523,
+            "pair_gap": 0.1530,
+            "action_confirm_score": 0.13739,
+            "confirm_fake_gap": -0.1667,
+            "wait_confirm_gap": -0.1156,
+            "continue_fail_gap": -0.2568,
+            "same_side_barrier": 0.5877,
+            "near_confirm": True,
+        },
+        energy_soft_block_active=True,
+        energy_soft_block_reason="forecast_gap_wait_bias",
+        energy_soft_block_strength=0.70,
+        energy_action_readiness=0.24,
+        effective_priority_rank=1,
+        adjusted_core_score=0.51,
+    )
+
+    assert out["nas_clean_confirm_lower_rebound_energy_relief"] is True
+    assert out["energy_soft_block_should_block"] is False
+    assert "nas_clean_confirm_lower_rebound_energy_relief" in out["relief_flags"]

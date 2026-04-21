@@ -10,6 +10,44 @@ import pandas as pd
 from backend.core.config import Config
 
 
+def _get_cached_active_row(trade_logger, ticket: int) -> dict | None:
+    cache = getattr(trade_logger, "_shock_event_runtime_cache", None)
+    if not isinstance(cache, dict):
+        return None
+    row = cache.get(int(ticket or 0))
+    if not isinstance(row, dict):
+        return None
+    if int(pd.to_numeric(row.get("resolved", 0), errors="coerce") or 0) == 1:
+        return None
+    return dict(row)
+
+
+def _set_cached_active_row(trade_logger, ticket: int, row: dict | None) -> None:
+    cache = getattr(trade_logger, "_shock_event_runtime_cache", None)
+    if not isinstance(cache, dict):
+        return
+    t = int(ticket or 0)
+    if t <= 0:
+        return
+    if isinstance(row, dict) and row:
+        cache[t] = dict(row)
+    else:
+        cache.pop(t, None)
+
+
+def _load_latest_active_row_from_csv(trade_logger, ticket: int) -> dict | None:
+    df = trade_logger._read_shock_df_safe()
+    t = int(ticket or 0)
+    if t <= 0 or df.empty:
+        return None
+    cand = df[(df["ticket"] == t) & (df["resolved"] == 0)]
+    if cand.empty:
+        return None
+    row = cand.sort_values("event_ts", ascending=False).iloc[0].to_dict()
+    _set_cached_active_row(trade_logger, t, row)
+    return dict(row)
+
+
 def register_shock_event(
     trade_logger,
     *,
@@ -37,6 +75,9 @@ def register_shock_event(
     now_text = trade_logger._now_kst_text()
     now_ts = int(trade_logger._text_to_kst_epoch(now_text))
     bucket = int(now_ts // 10)
+    cached = _get_cached_active_row(trade_logger, t)
+    if isinstance(cached, dict) and int(pd.to_numeric(cached.get("event_bucket", 0), errors="coerce") or 0) == bucket:
+        return False
     try:
         with trade_logger._file_guard(f"{trade_logger.shock_event_filepath}.lock", trade_logger._shock_lock):
             try:
@@ -75,6 +116,7 @@ def register_shock_event(
             merged = pd.concat([base, pd.DataFrame([row])], ignore_index=True)
             merged = trade_logger._normalize_shock_df(merged)
             trade_logger._atomic_write_df(trade_logger.shock_event_filepath, merged)
+            _set_cached_active_row(trade_logger, t, row)
         return True
     except Exception as exc:
         log.exception("Failed to register shock event ticket=%s: %s", t, exc)
@@ -97,6 +139,34 @@ def update_shock_event_progress(
     if t <= 0:
         return {}
     trade_logger._ensure_shock_event_file()
+    cached = _get_cached_active_row(trade_logger, t)
+    if cached is None:
+        cached = _load_latest_active_row_from_csv(trade_logger, t)
+    if cached is None:
+        return {}
+    cached["ticks_elapsed"] = max(
+        int(pd.to_numeric(cached.get("ticks_elapsed", 0), errors="coerce") or 0),
+        int(ticks_elapsed or 0),
+    )
+    changed = False
+    if delta_10 is not None and int(pd.to_numeric(cached.get("filled_10", 0), errors="coerce") or 0) == 0:
+        cached["shock_hold_delta_10"] = float(delta_10)
+        cached["filled_10"] = 1
+        changed = True
+    if delta_30 is not None and int(pd.to_numeric(cached.get("filled_30", 0), errors="coerce") or 0) == 0:
+        cached["shock_hold_delta_30"] = float(delta_30)
+        cached["filled_30"] = 1
+        changed = True
+    _set_cached_active_row(trade_logger, t, cached)
+    if not changed:
+        return {
+            "shock_hold_delta_10": float(pd.to_numeric(cached.get("shock_hold_delta_10", 0.0), errors="coerce"))
+            if int(pd.to_numeric(cached.get("filled_10", 0), errors="coerce") or 0) == 1
+            else None,
+            "shock_hold_delta_30": float(pd.to_numeric(cached.get("shock_hold_delta_30", 0.0), errors="coerce"))
+            if int(pd.to_numeric(cached.get("filled_30", 0), errors="coerce") or 0) == 1
+            else None,
+        }
     try:
         with trade_logger._file_guard(f"{trade_logger.shock_event_filepath}.lock", trade_logger._shock_lock):
             try:
@@ -108,24 +178,21 @@ def update_shock_event_progress(
             if cand.empty:
                 return {}
             idx = int(cand.sort_values("event_ts", ascending=False).index[0])
-            base.at[idx, "ticks_elapsed"] = max(
-                int(pd.to_numeric(base.at[idx, "ticks_elapsed"], errors="coerce") or 0),
-                int(ticks_elapsed or 0),
-            )
-            if delta_10 is not None and int(pd.to_numeric(base.at[idx, "filled_10"], errors="coerce") or 0) == 0:
-                base.at[idx, "shock_hold_delta_10"] = float(delta_10)
+            base.at[idx, "ticks_elapsed"] = int(cached.get("ticks_elapsed", 0) or 0)
+            if int(pd.to_numeric(cached.get("filled_10", 0), errors="coerce") or 0) == 1:
+                base.at[idx, "shock_hold_delta_10"] = float(cached.get("shock_hold_delta_10", 0.0) or 0.0)
                 base.at[idx, "filled_10"] = 1
-            if delta_30 is not None and int(pd.to_numeric(base.at[idx, "filled_30"], errors="coerce") or 0) == 0:
-                base.at[idx, "shock_hold_delta_30"] = float(delta_30)
+            if int(pd.to_numeric(cached.get("filled_30", 0), errors="coerce") or 0) == 1:
+                base.at[idx, "shock_hold_delta_30"] = float(cached.get("shock_hold_delta_30", 0.0) or 0.0)
                 base.at[idx, "filled_30"] = 1
             base = trade_logger._normalize_shock_df(base)
             trade_logger._atomic_write_df(trade_logger.shock_event_filepath, base)
             return {
-                "shock_hold_delta_10": float(pd.to_numeric(base.at[idx, "shock_hold_delta_10"], errors="coerce"))
-                if int(base.at[idx, "filled_10"]) == 1
+                "shock_hold_delta_10": float(pd.to_numeric(cached.get("shock_hold_delta_10", 0.0), errors="coerce"))
+                if int(pd.to_numeric(cached.get("filled_10", 0), errors="coerce") or 0) == 1
                 else None,
-                "shock_hold_delta_30": float(pd.to_numeric(base.at[idx, "shock_hold_delta_30"], errors="coerce"))
-                if int(base.at[idx, "filled_30"]) == 1
+                "shock_hold_delta_30": float(pd.to_numeric(cached.get("shock_hold_delta_30", 0.0), errors="coerce"))
+                if int(pd.to_numeric(cached.get("filled_30", 0), errors="coerce") or 0) == 1
                 else None,
             }
     except Exception as exc:
@@ -148,6 +215,7 @@ def resolve_shock_event_on_close(
     if t <= 0:
         return {}
     trade_logger._ensure_shock_event_file()
+    cached = _get_cached_active_row(trade_logger, t)
     try:
         with trade_logger._file_guard(f"{trade_logger.shock_event_filepath}.lock", trade_logger._shock_lock):
             try:
@@ -178,6 +246,7 @@ def resolve_shock_event_on_close(
                 out["shock_hold_delta_10"] = float(pd.to_numeric(row.get("shock_hold_delta_10", 0.0), errors="coerce") or 0.0)
             if int(pd.to_numeric(row.get("filled_30", 0), errors="coerce") or 0) == 1:
                 out["shock_hold_delta_30"] = float(pd.to_numeric(row.get("shock_hold_delta_30", 0.0), errors="coerce") or 0.0)
+            _set_cached_active_row(trade_logger, t, None)
             return out
     except Exception as exc:
         log.exception("Failed to resolve shock event ticket=%s: %s", t, exc)

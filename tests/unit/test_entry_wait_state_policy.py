@@ -56,3 +56,25 @@ def test_entry_wait_state_policy_belief_confirm_release_unlocks_hard_wait():
 
     assert policy["state"] == "ACTIVE"
     assert policy["hard_wait"] is False
+
+
+def test_entry_wait_state_policy_marks_nas_upper_reject_probe_active_via_common_probe_contract():
+    policy = resolve_entry_wait_state_policy_v1(
+        symbol="NAS100",
+        action="SELL",
+        box_state="UPPER",
+        bb_state="MID",
+        blocked_by="outer_band_reversal_guard",
+        observe_reason="upper_reject_probe_observe",
+        wait_score=34.0,
+        wait_conflict=0.0,
+        wait_noise=12.0,
+        wait_soft=45.0,
+        wait_hard=70.0,
+        symbol_probe_temperament_v1={"scene_id": "nas_clean_confirm_probe"},
+    )
+
+    assert policy["state"] == "ACTIVE"
+    assert policy["hard_wait"] is False
+    assert policy["upper_reject_probe_active"] is True
+    assert policy["xau_upper_sell_probe"] is False

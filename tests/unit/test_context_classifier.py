@@ -69,7 +69,11 @@ class _DummySessionMgr:
 
 
 class _DummyTrendMgr:
+    def __init__(self):
+        self.add_indicator_calls = 0
+
     def add_indicators(self, frame):
+        self.add_indicator_calls += 1
         out = frame.copy()
         out["bb_20_up"] = 110.0
         out["bb_20_mid"] = 100.0
@@ -314,10 +318,14 @@ def test_context_classifier_build_entry_context_contains_classified_fields():
     assert "semantic_foundation_contract_v1" in ctx.metadata
     assert "forecast_calibration_contract_v1" in ctx.metadata
     assert "outcome_labeler_scope_contract_v1" in ctx.metadata
+    assert "build_entry_context_profile_v1" in ctx.metadata
+    assert "engine_context_snapshot_profile_v1" in ctx.metadata
     assert "position_vector_v1" not in ctx.metadata
     assert "response_vector_v1" not in ctx.metadata
     assert "state_vector_v1" not in ctx.metadata
     assert "energy_snapshot_v1" not in ctx.metadata
+    assert ctx.metadata["build_entry_context_profile_v1"]["stage_timings_ms"]["build_engine_context_snapshot"] >= 0.0
+    assert ctx.metadata["engine_context_snapshot_profile_v1"]["stage_timings_ms"]["m15_indicator_context"] >= 0.0
     assert ctx.metadata["position_snapshot_v2"]["vector"] == ctx.metadata["position_vector_v2"]
     assert ctx.metadata["position_snapshot_v2"]["zones"] == ctx.metadata["position_zones_v2"]
     assert ctx.metadata["position_snapshot_v2"]["interpretation"] == ctx.metadata["position_interpretation_v2"]
@@ -340,6 +348,7 @@ def test_context_classifier_build_entry_context_contains_classified_fields():
     assert ctx.metadata["prs_log_contract_v2"]["runtime_alignment_scope_contract_field"] == (
         "runtime_alignment_scope_contract_v1"
     )
+
     assert ctx.metadata["prs_log_contract_v2"]["compatibility_energy_runtime_field"] == "energy_snapshot"
     assert ctx.metadata["runtime_alignment_scope_contract_v1"]["contract_version"] == (
         RUNTIME_ALIGNMENT_SCOPE_CONTRACT_V1["contract_version"]
@@ -1246,6 +1255,39 @@ def test_context_classifier_build_entry_context_contains_classified_fields():
     assert ctx.metadata["observe_confirm_v2"]["metadata"]["effective_contributions"] == {}
     assert isinstance(ctx.metadata["observe_confirm_v2"]["metadata"]["winning_evidence"], list)
     assert "blocked_reason" in ctx.metadata["observe_confirm_v2"]["metadata"]
+
+
+def test_context_classifier_reuses_m15_indicator_frame_between_bb_and_engine_snapshot():
+    classifier = ContextClassifier()
+    scorer = _DummyScorer()
+    df_all = {
+        "1H": pd.DataFrame(
+            {
+                "close": [100.0, 99.8, 99.6],
+                "high": [100.4, 100.0, 99.8],
+                "low": [99.6, 99.4, 99.2],
+            }
+        ),
+        "15M": pd.DataFrame({"time": [1773149400], "close": [90.1], "high": [90.4], "low": [89.8]}),
+    }
+    result = {
+        "regime": {"name": "range", "zone": "lower", "volatility_ratio": 0.85, "spread_ratio": 1.0},
+        "components": {"wait_score": 12, "wait_conflict": 4, "wait_noise": 3},
+    }
+
+    bundle = classifier.build_entry_context(
+        symbol="XAUUSD",
+        tick=SimpleNamespace(bid=90.01, ask=90.02),
+        df_all=df_all,
+        scorer=scorer,
+        result=result,
+        buy_s=90.0,
+        sell_s=40.0,
+    )
+
+    assert scorer.trend_mgr.add_indicator_calls == 2
+    assert bundle["context"].metadata["build_entry_context_profile_v1"]["m15_indicator_cached"] is True
+    assert "15M" in bundle["context"].metadata["engine_context_snapshot_profile_v1"]["indicator_cache_timeframes"]
 
 
 def test_context_classifier_preserves_raw_and_effective_source_trace_for_energy_replay():

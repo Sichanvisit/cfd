@@ -29,7 +29,9 @@ from backend.services.consumer_contract import EXIT_HANDOFF_CONTRACT_V1
 from backend.services.consumer_contract import RE_ENTRY_CONTRACT_V1
 from backend.services.consumer_contract import SETUP_MAPPING_CONTRACT_V1
 from backend.services.energy_contract import ENERGY_LOGGING_REPLAY_CONTRACT_V1
+from backend.services.barrier_state25_runtime_bridge import build_barrier_state25_runtime_bridge_v1
 from backend.services.entry_engines import (
+    ENTRY_DECISION_FULL_COLUMNS,
     ENTRY_DECISION_LOG_COLUMNS,
     EntryDecisionRecorder,
     EntryGuardEngine,
@@ -265,6 +267,309 @@ def test_entry_decision_log_columns_include_r0_fields():
     assert "r0_row_interpretation_v1" in ENTRY_DECISION_LOG_COLUMNS
     assert "p7_guarded_size_overlay_v1" in ENTRY_DECISION_LOG_COLUMNS
     assert "p7_size_overlay_effective_multiplier" in ENTRY_DECISION_LOG_COLUMNS
+    assert "teacher_label_exploration_active" in ENTRY_DECISION_LOG_COLUMNS
+    assert "teacher_label_exploration_enabled" in ENTRY_DECISION_LOG_COLUMNS
+    assert "teacher_label_exploration_family" in ENTRY_DECISION_LOG_COLUMNS
+    assert "teacher_label_exploration_reason" in ENTRY_DECISION_LOG_COLUMNS
+    assert "teacher_label_exploration_guard_failure_code" in ENTRY_DECISION_LOG_COLUMNS
+    assert "teacher_label_exploration_soft_block_reason" in ENTRY_DECISION_LOG_COLUMNS
+    assert "teacher_label_exploration_check_side" in ENTRY_DECISION_LOG_COLUMNS
+    assert "teacher_label_exploration_check_stage" in ENTRY_DECISION_LOG_COLUMNS
+    assert "teacher_label_exploration_same_dir_count" in ENTRY_DECISION_LOG_COLUMNS
+    assert "teacher_label_exploration_score_ratio" in ENTRY_DECISION_LOG_COLUMNS
+    assert "teacher_label_exploration_threshold_gap" in ENTRY_DECISION_LOG_COLUMNS
+    assert "teacher_label_exploration_size_multiplier" in ENTRY_DECISION_LOG_COLUMNS
+    assert "micro_breakout_readiness_state" in ENTRY_DECISION_LOG_COLUMNS
+    assert "micro_reversal_risk_state" in ENTRY_DECISION_LOG_COLUMNS
+    assert "micro_participation_state" in ENTRY_DECISION_LOG_COLUMNS
+    assert "micro_gap_context_state" in ENTRY_DECISION_LOG_COLUMNS
+    assert "micro_body_size_pct_20" in ENTRY_DECISION_LOG_COLUMNS
+    assert "micro_doji_ratio_20" in ENTRY_DECISION_LOG_COLUMNS
+    assert "micro_same_color_run_current" in ENTRY_DECISION_LOG_COLUMNS
+    assert "micro_same_color_run_max_20" in ENTRY_DECISION_LOG_COLUMNS
+    assert "micro_range_compression_ratio_20" in ENTRY_DECISION_LOG_COLUMNS
+    assert "micro_volume_burst_ratio_20" in ENTRY_DECISION_LOG_COLUMNS
+    assert "micro_volume_burst_decay_20" in ENTRY_DECISION_LOG_COLUMNS
+    assert "micro_gap_fill_progress" in ENTRY_DECISION_LOG_COLUMNS
+    assert "state25_candidate_rollout_phase" in ENTRY_DECISION_LOG_COLUMNS
+    assert "state25_candidate_effective_entry_threshold" in ENTRY_DECISION_LOG_COLUMNS
+    assert "forecast_state25_overlay_mode" in ENTRY_DECISION_LOG_COLUMNS
+    assert "forecast_state25_candidate_management_bias" in ENTRY_DECISION_LOG_COLUMNS
+    assert "belief_action_hint_mode" in ENTRY_DECISION_LOG_COLUMNS
+    assert "belief_candidate_recommended_family" in ENTRY_DECISION_LOG_COLUMNS
+    assert "barrier_action_hint_mode" in ENTRY_DECISION_LOG_COLUMNS
+    assert "barrier_candidate_recommended_family" in ENTRY_DECISION_LOG_COLUMNS
+    assert "barrier_action_hint_cost_hint" in ENTRY_DECISION_LOG_COLUMNS
+
+
+def test_entry_decision_full_columns_keep_owner_bridges_detail_only():
+    assert "forecast_state25_runtime_bridge_v1" in ENTRY_DECISION_FULL_COLUMNS
+    assert "belief_state25_runtime_bridge_v1" in ENTRY_DECISION_FULL_COLUMNS
+    assert "barrier_state25_runtime_bridge_v1" in ENTRY_DECISION_FULL_COLUMNS
+    assert "forecast_state25_log_only_overlay_trace_v1" in ENTRY_DECISION_FULL_COLUMNS
+    assert "forecast_state25_runtime_bridge_v1" not in ENTRY_DECISION_LOG_COLUMNS
+    assert "belief_state25_runtime_bridge_v1" not in ENTRY_DECISION_LOG_COLUMNS
+    assert "barrier_state25_runtime_bridge_v1" not in ENTRY_DECISION_LOG_COLUMNS
+    assert "forecast_state25_log_only_overlay_trace_v1" not in ENTRY_DECISION_LOG_COLUMNS
+
+
+def test_entry_decision_recorder_persists_barrier_bridge_in_detail_only_payload(monkeypatch, tmp_path: Path):
+    runtime = SimpleNamespace(append_ai_entry_trace=lambda *_args, **_kwargs: None)
+    rec = EntryDecisionRecorder(runtime)
+    out = tmp_path / "entry_decisions.csv"
+    monkeypatch.setattr(Config, "ENTRY_DECISION_LOG_ENABLED", True, raising=False)
+    monkeypatch.setattr(Config, "ENTRY_DECISION_LOG_PATH", str(out), raising=False)
+
+    row = _minimal_entry_row(time="2026-04-04T16:30:00", symbol="BTCUSD", action="SELL", outcome="skipped")
+    row.update(
+        {
+            "blocked_by": "max_positions_reached",
+            "barrier_state_v1": {},
+        }
+    )
+    row["barrier_state25_runtime_bridge_v1"] = build_barrier_state25_runtime_bridge_v1(row)
+
+    rec.append_entry_decision_log(row)
+
+    logged = pd.read_csv(out, encoding="utf-8")
+    detail_record = _load_detail_record(out)
+    detail_first = detail_record["payload"]
+
+    assert "barrier_state25_runtime_bridge_v1" not in logged.columns
+    assert isinstance(detail_first["barrier_state25_runtime_bridge_v1"], dict)
+    summary = detail_first["barrier_state25_runtime_bridge_v1"]["barrier_runtime_summary_v1"]
+    assert summary["available"] is False
+    assert summary["availability_stage"] == "pre_context_skip"
+    assert summary["availability_reason"] == "max_positions_reached"
+
+
+def test_entry_decision_recorder_compacts_wait_detail_payload(monkeypatch, tmp_path: Path):
+    runtime = SimpleNamespace(
+        append_ai_entry_trace=lambda *_args, **_kwargs: None,
+        latest_signal_by_symbol={},
+    )
+    rec = EntryDecisionRecorder(runtime)
+    out = tmp_path / "entry_decisions.csv"
+    monkeypatch.setattr(Config, "ENTRY_DECISION_LOG_ENABLED", True, raising=False)
+    monkeypatch.setattr(Config, "ENTRY_DECISION_LOG_PATH", str(out), raising=False)
+
+    row = _minimal_entry_row(time="2026-04-09T15:00:00", symbol="XAUUSD", action="BUY", outcome="wait")
+    row.update(
+        {
+            "observe_reason": "shadow_lower_rebound_probe_observe_xau_lower_rebound_follow_through",
+            "blocked_by": "upper_reject_mixed_observe",
+            "action_none_reason": "observe_state_wait",
+            "entry_decision_context_v1": {
+                "symbol": "XAUUSD",
+                "phase": "entry",
+                "metadata": {
+                    "core_reason": "core_shadow_observe_wait",
+                    "forecast_assist_v1": {
+                        "contract_version": "forecast_assist_v1",
+                        "decision_hint": "WAIT",
+                        "wait_confirm_gap": -0.12,
+                    },
+                    "entry_probe_plan_v1": {
+                        "contract_version": "entry_probe_plan_v1",
+                        "active": True,
+                        "ready_for_entry": False,
+                        "scene_id": "xau_lower_rebound_follow_through",
+                    },
+                    "edge_pair_law_v1": {
+                        "contract_version": "edge_pair_law_v1",
+                        "context_label": "lower_rebound",
+                        "winner_side": "BUY",
+                    },
+                    "probe_candidate_v1": {
+                        "contract_version": "probe_candidate_v1",
+                        "active": True,
+                        "probe_direction": "BUY",
+                    },
+                },
+            },
+            "entry_decision_result_v1": {
+                "phase": "entry",
+                "symbol": "XAUUSD",
+                "action": "BUY",
+                "outcome": "wait",
+                "blocked_by": "upper_reject_mixed_observe",
+                "metrics": {
+                    "observe_reason": "shadow_lower_rebound_probe_observe_xau_lower_rebound_follow_through",
+                    "action_none_reason": "observe_state_wait",
+                },
+            },
+            "forecast_assist_v1": {
+                "contract_version": "forecast_assist_v1",
+                "decision_hint": "WAIT",
+                "wait_confirm_gap": -0.12,
+            },
+            "entry_probe_plan_v1": {
+                "contract_version": "entry_probe_plan_v1",
+                "active": True,
+                "ready_for_entry": False,
+                "scene_id": "xau_lower_rebound_follow_through",
+            },
+            "edge_pair_law_v1": {
+                "contract_version": "edge_pair_law_v1",
+                "context_label": "lower_rebound",
+                "winner_side": "BUY",
+            },
+            "probe_candidate_v1": {
+                "contract_version": "probe_candidate_v1",
+                "active": True,
+                "probe_direction": "BUY",
+            },
+            "consumer_check_state_v1": {
+                "contract_version": "consumer_check_state_v1",
+                "check_candidate": True,
+                "check_display_ready": True,
+                "entry_ready": False,
+                "check_side": "BUY",
+                "check_stage": "OBSERVE",
+                "check_reason": "observe_state_wait",
+            },
+            "position_snapshot_v2": {
+                "zones": {"box_zone": "LOWER"},
+                "interpretation": {"primary_label": "LOWER_REBOUND"},
+                "energy": {"upper_position_force": 0.1},
+                "vector": {"x_box": -0.4},
+            },
+            "response_vector_v2": {"lower_rebound_up": 0.8, "upper_reject_down": 0.2},
+            "state_vector_v2": {"trend_pullback_buy": 0.7},
+            "forecast_features_v1": {"metadata": {"signal_timeframe": "15M", "signal_bar_ts": 1773149400}},
+        }
+    )
+
+    rec.append_entry_decision_log(row)
+
+    logged = pd.read_csv(out, encoding="utf-8")
+    first = logged.iloc[0].to_dict()
+    detail_record = _load_detail_record(out)
+    detail_first = detail_record["payload"]
+
+    assert first["outcome"] == "wait"
+    assert '"scene_id":"xau_lower_rebound_follow_through"' in str(first["entry_probe_plan_v1"])
+    assert '"context_label":"lower_rebound"' in str(first["edge_pair_law_v1"])
+    assert detail_first["entry_decision_context_v1"]["metadata"]["forecast_assist_v1"]["decision_hint"] == "WAIT"
+    assert detail_first["entry_probe_plan_v1"]["scene_id"] == "xau_lower_rebound_follow_through"
+    assert detail_first["edge_pair_law_v1"]["context_label"] == "lower_rebound"
+    assert detail_first["consumer_check_state_v1"]["check_stage"] == "OBSERVE"
+    assert isinstance(detail_first["position_snapshot_v2"], dict)
+    assert isinstance(detail_first["response_vector_v2"], dict)
+    assert detail_first["response_vector_v2"]["lower_rebound_up"] == 0.8
+    assert "forecast_effective_policy_v1" not in detail_first
+    assert "position_snapshot_effective_v1" not in detail_first
+    assert "layer_mode_effective_trace_v1" not in detail_first
+    assert "layer_mode_logging_replay_v1" not in detail_first
+    assert "consumer_scope_contract_v1" not in detail_first
+    assert runtime.latest_signal_by_symbol["XAUUSD"]["entry_append_log_profile_v1"]["detail_record_mode"] == (
+        "compact_runtime_signal_row"
+    )
+    file_write_stage_timings = runtime.latest_signal_by_symbol["XAUUSD"]["entry_append_log_profile_v1"][
+        "file_write_stage_timings_ms"
+    ]
+    assert set(file_write_stage_timings.keys()) == {
+        "rollover",
+        "header_check",
+        "detail_rotation",
+        "detail_append",
+        "csv_append",
+    }
+    detail_payload_stage_timings = runtime.latest_signal_by_symbol["XAUUSD"]["entry_append_log_profile_v1"][
+        "detail_payload_stage_timings_ms"
+    ]
+    assert set(detail_payload_stage_timings.keys()) == {
+        "compact_runtime_row",
+        "detail_record_json",
+        "hot_payload_build",
+        "payload_size_metrics",
+    }
+
+
+def test_entry_decision_recorder_rollover_fast_skip_reuses_recent_safe_result(monkeypatch, tmp_path: Path):
+    runtime = SimpleNamespace(
+        append_ai_entry_trace=lambda *_args, **_kwargs: None,
+        latest_signal_by_symbol={},
+    )
+    rec = EntryDecisionRecorder(runtime)
+    path = tmp_path / "entry_decisions.csv"
+    path.write_text("time,symbol,action\n2026-04-09T15:50:00,XAUUSD,BUY\n", encoding="utf-8")
+    cols = ["time", "symbol", "action"]
+    cache_key = f"{str(path)}::{','.join(cols)}"
+    rec._header_cache = {"cache_key": cache_key, "verified": True}
+    monkeypatch.setenv("ENTRY_DECISION_ROLLOVER_MAX_BYTES", str(1024 * 1024 * 1024))
+
+    calls: list[int] = []
+
+    def _fake_rollover(**kwargs):
+        calls.append(1)
+        return {
+            "contract_version": "entry_decision_rollover_v1",
+            "source_path": str(kwargs["path"]),
+            "exists": True,
+            "enabled": True,
+            "would_roll": False,
+            "rolled": False,
+            "source_size_bytes": path.stat().st_size,
+        }
+
+    monkeypatch.setattr("backend.services.entry_engines.execute_entry_decision_rollover", _fake_rollover)
+
+    first = rec._rollover_if_needed(path, cols)
+    second = rec._rollover_if_needed(path, cols)
+
+    assert len(calls) == 1
+    assert first["would_roll"] is False
+    assert second["would_roll"] is False
+    assert second["fast_skip_reason"] == "cooldown_safe_window"
+
+
+def test_entry_decision_recorder_reuses_append_handles_for_wait_rows(monkeypatch, tmp_path: Path):
+    runtime = SimpleNamespace(
+        append_ai_entry_trace=lambda *_args, **_kwargs: None,
+        latest_signal_by_symbol={},
+    )
+    rec = EntryDecisionRecorder(runtime)
+    out = tmp_path / "entry_decisions.csv"
+    detail_path = resolve_entry_decision_detail_path(out)
+    out_resolved = out.resolve()
+    detail_path_resolved = detail_path.resolve()
+    monkeypatch.setattr(Config, "ENTRY_DECISION_LOG_PATH", str(out))
+    monkeypatch.setenv("ENTRY_DECISION_ROLLOVER_MAX_BYTES", str(1024 * 1024 * 1024))
+    monkeypatch.setenv("ENTRY_DECISION_DETAIL_ROTATE_MAX_BYTES", str(1024 * 1024 * 1024))
+
+    original_open = Path.open
+    append_open_counts = {"csv": 0, "detail": 0}
+
+    def _counted_open(self, *args, **kwargs):
+        mode = str(args[0] if args else kwargs.get("mode", "r") or "r")
+        if "a" in mode:
+            current = Path(self).resolve()
+            if current == out_resolved:
+                append_open_counts["csv"] += 1
+            elif current == detail_path_resolved:
+                append_open_counts["detail"] += 1
+        return original_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", _counted_open)
+
+    rec.append_entry_decision_log(
+        _minimal_entry_row(time="2026-03-18T10:00:00", symbol="NAS100", action="BUY", outcome="wait")
+    )
+    rec.append_entry_decision_log(
+        _minimal_entry_row(time="2026-03-18T10:00:10", symbol="NAS100", action="BUY", outcome="wait")
+    )
+    rec.append_entry_decision_log(
+        _minimal_entry_row(time="2026-03-18T10:00:20", symbol="NAS100", action="BUY", outcome="wait")
+    )
+
+    assert append_open_counts["csv"] == 2
+    assert append_open_counts["detail"] == 2
+
+    rec._close_append_handles()
+    logged = pd.read_csv(out, encoding="utf-8")
+    assert len(logged) == 3
+    assert detail_path.exists()
 
 
 def test_entry_guard_engine_btc_duplicate_lower_buy_requires_larger_spacing_even_with_same_thesis(monkeypatch):
@@ -435,7 +740,7 @@ def test_entry_decision_recorder_writes_decision_row(monkeypatch, tmp_path: Path
         "response_raw_snapshot_v1": "{\"bb20_lower_hold\":1.0}",
         "response_vector_v2": "{\"lower_hold_up\":1.0}",
         "state_raw_snapshot_v1": "{\"market_mode\":\"RANGE\",\"s_conflict\":0.1}",
-        "state_vector_v2": "{\"range_reversal_gain\":1.18,\"conflict_damp\":0.9}",
+        "state_vector_v2": "{\"range_reversal_gain\":1.18,\"conflict_damp\":0.9,\"metadata\":{\"micro_breakout_readiness_state\":\"READY_BREAKOUT\",\"micro_reversal_risk_state\":\"LOW_REVERSAL_RISK\",\"micro_participation_state\":\"ACTIVE_PARTICIPATION\",\"micro_gap_context_state\":\"NO_GAP_CONTEXT\",\"source_micro_body_size_pct_20\":0.31,\"source_micro_doji_ratio_20\":0.08,\"source_micro_same_color_run_current\":4,\"source_micro_same_color_run_max_20\":7,\"source_micro_range_compression_ratio_20\":0.42,\"source_micro_volume_burst_ratio_20\":1.63,\"source_micro_volume_burst_decay_20\":0.74,\"source_micro_gap_fill_progress\":0.0}}",
         "evidence_vector_v1": "{\"buy_reversal_evidence\":0.84,\"buy_total_evidence\":0.84}",
         "belief_state_v1": "{\"buy_belief\":0.51,\"buy_persistence\":0.4}",
         "barrier_state_v1": "{\"buy_barrier\":0.12,\"middle_chop_barrier\":0.08}",
@@ -500,6 +805,43 @@ def test_entry_decision_recorder_writes_decision_row(monkeypatch, tmp_path: Path
             "gate_reason": "dry_run_only",
             "source_path": r"data\analysis\profitability_operations\profitability_operations_p7_guarded_size_overlay_latest.json",
         },
+        "state25_candidate_active_candidate_id": "candidate_20260404",
+        "state25_candidate_policy_source": "state25_candidate",
+        "state25_candidate_rollout_phase": "log_only",
+        "state25_candidate_binding_mode": "log_only",
+        "state25_candidate_threshold_log_only_enabled": True,
+        "state25_candidate_threshold_symbol_scope_hit": True,
+        "state25_candidate_threshold_stage_scope_hit": True,
+        "state25_candidate_effective_entry_threshold": 41.0,
+        "state25_candidate_entry_threshold_delta": -4.0,
+        "state25_candidate_size_log_only_enabled": True,
+        "state25_candidate_size_symbol_scope_hit": True,
+        "state25_candidate_size_multiplier": 0.85,
+        "state25_candidate_size_multiplier_delta": -0.15,
+        "state25_candidate_size_min_multiplier": 0.75,
+        "state25_candidate_size_max_multiplier": 1.0,
+        "forecast_state25_overlay_mode": "log_only",
+        "forecast_state25_overlay_enabled": True,
+        "forecast_state25_candidate_effective_entry_threshold": 43.0,
+        "forecast_state25_candidate_entry_threshold_delta": -2.0,
+        "forecast_state25_candidate_size_multiplier": 0.9,
+        "forecast_state25_candidate_size_multiplier_delta": -0.1,
+        "forecast_state25_candidate_wait_bias_action": "reinforce_wait_bias",
+        "forecast_state25_candidate_management_bias": "fast_cut_bias",
+        "forecast_state25_overlay_reason_summary": "wait_bias_hold|fast_cut_bias",
+        "belief_action_hint_mode": "log_only",
+        "belief_action_hint_enabled": True,
+        "belief_candidate_recommended_family": "hold_bias",
+        "belief_candidate_supporting_label": "correct_hold",
+        "belief_action_hint_confidence": "high",
+        "belief_action_hint_reason_summary": "stable_belief_hold",
+        "barrier_action_hint_mode": "log_only",
+        "barrier_action_hint_enabled": True,
+        "barrier_candidate_recommended_family": "wait_bias",
+        "barrier_candidate_supporting_label": "correct_wait",
+        "barrier_action_hint_confidence": "medium",
+        "barrier_action_hint_cost_hint": "wait_value_r=0.18",
+        "barrier_action_hint_reason_summary": "elevated_conflict_barrier_wait",
         "observe_confirm_v1": "{\"state\":\"CONFIRM\",\"action\":\"BUY\",\"side\":\"BUY\",\"confidence\":0.72,\"reason\":\"lower hold evidence dominated\",\"archetype_id\":\"lower_hold_buy\",\"invalidation_id\":\"lower_support_fail\",\"management_profile_id\":\"support_hold_profile\",\"metadata\":{\"raw_contributions\":{},\"effective_contributions\":{},\"winning_evidence\":[\"lower_hold_up\"],\"blocked_reason\":\"\"}}",
     }
     rec.append_entry_decision_log(row)
@@ -549,6 +891,15 @@ def test_entry_decision_recorder_writes_decision_row(monkeypatch, tmp_path: Path
     assert float(first["p7_size_overlay_target_multiplier"]) == 0.43
     assert float(first["p7_size_overlay_effective_multiplier"]) == 1.0
     assert first["p7_size_overlay_gate_reason"] == "dry_run_only"
+    assert first["state25_candidate_rollout_phase"] == "log_only"
+    assert float(first["state25_candidate_effective_entry_threshold"]) == 41.0
+    assert first["forecast_state25_overlay_mode"] == "log_only"
+    assert first["forecast_state25_candidate_management_bias"] == "fast_cut_bias"
+    assert first["belief_action_hint_mode"] == "log_only"
+    assert first["belief_candidate_recommended_family"] == "hold_bias"
+    assert first["barrier_action_hint_mode"] == "log_only"
+    assert first["barrier_candidate_recommended_family"] == "wait_bias"
+    assert first["barrier_action_hint_cost_hint"] == "wait_value_r=0.18"
     p7_overlay = json.loads(str(first["p7_guarded_size_overlay_v1"]))
     assert p7_overlay["mode"] == "dry_run"
     assert p7_overlay["matched"] is True
@@ -561,6 +912,18 @@ def test_entry_decision_recorder_writes_decision_row(monkeypatch, tmp_path: Path
     assert first["consumer_check_entry_ready"] is False
     assert first["consumer_check_side"] == "BUY"
     assert first["consumer_check_stage"] == "PROBE"
+    assert first["micro_breakout_readiness_state"] == "READY_BREAKOUT"
+    assert first["micro_reversal_risk_state"] == "LOW_REVERSAL_RISK"
+    assert first["micro_participation_state"] == "ACTIVE_PARTICIPATION"
+    assert first["micro_gap_context_state"] == "NO_GAP_CONTEXT"
+    assert float(first["micro_body_size_pct_20"]) == 0.31
+    assert float(first["micro_doji_ratio_20"]) == 0.08
+    assert int(first["micro_same_color_run_current"]) == 4
+    assert int(first["micro_same_color_run_max_20"]) == 7
+    assert float(first["micro_range_compression_ratio_20"]) == 0.42
+    assert float(first["micro_volume_burst_ratio_20"]) == 1.63
+    assert float(first["micro_volume_burst_decay_20"]) == 0.74
+    assert float(first["micro_gap_fill_progress"]) == 0.0
 
 
 def test_entry_decision_recorder_auto_rolls_active_log_to_archive(monkeypatch, tmp_path: Path):
@@ -1296,6 +1659,85 @@ def test_entry_guard_engine_btc_shadow_lower_buy_relaxes_on_lower_band_reaction_
     )
     assert ok is True
     assert reason == ""
+
+
+def test_entry_guard_engine_xau_bounded_probe_soft_edge_relaxes_box_middle_guard():
+    eng = EntryGuardEngine()
+    tick = SimpleNamespace(bid=100.74, ask=100.78)
+    h1 = pd.DataFrame({"high": [110.0, 110.0], "low": [90.0, 90.0], "close": [100.0, 100.0]})
+    m15 = pd.DataFrame(
+        {
+            "high": [101.05, 101.10, 101.14, 101.18],
+            "low": [98.14, 98.18, 98.20, 98.24],
+            "close": [100.44, 100.58, 100.66, 100.72],
+        }
+    )
+
+    class _SessionMgr:
+        @staticmethod
+        def get_session_range(_df, _start, _end):
+            return {"high": 110.0, "low": 90.0}
+
+        @staticmethod
+        def get_position_in_box(_box, _px):
+            return "MIDDLE"
+
+    scorer = SimpleNamespace(session_mgr=_SessionMgr())
+    ok, reason = eng.pass_box_middle_guard(
+        symbol="XAUUSD",
+        action="BUY",
+        tick=tick,
+        df_all={"1H": h1, "15M": m15},
+        scorer=scorer,
+        indicators={"ind_bb_20_mid": 100.0, "ind_bb_20_up": 102.0, "ind_bb_20_dn": 98.0},
+        setup_id="range_lower_reversal_buy",
+        setup_reason="shadow_lower_rebound_probe_observe_bounded_probe_soft_edge",
+    )
+
+    assert ok is True
+    assert reason == ""
+
+
+def test_entry_guard_engine_xau_bounded_probe_soft_edge_blocks_countertrend_warning_veto():
+    eng = EntryGuardEngine()
+    tick = SimpleNamespace(bid=100.74, ask=100.78)
+    h1 = pd.DataFrame({"high": [110.0, 110.0], "low": [90.0, 90.0], "close": [100.0, 100.0]})
+    m15 = pd.DataFrame(
+        {
+            "high": [101.05, 101.10, 101.14, 101.18],
+            "low": [98.14, 98.18, 98.20, 98.24],
+            "close": [100.44, 100.58, 100.66, 100.72],
+        }
+    )
+
+    class _SessionMgr:
+        @staticmethod
+        def get_session_range(_df, _start, _end):
+            return {"high": 110.0, "low": 90.0}
+
+        @staticmethod
+        def get_position_in_box(_box, _px):
+            return "MIDDLE"
+
+    scorer = SimpleNamespace(session_mgr=_SessionMgr())
+    ok, reason = eng.pass_box_middle_guard(
+        symbol="XAUUSD",
+        action="BUY",
+        tick=tick,
+        df_all={"1H": h1, "15M": m15},
+        scorer=scorer,
+        indicators={"ind_bb_20_mid": 100.0, "ind_bb_20_up": 102.0, "ind_bb_20_dn": 98.0},
+        setup_id="range_lower_reversal_buy",
+        setup_reason="shadow_lower_rebound_probe_observe_bounded_probe_soft_edge",
+        runtime_signal_row={
+            "forecast_state25_overlay_reason_summary": "wait_bias_hold|wait_reinforce",
+            "belief_action_hint_reason_summary": "fragile_thesis|reduce_risk",
+            "barrier_action_hint_reason_summary": "wait_block|unstable",
+        },
+    )
+
+    assert ok is False
+    assert reason == "xau_follow_through_countertrend_veto"
 
 
 def test_entry_threshold_engine_hard_guard_uses_range_symbol_floor(monkeypatch):

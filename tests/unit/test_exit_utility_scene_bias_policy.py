@@ -141,3 +141,192 @@ def test_exit_utility_scene_bias_bundle_marks_opposite_edge_completion_bias():
     assert compact["utility_deltas"]["utility_exit_now_delta"] == 0.4532
     assert compact["utility_deltas"]["utility_hold_delta"] == -0.359
     assert compact["utility_deltas"]["utility_wait_exit_delta"] == -0.277
+
+
+def test_exit_utility_scene_bias_bundle_marks_meaningful_giveback_exit_pressure():
+    compact = compact_exit_utility_scene_bias_bundle_v1(
+        resolve_exit_utility_scene_bias_bundle_v1(
+            exit_utility_input_v1={
+                "contract_version": "exit_utility_input_v1",
+                "identity": {
+                    "symbol": "XAUUSD",
+                    "state": "ACTIVE",
+                    "entry_direction": "SELL",
+                },
+                "market": {
+                    "regime_now": "NORMAL",
+                    "current_box_state": "MIDDLE",
+                    "current_bb_state": "MID",
+                },
+                "risk": {
+                    "profit": 0.45,
+                    "peak_profit": 1.15,
+                    "giveback": 0.70,
+                    "adverse_risk": False,
+                },
+                "policy": {
+                    "recovery_policy_id": "trend_pullback_sell",
+                },
+                "bias": {
+                    "symbol_edge_execution_overrides_v1": {},
+                },
+            },
+            exit_utility_base_bundle_v1={
+                "contract_version": "exit_utility_base_bundle_v1",
+                "inputs": {
+                    "locked_profit": 0.45,
+                },
+            },
+        )
+    )
+
+    assert compact["flags"]["meaningful_giveback_exit_pressure"] is True
+    assert compact["utility_deltas"]["utility_exit_now_delta"] == 0.372
+    assert compact["utility_deltas"]["utility_hold_delta"] == -0.44
+    assert compact["utility_deltas"]["utility_wait_exit_delta"] == -0.278
+
+
+def test_exit_utility_scene_bias_bundle_marks_countertrend_topdown_exit_pressure():
+    compact = compact_exit_utility_scene_bias_bundle_v1(
+        resolve_exit_utility_scene_bias_bundle_v1(
+            exit_utility_input_v1={
+                "contract_version": "exit_utility_input_v1",
+                "identity": {
+                    "symbol": "XAUUSD",
+                    "state": "ACTIVE",
+                    "entry_direction": "SELL",
+                },
+                "market": {
+                    "regime_now": "NORMAL",
+                    "current_box_state": "MIDDLE",
+                    "current_bb_state": "MID",
+                },
+                "risk": {
+                    "profit": 0.18,
+                    "peak_profit": 0.62,
+                    "giveback": 0.44,
+                    "adverse_risk": False,
+                },
+                "policy": {
+                    "recovery_policy_id": "range_upper_reversal_sell_xau_balanced",
+                },
+                "bias": {
+                    "state_execution_bias_v1": {
+                        "countertrend_with_entry": True,
+                        "prefer_fast_cut": True,
+                        "topdown_state_label": "BULL_CONFLUENCE",
+                    },
+                    "symbol_edge_execution_overrides_v1": {},
+                },
+            },
+            exit_utility_base_bundle_v1={
+                "contract_version": "exit_utility_base_bundle_v1",
+                "inputs": {
+                    "locked_profit": 0.18,
+                },
+            },
+        )
+    )
+
+    assert compact["flags"]["countertrend_topdown_exit_pressure"] is True
+    assert compact["utility_deltas"]["utility_exit_now_delta"] == 0.2328
+    assert compact["utility_deltas"]["utility_hold_delta"] == -0.286
+    assert compact["utility_deltas"]["utility_wait_exit_delta"] == -0.1928
+
+
+def test_exit_utility_scene_bias_bundle_marks_countertrend_no_green_exit_pressure():
+    compact = compact_exit_utility_scene_bias_bundle_v1(
+        resolve_exit_utility_scene_bias_bundle_v1(
+            exit_utility_input_v1={
+                "contract_version": "exit_utility_input_v1",
+                "identity": {
+                    "symbol": "XAUUSD",
+                    "state": "ACTIVE",
+                    "entry_direction": "SELL",
+                },
+                "market": {
+                    "regime_now": "NORMAL",
+                    "current_box_state": "MIDDLE",
+                    "current_bb_state": "MID",
+                },
+                "risk": {
+                    "profit": -0.24,
+                    "peak_profit": 0.0,
+                    "giveback": 0.0,
+                    "adverse_risk": False,
+                },
+                "policy": {
+                    "recovery_policy_id": "range_upper_reversal_sell_xau_balanced",
+                },
+                "bias": {
+                    "state_execution_bias_v1": {
+                        "countertrend_with_entry": True,
+                        "prefer_fast_cut": False,
+                        "topdown_state_label": "BULL_CONFLUENCE",
+                    },
+                    "symbol_edge_execution_overrides_v1": {},
+                },
+            },
+            exit_utility_base_bundle_v1={
+                "contract_version": "exit_utility_base_bundle_v1",
+                "inputs": {
+                    "locked_profit": 0.0,
+                },
+            },
+        )
+    )
+
+    assert compact["flags"]["countertrend_no_green_exit_pressure"] is True
+    assert compact["flags"]["countertrend_topdown_exit_pressure"] is False
+    assert compact["utility_deltas"]["utility_exit_now_delta"] == 0.24
+    assert compact["utility_deltas"]["utility_hold_delta"] == -0.28
+    assert compact["utility_deltas"]["utility_wait_exit_delta"] == -0.18
+
+
+def test_exit_utility_scene_bias_bundle_marks_countertrend_continuation_exit_pressure():
+    compact = compact_exit_utility_scene_bias_bundle_v1(
+        resolve_exit_utility_scene_bias_bundle_v1(
+            exit_utility_input_v1={
+                "contract_version": "exit_utility_input_v1",
+                "identity": {
+                    "symbol": "XAUUSD",
+                    "state": "ACTIVE",
+                    "entry_direction": "SELL",
+                },
+                "market": {
+                    "regime_now": "NORMAL",
+                    "current_box_state": "MIDDLE",
+                    "current_bb_state": "MID",
+                },
+                "risk": {
+                    "profit": 0.30,
+                    "peak_profit": 0.85,
+                    "giveback": 0.55,
+                    "adverse_risk": False,
+                },
+                "policy": {
+                    "recovery_policy_id": "trend_pullback_sell",
+                },
+                "bias": {
+                    "state_execution_bias_v1": {
+                        "countertrend_with_entry": True,
+                        "prefer_fast_cut": False,
+                        "topdown_state_label": "BULL_CONFLUENCE",
+                    },
+                    "symbol_edge_execution_overrides_v1": {},
+                },
+            },
+            exit_utility_base_bundle_v1={
+                "contract_version": "exit_utility_base_bundle_v1",
+                "inputs": {
+                    "locked_profit": 0.30,
+                },
+            },
+        )
+    )
+
+    assert compact["flags"]["countertrend_topdown_exit_pressure"] is True
+    assert compact["flags"]["countertrend_continuation_exit_pressure"] is True
+    assert compact["utility_deltas"]["utility_exit_now_delta"] == 0.461
+    assert compact["utility_deltas"]["utility_hold_delta"] == -0.5485
+    assert compact["utility_deltas"]["utility_wait_exit_delta"] == -0.381

@@ -21,6 +21,7 @@ from backend.services.trade_csv_schema import (
     TRADE_COLUMNS,
     add_signed_exit_score,
     normalize_trade_df,
+    normalize_manual_reason_tag,
     now_kst_dt,
 )
 from backend.services.trade_sqlite_store import TradeSqliteStore
@@ -116,6 +117,9 @@ class TradeLogger:
         self.active_tickets = set()
         self.pending_exit: Dict[int, dict] = {}
         self.live_exit_context: Dict[int, dict] = {}
+        self._pending_open_policy_context: Dict[int, dict] = {}
+        self._committed_open_policy_context: Dict[int, dict] = {}
+        self._shock_event_runtime_cache: Dict[int, dict] = {}
         self.closed_pending_since: Dict[int, datetime] = {}
         self.closed_pending_checks: Dict[int, int] = {}
         self.last_history_check = datetime.now()
@@ -315,6 +319,15 @@ class TradeLogger:
     def read_closed_df(self) -> pd.DataFrame:
         return self._read_closed_df_safe()
 
+    def query_latest_open(self, symbol: str = "", limit: int = 1) -> pd.DataFrame:
+        return self._store.query_latest_open(symbol=symbol, limit=limit)
+
+    def query_latest_closed(self, symbol: str = "", limit: int = 1) -> pd.DataFrame:
+        return self._store.query_latest_closed(symbol=symbol, limit=limit)
+
+    def get_change_token(self) -> str:
+        return self._store.get_change_token()
+
     def _migrate_legacy_closed_rows(self):
         return
 
@@ -356,21 +369,26 @@ class TradeLogger:
     def refresh_shock_event_from_mt5_ticks(self, ticket: int, symbol: str, direction: str) -> dict:
         if not bool(getattr(Config, "ENABLE_SHOCK_COUNTERFACTUAL", True)):
             return {}
-        df = self._read_shock_df_safe()
         t = int(ticket or 0)
-        cand = df[(df["ticket"] == t) & (df["resolved"] == 0)]
-        if cand.empty:
+        cached = dict((self._shock_event_runtime_cache.get(t, {}) or {}))
+        if not cached:
+            df = self._read_shock_df_safe()
+            cand = df[(df["ticket"] == t) & (df["resolved"] == 0)]
+            if cand.empty:
+                return {}
+            cached = dict(cand.sort_values("event_ts", ascending=False).iloc[0].to_dict() or {})
+            self._shock_event_runtime_cache[t] = dict(cached)
+        if not cached:
             return {}
-        row = cand.sort_values("event_ts", ascending=False).iloc[0]
         tick = self.broker.symbol_info_tick(symbol)
         if not tick:
             return {}
         mark_col = self._shock_mark_col(direction)
         now_price = float(getattr(tick, mark_col, 0.0) or 0.0)
-        event_price = float(pd.to_numeric(row.get("event_price", 0.0), errors="coerce") or 0.0)
-        lot = float(pd.to_numeric(row.get("lot", 0.0), errors="coerce") or 0.0)
+        event_price = float(pd.to_numeric(cached.get("event_price", 0.0), errors="coerce") or 0.0)
+        lot = float(pd.to_numeric(cached.get("lot", 0.0), errors="coerce") or 0.0)
         now_ts = int(self._now_kst_dt().timestamp())
-        event_ts = int(pd.to_numeric(row.get("event_ts", 0), errors="coerce") or 0)
+        event_ts = int(pd.to_numeric(cached.get("event_ts", 0), errors="coerce") or 0)
         ticks_elapsed = max(0, int((now_ts - event_ts) // 3))
         delta = self._calc_profit_delta_mt5(direction=direction, symbol=symbol, lot=lot, p0=event_price, p1=now_price)
         delta_10 = float(delta) if (delta is not None and ticks_elapsed >= 10) else None
@@ -415,6 +433,7 @@ class TradeLogger:
         ticket = int(getattr(position, "ticket", 0) or 0)
         if ticket <= 0:
             return False
+        manual_entry_tag = normalize_manual_reason_tag(getattr(position, "comment", "") or "")
         snap = {
             "ticket": ticket,
             "symbol": str(getattr(position, "symbol", "") or ""),
@@ -422,6 +441,7 @@ class TradeLogger:
             "lot": float(getattr(position, "volume", 0.0) or 0.0),
             "open_price": float(getattr(position, "price_open", 0.0) or 0.0),
             "entry_reason": f"[{str(source or 'MANUAL').upper()}] Position Snapshot",
+            "manual_entry_tag": manual_entry_tag,
             "source": str(source or "MANUAL").upper(),
         }
         return bool(self.upsert_open_snapshots([snap]))
@@ -480,7 +500,33 @@ class TradeLogger:
         detail_blob_bytes=0,
         snapshot_payload_bytes=0,
         row_payload_bytes=0,
+        micro_breakout_readiness_state="",
+        micro_reversal_risk_state="",
+        micro_participation_state="",
+        micro_gap_context_state="",
+        micro_body_size_pct_20=0.0,
+        micro_doji_ratio_20=0.0,
+        micro_same_color_run_current=0,
+        micro_same_color_run_max_20=0,
+        micro_range_compression_ratio_20=0.0,
+        micro_volume_burst_ratio_20=0.0,
+        micro_volume_burst_decay_20=0.0,
+        micro_gap_fill_progress=0.0,
+        micro_upper_wick_ratio_20=0.0,
+        micro_lower_wick_ratio_20=0.0,
+        micro_swing_high_retest_count_20=0,
+        micro_swing_low_retest_count_20=0,
     ):
+        parsed_entry_atr_ratio = pd.to_numeric(entry_atr_ratio, errors="coerce")
+        effective_entry_atr_ratio = 1.0 if pd.isna(parsed_entry_atr_ratio) else float(parsed_entry_atr_ratio)
+        regime_volatility_ratio = pd.to_numeric((regime or {}).get("volatility_ratio", float("nan")), errors="coerce")
+        if (
+            abs(effective_entry_atr_ratio) <= 1e-12
+            or abs(effective_entry_atr_ratio - 1.0) <= 1e-12
+        ) and (not pd.isna(regime_volatility_ratio)):
+            regime_volatility_ratio = float(regime_volatility_ratio)
+            if regime_volatility_ratio > 0.0 and abs(regime_volatility_ratio - 1.0) > 1e-6:
+                effective_entry_atr_ratio = regime_volatility_ratio
         snap = {
             "ticket": int(ticket),
             "symbol": symbol,
@@ -502,6 +548,22 @@ class TradeLogger:
             "detail_blob_bytes": int(pd.to_numeric(detail_blob_bytes, errors="coerce") or 0),
             "snapshot_payload_bytes": int(pd.to_numeric(snapshot_payload_bytes, errors="coerce") or 0),
             "row_payload_bytes": int(pd.to_numeric(row_payload_bytes, errors="coerce") or 0),
+            "micro_breakout_readiness_state": str(micro_breakout_readiness_state or "").strip(),
+            "micro_reversal_risk_state": str(micro_reversal_risk_state or "").strip(),
+            "micro_participation_state": str(micro_participation_state or "").strip(),
+            "micro_gap_context_state": str(micro_gap_context_state or "").strip(),
+            "micro_body_size_pct_20": float(pd.to_numeric(micro_body_size_pct_20, errors="coerce") or 0.0),
+            "micro_doji_ratio_20": float(pd.to_numeric(micro_doji_ratio_20, errors="coerce") or 0.0),
+            "micro_same_color_run_current": int(pd.to_numeric(micro_same_color_run_current, errors="coerce") or 0),
+            "micro_same_color_run_max_20": int(pd.to_numeric(micro_same_color_run_max_20, errors="coerce") or 0),
+            "micro_range_compression_ratio_20": float(pd.to_numeric(micro_range_compression_ratio_20, errors="coerce") or 0.0),
+            "micro_volume_burst_ratio_20": float(pd.to_numeric(micro_volume_burst_ratio_20, errors="coerce") or 0.0),
+            "micro_volume_burst_decay_20": float(pd.to_numeric(micro_volume_burst_decay_20, errors="coerce") or 0.0),
+            "micro_gap_fill_progress": float(pd.to_numeric(micro_gap_fill_progress, errors="coerce") or 0.0),
+            "micro_upper_wick_ratio_20": float(pd.to_numeric(micro_upper_wick_ratio_20, errors="coerce") or 0.0),
+            "micro_lower_wick_ratio_20": float(pd.to_numeric(micro_lower_wick_ratio_20, errors="coerce") or 0.0),
+            "micro_swing_high_retest_count_20": int(pd.to_numeric(micro_swing_high_retest_count_20, errors="coerce") or 0),
+            "micro_swing_low_retest_count_20": int(pd.to_numeric(micro_swing_low_retest_count_20, errors="coerce") or 0),
             "entry_score": int(entry_score or 0),
             "contra_score_at_entry": int(contra_score or 0),
             "entry_stage": self._normalize_entry_stage(entry_stage),
@@ -525,7 +587,7 @@ class TradeLogger:
             "entry_session_name": str(entry_session_name or "").strip().upper(),
             "entry_weekday": float(pd.to_numeric(entry_weekday, errors="coerce") or 0.0),
             "entry_session_threshold_mult": float(pd.to_numeric(entry_session_threshold_mult, errors="coerce") or 1.0),
-            "entry_atr_ratio": float(pd.to_numeric(entry_atr_ratio, errors="coerce") or 1.0),
+            "entry_atr_ratio": float(effective_entry_atr_ratio),
             "entry_atr_threshold_mult": float(pd.to_numeric(entry_atr_threshold_mult, errors="coerce") or 1.0),
             "entry_request_price": float(pd.to_numeric(entry_request_price, errors="coerce") or 0.0),
             "entry_fill_price": float(pd.to_numeric(entry_fill_price, errors="coerce") or 0.0),
@@ -558,6 +620,36 @@ class TradeLogger:
         t = int(ticket or 0)
         if t <= 0:
             return
+        sanitized = {}
+        for k, v in policy.items():
+            key = str(k)
+            if key not in TRADE_COLUMNS:
+                continue
+            if v is None:
+                continue
+            sanitized[key] = v
+        if not sanitized:
+            return
+        previous_pending = dict(self._pending_open_policy_context.get(t, {}) or {})
+        pending = dict(previous_pending)
+        for k, v in sanitized.items():
+            current = pending.get(k, "")
+            if isinstance(v, str) and str(v).strip() == "" and str(current or "").strip() != "":
+                continue
+            pending[k] = v
+        committed = dict(self._committed_open_policy_context.get(t, {}) or {})
+        delta = {k: v for k, v in pending.items() if committed.get(k) != v}
+        self._pending_open_policy_context[t] = pending
+        if not delta:
+            return
+        try:
+            if delta and self._store.patch_open_trade_fields(t, delta):
+                committed.update(delta)
+                self._committed_open_policy_context[t] = committed
+                self._mark_store_success("patch_open_trade_fields")
+                return
+        except Exception as exc:
+            self._mark_store_failure("patch_open_trade_fields", exc)
         try:
             df = self._read_open_df_safe()
             df = self._normalize_dataframe(df)
@@ -565,16 +657,16 @@ class TradeLogger:
             if idx.empty:
                 return
             i = idx.tolist()[-1]
-            for k, v in policy.items():
+            for k, v in delta.items():
+                current = df.at[i, str(k)] if str(k) in df.columns else ""
+                if isinstance(v, str) and str(v).strip() == "" and str(current or "").strip() != "":
+                    continue
                 if str(k) in df.columns:
-                    current = df.at[i, str(k)]
-                    if v is None:
-                        continue
-                    if isinstance(v, str) and str(v).strip() == "" and str(current or "").strip() != "":
-                        continue
                     df.at[i, str(k)] = v
             self._write_open_df(df)
             self._sync_open_rows_to_store(df[df["status"] == "OPEN"].copy())
+            committed.update(delta)
+            self._committed_open_policy_context[t] = committed
         except Exception as exc:
             logger.exception("Failed to update exit policy context for %s: %s", t, exc)
 
@@ -588,6 +680,12 @@ class TradeLogger:
             except Exception:
                 cached = None
             if isinstance(cached, dict) and cached:
+                if t not in self._committed_open_policy_context:
+                    self._committed_open_policy_context[t] = dict(cached)
+                pending = dict(self._pending_open_policy_context.get(t, {}) or {})
+                if pending:
+                    cached = dict(cached)
+                    cached.update(pending)
                 return cached
             df = self._read_open_df_safe()
             if df.empty:
@@ -599,7 +697,11 @@ class TradeLogger:
             if cand.empty:
                 return None
             r = cand.iloc[-1]
-            return {k: r.get(k) for k in self._columns() if k in cand.columns}
+            out = {k: r.get(k) for k in self._columns() if k in cand.columns}
+            pending = dict(self._pending_open_policy_context.get(t, {}) or {})
+            if pending:
+                out.update(pending)
+            return out
         except Exception as exc:
             logger.exception("Failed to get trade context for %s: %s", ticket, exc)
             return None

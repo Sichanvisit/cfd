@@ -167,6 +167,7 @@ class ExitRiskGuard:
         symbol: str,
         ticket_i: int,
         profit: float,
+        peak_profit: float,
         adverse_risk: bool,
         duration_sec: float,
         favorable_move_pct: float,
@@ -195,7 +196,13 @@ class ExitRiskGuard:
         plus_to_minus_hit = bool(
             self.check_plus_to_minus(ticket_i, profit, favorable_move_pct, duration_sec)
         )
-        hold_for_adverse = duration_sec >= float(Config.ADVERSE_MIN_HOLD_SECONDS)
+        adverse_min_hold_seconds = float(getattr(Config, "ADVERSE_MIN_HOLD_SECONDS", 45))
+        if float(peak_profit) <= float(getattr(Config, "ADVERSE_WEAK_PEAK_USD", 0.25)):
+            adverse_min_hold_seconds = min(
+                float(adverse_min_hold_seconds),
+                float(getattr(Config, "ADVERSE_WEAK_PEAK_MIN_HOLD_SECONDS", adverse_min_hold_seconds)),
+            )
+        hold_for_adverse = duration_sec >= float(adverse_min_hold_seconds)
         extreme_adverse = float(profit) <= -abs(float(dynamic_loss_usd) * 1.8)
         wait_adverse = False
         wait_detail = ""
@@ -212,6 +219,7 @@ class ExitRiskGuard:
         candidate = resolve_exit_hard_guard_action_candidate_v1(
             pos_type=int(pos.type),
             profit=float(profit),
+            peak_profit=float(peak_profit),
             adverse_risk=bool(adverse_risk),
             tf_confirm=bool(tf_confirm),
             hold_strong=bool(hold_strong),

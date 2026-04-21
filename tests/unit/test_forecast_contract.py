@@ -123,6 +123,46 @@ def test_forecast_features_builder_packages_semantic_inputs_without_reinterpreti
     assert features.metadata["barrier_contract"] == "barrier_state_v1_br11"
 
 
+def test_forecast_features_builder_harvests_micro_structure_states():
+    features = _build_features(
+        primary_label="ALIGNED_UPPER_WEAK",
+        secondary_context_label="UPPER_CONTEXT",
+        state_metadata={
+            "micro_breakout_readiness_state": "BREAKOUT_READY",
+            "micro_reversal_risk_state": "REVERSAL_RISK_WATCH",
+            "micro_participation_state": "BURST_CONFIRMED",
+            "micro_gap_context_state": "ACTIVE_GAP_FILL",
+            "source_micro_body_size_pct_20": 0.21,
+            "source_micro_upper_wick_ratio_20": 0.33,
+            "source_micro_lower_wick_ratio_20": 0.12,
+            "source_micro_doji_ratio_20": 0.08,
+            "source_micro_same_color_run_current": 4.0,
+            "source_micro_same_color_run_max_20": 6.0,
+            "source_micro_bull_ratio_20": 0.65,
+            "source_micro_bear_ratio_20": 0.35,
+            "source_micro_range_compression_ratio_20": 0.71,
+            "source_micro_volume_burst_ratio_20": 1.92,
+            "source_micro_volume_burst_decay_20": 0.24,
+            "source_micro_swing_high_retest_count_20": 2.0,
+            "source_micro_swing_low_retest_count_20": 1.0,
+            "source_micro_gap_fill_progress": 0.58,
+        },
+    )
+
+    semantic = features.metadata["semantic_forecast_inputs_v2"]
+    state_harvest = semantic["state_harvest"]
+    secondary_harvest = semantic["secondary_harvest"]
+
+    assert state_harvest["micro_breakout_readiness_state"] == "BREAKOUT_READY"
+    assert state_harvest["micro_reversal_risk_state"] == "REVERSAL_RISK_WATCH"
+    assert state_harvest["micro_participation_state"] == "BURST_CONFIRMED"
+    assert state_harvest["micro_gap_context_state"] == "ACTIVE_GAP_FILL"
+    assert secondary_harvest["source_micro_body_size_pct_20"] == 0.21
+    assert secondary_harvest["source_micro_range_compression_ratio_20"] == 0.71
+    assert secondary_harvest["source_micro_volume_burst_decay_20"] == 0.24
+    assert secondary_harvest["source_micro_gap_fill_progress"] == 0.58
+
+
 def test_context_classifier_engine_bundle_exposes_forecast_features():
     classifier = ContextClassifier()
     bundle = classifier.build_engine_context_snapshot(

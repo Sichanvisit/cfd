@@ -200,6 +200,95 @@ def test_state_raw_snapshot_preserves_raw_market_state_inputs():
     assert raw.metadata["event_risk_match_count"] == 2
 
 
+def test_state_raw_snapshot_promotes_micro_structure_v1_into_canonical_fields():
+    ctx = EngineContext(
+        symbol="NAS100",
+        price=200.0,
+        metadata={
+            "recent_body_mean": 4.2,
+            "position_gate_input_v1": {"position_scale": {"compression_score": 0.35}},
+            "micro_structure_v1": {
+                "version": "micro_structure_v1",
+                "data_state": "READY",
+                "anchor_state": "READY",
+                "lookback_bars": 20,
+                "baseline_lookback_bars": 50,
+                "window_size": 20,
+                "volume_source": "tick_volume",
+                "body_size_pct_20": 0.18,
+                "upper_wick_ratio_20": 0.22,
+                "lower_wick_ratio_20": 0.11,
+                "doji_ratio_20": 0.15,
+                "same_color_run_current": 4,
+                "same_color_run_max_20": 7,
+                "bull_ratio_20": 0.65,
+                "bear_ratio_20": 0.35,
+                "direction_run_stats": {
+                    "same_color_run_current": 4,
+                    "same_color_run_max_20": 7,
+                    "bull_ratio_20": 0.65,
+                    "bear_ratio_20": 0.35,
+                },
+                "range_compression_ratio_20": 0.44,
+                "volume_burst_ratio_20": 1.9,
+                "volume_burst_decay_20": 0.48,
+                "swing_high_retest_count_20": 2,
+                "swing_low_retest_count_20": 1,
+                "gap_fill_progress": 0.72,
+            },
+        },
+    )
+
+    raw = build_state_raw_snapshot(ctx)
+
+    assert raw.s_body_size_pct_20 == 0.18
+    assert raw.s_upper_wick_ratio_20 == 0.22
+    assert raw.s_lower_wick_ratio_20 == 0.11
+    assert raw.s_doji_ratio_20 == 0.15
+    assert raw.s_same_color_run_current == 4.0
+    assert raw.s_same_color_run_max_20 == 7.0
+    assert raw.s_bull_ratio_20 == 0.65
+    assert raw.s_bear_ratio_20 == 0.35
+    assert raw.s_range_compression_ratio_20 == 0.44
+    assert raw.s_volume_burst_ratio_20 == 1.9
+    assert raw.s_volume_burst_decay_20 == 0.48
+    assert raw.s_swing_high_retest_count_20 == 2.0
+    assert raw.s_swing_low_retest_count_20 == 1.0
+    assert raw.s_gap_fill_progress == 0.72
+    assert raw.metadata["micro_structure_version"] == "micro_structure_v1"
+    assert raw.metadata["micro_structure_data_state"] == "READY"
+    assert raw.metadata["micro_structure_anchor_state"] == "READY"
+    assert raw.metadata["micro_structure_volume_source"] == "tick_volume"
+    assert raw.metadata["micro_body_size_pct_20"] == 0.18
+    assert raw.metadata["micro_direction_run_stats_v1"]["same_color_run_max_20"] == 7.0
+    assert raw.metadata["micro_gap_fill_progress"] == 0.72
+
+
+def test_state_raw_snapshot_keeps_micro_structure_defaults_when_snapshot_missing():
+    ctx = EngineContext(
+        symbol="XAUUSD",
+        price=100.0,
+        metadata={
+            "recent_body_mean": 3.3,
+            "position_gate_input_v1": {"position_scale": {"compression_score": 0.28}},
+        },
+    )
+
+    raw = build_state_raw_snapshot(ctx)
+
+    assert raw.s_body_size_pct_20 == 3.3
+    assert raw.s_upper_wick_ratio_20 == 0.0
+    assert raw.s_doji_ratio_20 == 0.0
+    assert raw.s_same_color_run_current == 0.0
+    assert raw.s_range_compression_ratio_20 == 0.28
+    assert raw.s_volume_burst_decay_20 == 0.0
+    assert raw.s_gap_fill_progress is None
+    assert raw.metadata["micro_structure_data_state"] == "MISSING"
+    assert raw.metadata["micro_structure_anchor_state"] == "MISSING"
+    assert raw.metadata["micro_structure_v1"] == {}
+    assert raw.metadata["micro_gap_fill_progress"] is None
+
+
 def test_state_vector_legacy_is_derived_only_from_state_raw_snapshot():
     ctx = EngineContext(
         symbol="XAUUSD",
@@ -345,6 +434,20 @@ def test_state_vector_v2_exposes_explanatory_metadata_contract():
     assert meta["source_volatility"] == 0.25
     assert meta["source_current_rsi"] == 50.0
     assert meta["source_current_adx"] == 0.0
+    assert meta["source_micro_body_size_pct_20"] == 0.0
+    assert meta["source_micro_upper_wick_ratio_20"] == 0.0
+    assert meta["source_micro_lower_wick_ratio_20"] == 0.0
+    assert meta["source_micro_doji_ratio_20"] == 0.0
+    assert meta["source_micro_same_color_run_current"] == 0.0
+    assert meta["source_micro_same_color_run_max_20"] == 0.0
+    assert meta["source_micro_bull_ratio_20"] == 0.0
+    assert meta["source_micro_bear_ratio_20"] == 0.0
+    assert meta["source_micro_range_compression_ratio_20"] == 0.0
+    assert meta["source_micro_volume_burst_ratio_20"] == 0.0
+    assert meta["source_micro_volume_burst_decay_20"] == 0.0
+    assert meta["source_micro_swing_high_retest_count_20"] == 0.0
+    assert meta["source_micro_swing_low_retest_count_20"] == 0.0
+    assert meta["source_micro_gap_fill_progress"] is None
     assert meta["source_sr_level_rank"] == 0.0
     assert meta["source_sr_touch_count"] == 0.0
     assert meta["source_session_box_height_ratio"] == 0.0
@@ -365,8 +468,20 @@ def test_state_vector_v2_exposes_explanatory_metadata_contract():
     assert meta["source_order_book_thinness"] == 0.0
     assert meta["source_event_risk_score"] == 0.0
     assert meta["regime_state_label"] in {"RANGE_SWING", "CHOP_NOISE", "RANGE_COMPRESSION"}
+    assert meta["micro_breakout_readiness_state"] in {"BREAKOUT_READY", "BREAKOUT_WATCH", "BREAKOUT_NEUTRAL"}
+    assert meta["micro_reversal_risk_state"] in {"REVERSAL_RISK_HIGH", "REVERSAL_RISK_WATCH", "REVERSAL_RISK_LOW"}
+    assert meta["micro_participation_state"] in {"BURST_CONFIRMED", "BURST_FADING", "QUIET_PARTICIPATION", "NORMAL_PARTICIPATION"}
+    assert meta["micro_gap_context_state"] in {"GAP_CONTEXT_MISSING", "EARLY_GAP_FILL", "ACTIVE_GAP_FILL", "LATE_GAP_FILL"}
     assert meta["quality_state_label"] in {"HIGH_QUALITY", "MEDIUM_QUALITY", "LOW_QUALITY"}
     assert 0.0 <= meta["quality_composite_score"] <= 1.0
+    micro_detail = meta["micro_structure_detail_v1"]
+    assert set(micro_detail.keys()) == {
+        "data_state",
+        "anchor_state",
+        "volume_source",
+        "lookback_bars",
+        "window_size",
+    }
     detail = meta["quality_state_detail_v1"]
     assert set(detail.keys()) == {
         "momentum_quality_score",
@@ -510,6 +625,10 @@ def test_state_vector_v2_exposes_explanatory_metadata_contract():
         "countertrend_penalty",
         "liquidity_penalty",
         "volatility_penalty",
+        "micro_structure_breakout_readiness",
+        "micro_structure_reversal_risk",
+        "micro_structure_participation",
+        "micro_structure_gap_context",
     }
     assert "reversal boost" in reasons["range_reversal_gain"]
     assert "noise_damp=" in reasons["noise_damp"]
@@ -534,6 +653,43 @@ def test_state_vector_v2_exposes_explanatory_metadata_contract():
     assert "order_book_state=" in reasons["order_book_state"]
     assert "event_risk_state=" in reasons["event_risk_state"]
     assert "advanced_execution_stress=" in reasons["advanced_execution_stress"]
+    assert "breakout_readiness=" in reasons["micro_structure_breakout_readiness"]
+    assert "reversal_risk=" in reasons["micro_structure_reversal_risk"]
+    assert "participation_state=" in reasons["micro_structure_participation"]
+    assert "micro_gap_context_state=" in reasons["micro_structure_gap_context"]
+
+
+def test_state_vector_v2_micro_structure_adjusts_breakout_vs_reversal_bias():
+    breakout = build_state_vector_v2_from_raw(
+        StateRawSnapshot(
+            market_mode="RANGE",
+            direction_policy="BOTH",
+            liquidity_state="GOOD",
+            s_range_compression_ratio_20=0.82,
+            s_volume_burst_ratio_20=2.2,
+            s_volume_burst_decay_20=0.18,
+            s_same_color_run_current=4.0,
+            s_doji_ratio_20=0.04,
+        )
+    )
+    reversal = build_state_vector_v2_from_raw(
+        StateRawSnapshot(
+            market_mode="RANGE",
+            direction_policy="BOTH",
+            liquidity_state="GOOD",
+            s_upper_wick_ratio_20=0.76,
+            s_lower_wick_ratio_20=0.68,
+            s_swing_high_retest_count_20=2.0,
+            s_swing_low_retest_count_20=1.0,
+            s_doji_ratio_20=0.24,
+            s_volume_burst_decay_20=0.61,
+        )
+    )
+
+    assert breakout.breakout_continuation_gain > reversal.breakout_continuation_gain
+    assert reversal.range_reversal_gain > breakout.range_reversal_gain
+    assert breakout.metadata["micro_breakout_readiness_state"] in {"BREAKOUT_READY", "BREAKOUT_WATCH"}
+    assert reversal.metadata["micro_reversal_risk_state"] in {"REVERSAL_RISK_HIGH", "REVERSAL_RISK_WATCH"}
 
 
 def test_state_vector_v2_keeps_gain_and_damp_penalty_philosophy():

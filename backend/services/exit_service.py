@@ -36,6 +36,35 @@ from ports.trading_runtime_port import ExitRuntimePort
 logger = logging.getLogger(__name__)
 
 
+def _emit_exit_snapshot_debug(runtime, *, symbol: str, stage: str, elapsed_ms: float, detail: str = "") -> None:
+    detail_txt = str(detail or "").strip()
+    if detail_txt:
+        detail_txt = f"{detail_txt} elapsed_ms={float(elapsed_ms):.1f}"
+    else:
+        detail_txt = f"elapsed_ms={float(elapsed_ms):.1f}"
+    try:
+        writer = getattr(runtime, "_write_loop_debug", None)
+        loop_state = getattr(runtime, "loop_debug_state", {}) or {}
+        if callable(writer):
+            writer(
+                loop_count=int(loop_state.get("loop_count", 0) or 0),
+                stage=str(stage or ""),
+                symbol=str(symbol or ""),
+                detail=detail_txt,
+            )
+    except Exception:
+        pass
+    warn_ms = float(getattr(Config, "EXIT_EVAL_SUBSTAGE_WARN_MS", 1200.0) or 1200.0)
+    if float(elapsed_ms) >= warn_ms:
+        logger.warning(
+            "slow exit snapshot substage: symbol=%s stage=%s elapsed_ms=%.1f detail=%s",
+            str(symbol or ""),
+            str(stage or ""),
+            float(elapsed_ms),
+            str(detail or ""),
+        )
+
+
 class ExitService:
     def __init__(self, runtime: ExitRuntimePort, trade_logger: ClosedTradeReadPort):
         self.runtime = runtime
@@ -131,16 +160,19 @@ class ExitService:
 
         ratio = 1.0
         try:
-            reader = getattr(self.trade_logger, "read_closed_df", None)
-            if callable(reader):
-                closed = reader()
-                if closed is not None and not closed.empty and "regime_spread_ratio" in closed.columns:
-                    subset = closed[closed["symbol"].astype(str).str.upper() == key].copy()
-                    subset["regime_spread_ratio"] = pd.to_numeric(subset["regime_spread_ratio"], errors="coerce")
-                    subset = subset[subset["regime_spread_ratio"] > 0]
-                    if not subset.empty:
-                        lookback = max(10, int(getattr(Config, "DYNAMIC_COST_RECENT_TRADES", 40)))
-                        ratio = float(subset["regime_spread_ratio"].tail(lookback).median())
+            lookback = max(10, int(getattr(Config, "DYNAMIC_COST_RECENT_TRADES", 40)))
+            query_latest_closed = getattr(self.trade_logger, "query_latest_closed", None)
+            if callable(query_latest_closed):
+                closed = query_latest_closed(symbol=key, limit=max(lookback * 3, 60))
+            else:
+                reader = getattr(self.trade_logger, "read_closed_df", None)
+                closed = reader() if callable(reader) else None
+            if closed is not None and not closed.empty and "regime_spread_ratio" in closed.columns:
+                subset = closed[closed["symbol"].astype(str).str.upper() == key].copy()
+                subset["regime_spread_ratio"] = pd.to_numeric(subset["regime_spread_ratio"], errors="coerce")
+                subset = subset[subset["regime_spread_ratio"] > 0]
+                if not subset.empty:
+                    ratio = float(subset["regime_spread_ratio"].tail(lookback).median())
         except Exception:
             ratio = 1.0
 
@@ -221,6 +253,18 @@ class ExitService:
         detail: dict | None = None,
     ) -> WaitState:
         payload = dict(detail or {})
+        def _finish_snapshot_stage(stage_name: str, started_at: float, detail_text: str = "") -> float:
+            elapsed_ms = max(0.0, (time.perf_counter() - float(started_at)) * 1000.0)
+            _emit_exit_snapshot_debug(
+                self.runtime,
+                symbol=str(symbol or ""),
+                stage=str(stage_name or ""),
+                elapsed_ms=float(elapsed_ms),
+                detail=str(detail_text or ""),
+            )
+            return float(elapsed_ms)
+
+        context_started_at = time.perf_counter()
         context = self._context_classifier.build_exit_context(
             symbol=str(symbol or ""),
             trade_ctx=trade_ctx,
@@ -228,6 +272,7 @@ class ExitService:
             adverse_risk=bool(adverse_risk),
             tf_confirm=bool(tf_confirm),
         )
+        _finish_snapshot_stage("exit_snapshot_context_done", context_started_at)
         context.raw_scores.update(
             {
                 "exit_signal_score": int(exit_signal_score),
@@ -247,6 +292,7 @@ class ExitService:
                 "policy_stage": str(policy_stage or ""),
             }
         )
+        manage_context_started_at = time.perf_counter()
         exit_manage_context_v1 = build_exit_manage_context_v1(
             symbol=str(symbol or ""),
             trade_ctx=trade_ctx,
@@ -261,6 +307,7 @@ class ExitService:
             tf_confirm=bool(tf_confirm),
             detail=payload,
         )
+        _finish_snapshot_stage("exit_snapshot_contract_done", manage_context_started_at)
         compact_exit_context_v1 = compact_exit_manage_context_v1(exit_manage_context_v1)
         exit_identity_context = dict(exit_manage_context_v1.get("identity", {}) or {})
         exit_handoff_context = dict(exit_manage_context_v1.get("handoff", {}) or {})
@@ -274,6 +321,7 @@ class ExitService:
                 "exit_manage_context_v1": dict(compact_exit_context_v1),
             }
         )
+        wait_state_started_at = time.perf_counter()
         wait_state = self._wait_engine.build_exit_wait_state(
             symbol=str(symbol or ""),
             trade_ctx=trade_ctx,
@@ -286,6 +334,11 @@ class ExitService:
             exit_signal_score=int(exit_signal_score),
             score_gap=int(score_gap),
             detail={**payload, "exit_manage_context_v1": dict(exit_manage_context_v1)},
+        )
+        _finish_snapshot_stage(
+            "exit_snapshot_wait_state_done",
+            wait_state_started_at,
+            detail_text=f"wait_state={str(getattr(wait_state, 'state', '') or '')}",
         )
         exit_profile = ExitProfile(
             profile_id=str(
@@ -317,6 +370,7 @@ class ExitService:
                 ),
             },
         )
+        exit_predict_started_at = time.perf_counter()
         exit_predictions = self._exit_predictor.predict(
             context=context,
             wait_state=wait_state,
@@ -328,6 +382,8 @@ class ExitService:
                 "tf_confirm": bool(tf_confirm),
             },
         )
+        _finish_snapshot_stage("exit_snapshot_exit_predict_done", exit_predict_started_at)
+        wait_predict_started_at = time.perf_counter()
         wait_predictions = self._wait_predictor.predict_exit_wait(
             context=context,
             wait_state=wait_state,
@@ -341,6 +397,8 @@ class ExitService:
                 ),
             },
         )
+        _finish_snapshot_stage("exit_snapshot_wait_predict_done", wait_predict_started_at)
+        recovery_predict_started_at = time.perf_counter()
         recovery_predictions = self._recovery_predictor.predict(
             context=context,
             wait_state=wait_state,
@@ -367,6 +425,8 @@ class ExitService:
                 "belief_state_v1": dict((stage_inputs or {}).get("belief_state_v1", {}) or {}) if isinstance((stage_inputs or {}).get("belief_state_v1", {}), dict) else {},
             },
         )
+        _finish_snapshot_stage("exit_snapshot_recovery_predict_done", recovery_predict_started_at)
+        utility_eval_started_at = time.perf_counter()
         utility_shadow = self._wait_engine.evaluate_exit_utility_decision(
             symbol=str(symbol or ""),
             wait_state=wait_state,
@@ -383,6 +443,11 @@ class ExitService:
                 str(symbol or ""),
                 live_spread_ratio=float((stage_inputs or {}).get("spread_ratio", 1.0) or 1.0),
             ),
+        )
+        _finish_snapshot_stage(
+            "exit_snapshot_utility_done",
+            utility_eval_started_at,
+            detail_text=f"winner={str(utility_shadow.get('winner', '') or '')}",
         )
         exit_wait_taxonomy_v1 = dict(utility_shadow.get("exit_wait_taxonomy_v1", {}) or {})
         wait_metadata = dict(wait_state.metadata or {})
@@ -429,6 +494,7 @@ class ExitService:
                 "p_reverse_valid": float(utility_shadow.get("p_reverse_valid", 0.0) or 0.0),
             },
         )
+        runtime_snapshot_started_at = time.perf_counter()
         self._store_runtime_snapshot(
             runtime=self.runtime,
             symbol=str(symbol or ""),
@@ -527,6 +593,7 @@ class ExitService:
                 record_rollout(domain="exit", event=dict(semantic_exit_rollout))
             except Exception:
                 pass
+        _finish_snapshot_stage("exit_snapshot_runtime_store_done", runtime_snapshot_started_at)
         return wait_state
 
     def _bump_metric(self, key: str, amount: int = 1) -> None:
@@ -1093,6 +1160,30 @@ class ExitService:
         min_wait_s = max(0.0, float(getattr(Config, "ADVERSE_WAIT_MIN_SECONDS", 10.0)))
         max_wait_s = max(min_wait_s, float(getattr(Config, "ADVERSE_WAIT_MAX_SECONDS", 120.0)))
         recovery_need = abs(float(getattr(Config, "ADVERSE_WAIT_RECOVERY_USD", 0.35)))
+        tf_confirm_max_wait_s = max(
+            min_wait_s,
+            float(getattr(Config, "ADVERSE_WAIT_TF_CONFIRM_MAX_SECONDS", max_wait_s)),
+        )
+        tf_confirm_weak_peak_usd = abs(
+            float(getattr(Config, "ADVERSE_WAIT_TF_CONFIRM_WEAK_PEAK_USD", 0.50))
+        )
+        tf_confirm_weak_peak_max_wait_s = max(
+            min_wait_s,
+            float(
+                getattr(
+                    Config,
+                    "ADVERSE_WAIT_TF_CONFIRM_WEAK_PEAK_MAX_SECONDS",
+                    tf_confirm_max_wait_s,
+                )
+            ),
+        )
+        peak_profit = float(self.peak_profit.get(ticket_i, profit))
+        if bool(tf_confirm):
+            max_wait_s = min(max_wait_s, tf_confirm_max_wait_s)
+            if float(peak_profit) <= tf_confirm_weak_peak_usd:
+                # When opposite confirmation is already present and the trade never built
+                # meaningful green room, keep the adverse wait window intentionally short.
+                max_wait_s = min(max_wait_s, tf_confirm_weak_peak_max_wait_s)
         waited_s = max(0.0, now_s - float(state.get("started_at", now_s)))
         worst_profit = float(state.get("worst_profit", profit))
         recovery = float(profit) - float(worst_profit)
@@ -1152,6 +1243,7 @@ class ExitService:
         symbol: str,
         ticket_i: int,
         profit: float,
+        peak_profit: float,
         adverse_risk: bool,
         duration_sec: float,
         favorable_move_pct: float,
@@ -1177,6 +1269,7 @@ class ExitService:
             symbol=symbol,
             ticket_i=ticket_i,
             profit=profit,
+            peak_profit=peak_profit,
             adverse_risk=adverse_risk,
             duration_sec=duration_sec,
             favorable_move_pct=favorable_move_pct,

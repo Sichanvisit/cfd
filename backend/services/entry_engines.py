@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import os
 import time
 from datetime import datetime
 from pathlib import Path
@@ -42,7 +43,7 @@ from backend.services.energy_contract import (
     resolve_entry_service_energy_usage,
     resolve_energy_migration_bridge_state,
 )
-from backend.services.entry_decision_rollover import execute_entry_decision_rollover
+from backend.services.entry_decision_rollover import DEFAULT_MAX_BYTES, execute_entry_decision_rollover
 from backend.services.layer_mode_contract import (
     LAYER_MODE_APPLICATION_CONTRACT_V1,
     LAYER_MODE_DEFAULT_POLICY_V1,
@@ -76,10 +77,13 @@ from backend.services.p0_decision_trace import (
 )
 from backend.services.runtime_alignment_contract import RUNTIME_ALIGNMENT_SCOPE_CONTRACT_V1
 from backend.services.storage_compaction import (
+    DEFAULT_ENTRY_DECISION_DETAIL_ROTATE_MAX_BYTES,
     ENTRY_DECISION_DETAIL_ONLY_COLUMNS,
     ENTRY_DECISION_DETAIL_SCHEMA_VERSION,
     build_entry_decision_detail_record,
     build_entry_decision_hot_payload,
+    build_entry_decision_hot_payload_lean,
+    compact_runtime_signal_row,
     is_generic_runtime_signal_row_key,
     json_payload_size_bytes,
     rotate_entry_decision_detail_if_needed,
@@ -92,11 +96,71 @@ from backend.services.storage_compaction import (
 logger = logging.getLogger(__name__)
 
 
+def _const_json(payload: object) -> str:
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+JSON_OBSERVE_CONFIRM_INPUT_CONTRACT_V2 = _const_json(OBSERVE_CONFIRM_INPUT_CONTRACT_V2)
+JSON_OBSERVE_CONFIRM_MIGRATION_DUAL_WRITE_V1 = _const_json(OBSERVE_CONFIRM_MIGRATION_DUAL_WRITE_V1)
+JSON_OBSERVE_CONFIRM_OUTPUT_CONTRACT_V2 = _const_json(OBSERVE_CONFIRM_OUTPUT_CONTRACT_V2)
+JSON_OBSERVE_CONFIRM_SCOPE_CONTRACT_V1 = _const_json(OBSERVE_CONFIRM_SCOPE_CONTRACT_V1)
+JSON_CONSUMER_INPUT_CONTRACT_V1 = _const_json(CONSUMER_INPUT_CONTRACT_V1)
+JSON_CONSUMER_MIGRATION_FREEZE_V1 = _const_json(CONSUMER_MIGRATION_FREEZE_V1)
+JSON_CONSUMER_LOGGING_CONTRACT_V1 = _const_json(CONSUMER_LOGGING_CONTRACT_V1)
+JSON_CONSUMER_TEST_CONTRACT_V1 = _const_json(CONSUMER_TEST_CONTRACT_V1)
+JSON_CONSUMER_FREEZE_HANDOFF_V1 = _const_json(CONSUMER_FREEZE_HANDOFF_V1)
+JSON_CONSUMER_SCOPE_CONTRACT_V1 = _const_json(CONSUMER_SCOPE_CONTRACT_V1)
+JSON_CONSUMER_LAYER_MODE_INTEGRATION_V1 = _const_json(CONSUMER_LAYER_MODE_INTEGRATION_V1)
+JSON_LAYER_MODE_MODE_CONTRACT_V1 = _const_json(LAYER_MODE_MODE_CONTRACT_V1)
+JSON_LAYER_MODE_LAYER_INVENTORY_V1 = _const_json(LAYER_MODE_LAYER_INVENTORY_V1)
+JSON_LAYER_MODE_DEFAULT_POLICY_V1 = _const_json(LAYER_MODE_DEFAULT_POLICY_V1)
+JSON_LAYER_MODE_DUAL_WRITE_CONTRACT_V1 = _const_json(LAYER_MODE_DUAL_WRITE_CONTRACT_V1)
+JSON_LAYER_MODE_INFLUENCE_SEMANTICS_V1 = _const_json(LAYER_MODE_INFLUENCE_SEMANTICS_V1)
+JSON_LAYER_MODE_APPLICATION_CONTRACT_V1 = _const_json(LAYER_MODE_APPLICATION_CONTRACT_V1)
+JSON_LAYER_MODE_IDENTITY_GUARD_CONTRACT_V1 = _const_json(LAYER_MODE_IDENTITY_GUARD_CONTRACT_V1)
+JSON_LAYER_MODE_POLICY_OVERLAY_OUTPUT_CONTRACT_V1 = _const_json(LAYER_MODE_POLICY_OVERLAY_OUTPUT_CONTRACT_V1)
+JSON_LAYER_MODE_LOGGING_REPLAY_CONTRACT_V1 = _const_json(LAYER_MODE_LOGGING_REPLAY_CONTRACT_V1)
+JSON_LAYER_MODE_SCOPE_CONTRACT_V1 = _const_json(LAYER_MODE_SCOPE_CONTRACT_V1)
+JSON_LAYER_MODE_TEST_CONTRACT_V1 = _const_json(LAYER_MODE_TEST_CONTRACT_V1)
+JSON_LAYER_MODE_FREEZE_HANDOFF_V1 = _const_json(LAYER_MODE_FREEZE_HANDOFF_V1)
+JSON_SETUP_DETECTOR_RESPONSIBILITY_CONTRACT_V1 = _const_json(SETUP_DETECTOR_RESPONSIBILITY_CONTRACT_V1)
+JSON_SETUP_MAPPING_CONTRACT_V1 = _const_json(SETUP_MAPPING_CONTRACT_V1)
+JSON_ENTRY_GUARD_CONTRACT_V1 = _const_json(ENTRY_GUARD_CONTRACT_V1)
+JSON_ENTRY_SERVICE_RESPONSIBILITY_CONTRACT_V1 = _const_json(ENTRY_SERVICE_RESPONSIBILITY_CONTRACT_V1)
+JSON_EXIT_HANDOFF_CONTRACT_V1 = _const_json(EXIT_HANDOFF_CONTRACT_V1)
+JSON_RE_ENTRY_CONTRACT_V1 = _const_json(RE_ENTRY_CONTRACT_V1)
+JSON_ENERGY_MIGRATION_DUAL_WRITE_V1 = _const_json(ENERGY_MIGRATION_DUAL_WRITE_V1)
+JSON_ENERGY_SCOPE_CONTRACT_V1 = _const_json(ENERGY_SCOPE_CONTRACT_V1)
+JSON_ENERGY_LOGGING_REPLAY_CONTRACT_V1 = _const_json(ENERGY_LOGGING_REPLAY_CONTRACT_V1)
+JSON_RUNTIME_ALIGNMENT_SCOPE_CONTRACT_V1 = _const_json(RUNTIME_ALIGNMENT_SCOPE_CONTRACT_V1)
+JSON_FORECAST_CALIBRATION_CONTRACT_V1 = _const_json(FORECAST_CALIBRATION_CONTRACT_V1)
+JSON_OUTCOME_LABELER_SCOPE_CONTRACT_V1 = _const_json(OUTCOME_LABELER_SCOPE_CONTRACT_V1)
+JSON_P0_DECISION_TRACE_CONTRACT_V1 = _const_json(P0_DECISION_TRACE_CONTRACT_V1)
+_LAYER_MODE_INFLUENCE_DEFAULTS = build_layer_mode_influence_metadata()
+JSON_LAYER_MODE_INFLUENCE_TRACE_V1 = _const_json(
+    _LAYER_MODE_INFLUENCE_DEFAULTS.get("layer_mode_influence_trace_v1", {})
+)
+_LAYER_MODE_APPLICATION_DEFAULTS = build_layer_mode_application_metadata()
+JSON_LAYER_MODE_APPLICATION_TRACE_V1 = _const_json(
+    _LAYER_MODE_APPLICATION_DEFAULTS.get("layer_mode_application_trace_v1", {})
+)
+_LAYER_MODE_IDENTITY_GUARD_DEFAULTS = build_layer_mode_identity_guard_metadata()
+JSON_LAYER_MODE_IDENTITY_GUARD_TRACE_V1 = _const_json(
+    _LAYER_MODE_IDENTITY_GUARD_DEFAULTS.get("layer_mode_identity_guard_trace_v1", {})
+)
+_LAYER_MODE_POLICY_OVERLAY_DEFAULTS = build_layer_mode_policy_overlay_metadata()
+JSON_LAYER_MODE_POLICY_V1 = _const_json(
+    _LAYER_MODE_POLICY_OVERLAY_DEFAULTS.get("layer_mode_policy_v1", {})
+)
+
+
 ENTRY_DECISION_FULL_COLUMNS = [
     "time", "signal_timeframe", "signal_bar_ts", "symbol", "action", "considered", "outcome",
     "observe_action", "observe_side", "observe_reason", "blocked_by",
     "entry_score_raw", "contra_score_raw",
     "decision_row_key", "runtime_snapshot_key", "trade_link_key", "replay_row_key",
+    "leg_id", "leg_direction", "leg_state", "leg_transition_reason",
+    "checkpoint_id", "checkpoint_type", "checkpoint_index_in_leg", "checkpoint_transition_reason",
     "signal_age_sec", "bar_age_sec", "decision_latency_ms", "order_submit_latency_ms",
     "missing_feature_count", "data_completeness_ratio", "used_fallback_count", "compatibility_mode",
     "detail_blob_bytes", "snapshot_payload_bytes", "row_payload_bytes",
@@ -104,7 +168,48 @@ ENTRY_DECISION_FULL_COLUMNS = [
     "entry_stage", "ai_probability", "size_multiplier", "utility_u", "utility_p",
     "utility_p_raw", "utility_p_calibrated", "utility_stats_ready", "utility_wins_n", "utility_losses_n",
     "utility_w", "utility_l", "utility_cost", "utility_context_adj", "u_min", "u_pass",
-    "decision_rule_version", "entry_decision_mode",
+    "decision_rule_version",
+    "entry_authority_contract_version", "entry_authority_owner", "entry_candidate_action_source",
+    "entry_candidate_action", "entry_candidate_rejected_by", "entry_authority_stage",
+    "entry_authority_threshold_owner", "entry_authority_execution_owner", "entry_authority_reason_summary",
+    "entry_candidate_bridge_contract_version", "entry_candidate_bridge_baseline_no_action",
+    "entry_candidate_bridge_mode", "entry_candidate_bridge_active_conflict",
+    "entry_candidate_bridge_conflict_selected", "entry_candidate_bridge_effective_baseline_action",
+    "entry_candidate_bridge_conflict_kind",
+    "entry_candidate_bridge_available", "entry_candidate_bridge_selected",
+    "entry_candidate_bridge_source", "entry_candidate_bridge_action",
+    "entry_candidate_bridge_reason", "entry_candidate_bridge_confidence",
+    "entry_candidate_bridge_candidate_count", "entry_candidate_surface_v1",
+    "entry_candidate_surface_family", "entry_candidate_surface_state",
+    "active_action_conflict_guard_v1",
+    "active_action_conflict_detected", "active_action_conflict_guard_eligible",
+    "active_action_conflict_guard_applied", "active_action_conflict_resolution_state",
+    "active_action_conflict_kind", "active_action_conflict_baseline_action",
+    "active_action_conflict_directional_action", "active_action_conflict_directional_state",
+    "active_action_conflict_directional_bias", "active_action_conflict_directional_owner_family",
+    "active_action_conflict_up_bias_score", "active_action_conflict_down_bias_score",
+    "active_action_conflict_bias_gap", "active_action_conflict_warning_count",
+    "active_action_conflict_failure_code", "active_action_conflict_failure_label",
+    "active_action_conflict_reason_summary",
+    "semantic_candidate_action", "semantic_candidate_confidence", "semantic_candidate_reason",
+    "shadow_candidate_action", "shadow_candidate_confidence", "shadow_candidate_reason",
+    "state25_candidate_action", "state25_candidate_confidence", "state25_candidate_reason",
+    "breakout_candidate_action", "breakout_candidate_confidence", "breakout_candidate_reason",
+    "breakout_candidate_source", "breakout_candidate_action_target", "breakout_candidate_direction",
+    "breakout_candidate_surface_family", "breakout_candidate_surface_state",
+    "countertrend_continuation_enabled", "countertrend_continuation_state",
+    "countertrend_continuation_action", "countertrend_continuation_confidence",
+    "countertrend_continuation_reason_summary", "countertrend_continuation_warning_count",
+    "countertrend_continuation_surface_family", "countertrend_continuation_surface_state",
+    "countertrend_anti_long_score", "countertrend_anti_short_score",
+    "countertrend_pro_up_score", "countertrend_pro_down_score",
+    "countertrend_directional_bias", "countertrend_action_state",
+    "countertrend_directional_candidate_action", "countertrend_directional_execution_action",
+    "countertrend_directional_state_reason", "countertrend_directional_state_rank",
+    "countertrend_directional_owner_family",
+    "countertrend_directional_down_bias_score", "countertrend_directional_up_bias_score",
+    "countertrend_candidate_action", "countertrend_candidate_confidence", "countertrend_candidate_reason",
+    "entry_decision_mode",
     "core_reason", "action_none_reason", "core_pass", "core_allowed_action",
     "core_resolved_shadow_action", "core_intended_direction", "core_archetype_implied_action", "core_intended_action_source",
     "observe_probe_override_pending",
@@ -127,6 +232,29 @@ ENTRY_DECISION_FULL_COLUMNS = [
     "p7_size_overlay_matched", "p7_size_overlay_target_multiplier", "p7_size_overlay_effective_multiplier",
     "p7_size_overlay_apply_allowed", "p7_size_overlay_applied", "p7_size_overlay_gate_reason",
     "p7_size_overlay_source",
+    "state25_candidate_active_candidate_id", "state25_candidate_policy_source",
+    "state25_candidate_rollout_phase", "state25_candidate_binding_mode",
+    "state25_candidate_threshold_log_only_enabled", "state25_candidate_threshold_symbol_scope_hit",
+    "state25_candidate_threshold_stage_scope_hit", "state25_candidate_effective_entry_threshold",
+    "state25_candidate_entry_threshold_delta", "state25_candidate_size_log_only_enabled",
+    "state25_candidate_size_symbol_scope_hit", "state25_candidate_size_multiplier",
+    "state25_candidate_size_multiplier_delta", "state25_candidate_size_min_multiplier",
+    "state25_candidate_size_max_multiplier",
+    "forecast_state25_overlay_mode", "forecast_state25_overlay_enabled",
+    "forecast_state25_candidate_effective_entry_threshold",
+    "forecast_state25_candidate_entry_threshold_delta",
+    "forecast_state25_candidate_size_multiplier",
+    "forecast_state25_candidate_size_multiplier_delta",
+    "forecast_state25_candidate_wait_bias_action",
+    "forecast_state25_candidate_management_bias",
+    "forecast_state25_overlay_reason_summary",
+    "belief_action_hint_mode", "belief_action_hint_enabled",
+    "belief_candidate_recommended_family", "belief_candidate_supporting_label",
+    "belief_action_hint_confidence", "belief_action_hint_reason_summary",
+    "barrier_action_hint_mode", "barrier_action_hint_enabled",
+    "barrier_candidate_recommended_family", "barrier_candidate_supporting_label",
+    "barrier_action_hint_confidence", "barrier_action_hint_cost_hint",
+    "barrier_action_hint_reason_summary",
     "entry_decision_context_v1", "entry_decision_result_v1",
     "prediction_bundle",
     "prs_contract_version", "prs_canonical_position_field", "prs_canonical_position_effective_field", "prs_canonical_response_field", "prs_canonical_response_effective_field", "prs_canonical_state_field", "prs_canonical_state_effective_field", "prs_canonical_evidence_field", "prs_canonical_evidence_effective_field", "prs_canonical_belief_field", "prs_canonical_belief_effective_field", "prs_canonical_barrier_field", "prs_canonical_barrier_effective_field", "prs_canonical_forecast_features_field", "prs_canonical_transition_forecast_field", "prs_canonical_trade_management_forecast_field", "prs_canonical_forecast_gap_metrics_field", "prs_canonical_forecast_effective_field", "prs_canonical_energy_field", "prs_canonical_observe_confirm_field",
@@ -197,6 +325,35 @@ ENTRY_DECISION_FULL_COLUMNS = [
     "consumer_check_stage",
     "consumer_check_reason",
     "consumer_check_display_strength_level",
+    "consumer_check_display_score",
+    "consumer_check_display_repeat_count",
+    "chart_event_kind_hint",
+    "chart_display_mode",
+    "chart_display_reason",
+    "micro_breakout_readiness_state",
+    "micro_reversal_risk_state",
+    "micro_participation_state",
+    "micro_gap_context_state",
+    "micro_body_size_pct_20",
+    "micro_doji_ratio_20",
+    "micro_same_color_run_current",
+    "micro_same_color_run_max_20",
+    "micro_range_compression_ratio_20",
+    "micro_volume_burst_ratio_20",
+    "micro_volume_burst_decay_20",
+    "micro_gap_fill_progress",
+    "teacher_label_exploration_active",
+    "teacher_label_exploration_enabled",
+    "teacher_label_exploration_family",
+    "teacher_label_exploration_reason",
+    "teacher_label_exploration_guard_failure_code",
+    "teacher_label_exploration_soft_block_reason",
+    "teacher_label_exploration_check_side",
+    "teacher_label_exploration_check_stage",
+    "teacher_label_exploration_same_dir_count",
+    "teacher_label_exploration_score_ratio",
+    "teacher_label_exploration_threshold_gap",
+    "teacher_label_exploration_size_multiplier",
     "consumer_check_state_v1",
     "consumer_handoff_contract_version",
     "layer_mode_scope_contract_v1",
@@ -208,7 +365,7 @@ ENTRY_DECISION_FULL_COLUMNS = [
     "layer_mode_logging_replay_v1",
     "forecast_calibration_contract_v1",
     "outcome_labeler_scope_contract_v1",
-    "position_snapshot_v2", "position_snapshot_effective_v1", "response_raw_snapshot_v1", "response_vector_v2", "response_vector_effective_v1", "state_raw_snapshot_v1", "state_vector_v2", "state_vector_effective_v1", "evidence_vector_v1", "evidence_vector_effective_v1", "belief_state_v1", "belief_state_effective_v1", "barrier_state_v1", "barrier_state_effective_v1", "forecast_features_v1", "transition_forecast_v1", "trade_management_forecast_v1", "forecast_gap_metrics_v1", "forecast_effective_policy_v1", "transition_side_separation", "transition_confirm_fake_gap", "transition_reversal_continuation_gap", "management_continue_fail_gap", "management_recover_reentry_gap", "observe_confirm_v1", "observe_confirm_v2",
+    "position_snapshot_v2", "position_snapshot_effective_v1", "response_raw_snapshot_v1", "response_vector_v2", "response_vector_effective_v1", "state_raw_snapshot_v1", "state_vector_v2", "state_vector_effective_v1", "evidence_vector_v1", "evidence_vector_effective_v1", "belief_state_v1", "belief_state_effective_v1", "barrier_state_v1", "barrier_state_effective_v1", "forecast_features_v1", "transition_forecast_v1", "trade_management_forecast_v1", "forecast_gap_metrics_v1", "forecast_effective_policy_v1", "transition_side_separation", "transition_confirm_fake_gap", "transition_reversal_continuation_gap", "management_continue_fail_gap", "management_recover_reentry_gap", "observe_confirm_v1", "observe_confirm_v2", "forecast_state25_runtime_bridge_v1", "belief_state25_runtime_bridge_v1", "barrier_state25_runtime_bridge_v1", "forecast_state25_log_only_overlay_trace_v1", "countertrend_continuation_signal_v1",
     "shadow_state_v1", "shadow_action_v1", "shadow_reason_v1",
     "shadow_buy_force_v1", "shadow_sell_force_v1", "shadow_net_force_v1",
     "semantic_shadow_available", "semantic_shadow_model_version", "semantic_shadow_trace_quality",
@@ -565,6 +722,8 @@ class EntryGuardEngine:
         btc_duplicate_repeat_quality = False
         btc_duplicate_full_suppression_need_pct = 0.0
         btc_duplicate_effective_need_pct_floor = 0.0
+        btc_upper_sell_repeat_relief = False
+        btc_upper_sell_effective_need_pct_floor = 0.0
         base_window_s = int(window_s)
         base_need_pct = float(need_pct)
         if bool(getattr(Config, "ENTRY_CLUSTER_SEMANTIC_RELIEF_ENABLED", True)) and current_sig and prev_sig:
@@ -605,6 +764,34 @@ class EntryGuardEngine:
                         need_pct = max(float(need_pct), btc_min_move)
                         btc_duplicate_effective_need_pct_floor = float(btc_min_move)
                 elif (
+                    key == "BTCUSD"
+                    and setup_id_l == "range_upper_reversal_sell"
+                    and side == "SELL"
+                    and str(prev_sig.get("edge_bias", "")).upper() == "UPPER"
+                    and str(current_sig.get("edge_bias", "")).upper() == "UPPER"
+                ):
+                    repeat_upper_sell_quality = bool(
+                        current_score >= max(min_score - 1.0, 5.0)
+                        and previous_score >= max(min_score - 2.0, 4.0)
+                        and (
+                            str(current_sig.get("observe_state", "")).upper() == "CONFIRM"
+                            or self._safe_float(current_sig.get("confidence"), 0.0) >= 0.62
+                            or str(current_sig.get("dominant_side", "")).upper() == "SELL"
+                        )
+                        and (
+                            self._safe_float(current_sig.get("side_persistence"), 0.0) >= 0.14
+                            or self._safe_int(current_sig.get("side_streak"), 0) >= 1
+                            or str(current_sig.get("dominant_side", "")).upper() == "SELL"
+                        )
+                        and self._safe_float(current_sig.get("side_barrier"), 1.0) <= 0.26
+                    )
+                    if repeat_upper_sell_quality:
+                        window_s = min(int(window_s), 120)
+                        btc_upper_sell_effective_need_pct_floor = max(float(base_need_pct) * 0.28, 0.00018)
+                        need_pct = max(0.0, btc_upper_sell_effective_need_pct_floor)
+                        btc_upper_sell_repeat_relief = True
+                        semantic_relief_applied = True
+                elif (
                     key == "XAUUSD"
                     and setup_id_l == "range_lower_reversal_buy"
                     and side == "BUY"
@@ -624,6 +811,32 @@ class EntryGuardEngine:
                     if strong_retest_quality:
                         window_s = min(int(window_s), 90)
                         need_pct = max(0.0, float(need_pct) * 0.25)
+                        semantic_relief_applied = True
+                elif (
+                    key == "NAS100"
+                    and setup_id_l == "range_lower_reversal_buy"
+                    and side == "BUY"
+                    and str(prev_sig.get("edge_bias", "")).upper() == "LOWER"
+                    and str(current_sig.get("edge_bias", "")).upper() == "LOWER"
+                ):
+                    strong_clean_repeat_quality = bool(
+                        current_score >= max(min_score - 1.0, 5.0)
+                        and previous_score >= max(min_score - 2.0, 4.0)
+                        and (
+                            str(current_sig.get("observe_state", "")).upper() == "CONFIRM"
+                            or self._safe_float(current_sig.get("confidence"), 0.0) >= 0.60
+                            or str(current_sig.get("dominant_side", "")).upper() == "BUY"
+                        )
+                        and (
+                            self._safe_float(current_sig.get("side_persistence"), 0.0) >= 0.08
+                            or self._safe_int(current_sig.get("side_streak"), 0) >= 1
+                            or str(current_sig.get("dominant_side", "")).upper() == "BUY"
+                        )
+                        and self._safe_float(current_sig.get("side_barrier"), 1.0) <= 0.28
+                    )
+                    if strong_clean_repeat_quality:
+                        window_s = min(int(window_s), 120)
+                        need_pct = max(0.0, float(need_pct) * 0.18)
                         semantic_relief_applied = True
                 elif current_score >= min_score and current_score >= max(min_score - 1.0, previous_score - 1.0):
                     window_mult = max(0.10, min(1.0, float(getattr(Config, "ENTRY_CLUSTER_SEMANTIC_RELIEF_WINDOW_MULT", 0.55))))
@@ -645,6 +858,8 @@ class EntryGuardEngine:
             "btc_duplicate_repeat_quality": bool(btc_duplicate_repeat_quality),
             "btc_duplicate_full_suppression_need_pct": float(btc_duplicate_full_suppression_need_pct),
             "btc_duplicate_effective_need_pct_floor": float(btc_duplicate_effective_need_pct_floor),
+            "btc_upper_sell_repeat_relief": bool(btc_upper_sell_repeat_relief),
+            "btc_upper_sell_effective_need_pct_floor": float(btc_upper_sell_effective_need_pct_floor),
             "previous_signature": dict(prev_sig or {}),
             "current_signature": dict(current_sig or {}),
         }
@@ -671,6 +886,7 @@ class EntryGuardEngine:
         *,
         setup_id: str = "",
         setup_reason: str = "",
+        runtime_signal_row: dict | None = None,
     ) -> tuple[bool, str]:
         if not bool(getattr(Config, "ENABLE_ENTRY_BOX_MID_GUARD", True)):
             return True, ""
@@ -713,6 +929,20 @@ class EntryGuardEngine:
         if len(frame) < 3:
             return False, "box_middle_insufficient_m15"
         last_close = float(frame["close"].iloc[-1])
+        runtime_row = dict(runtime_signal_row or {})
+        forecast_reason_u = str(runtime_row.get("forecast_state25_overlay_reason_summary", "") or "").lower()
+        belief_reason_u = str(runtime_row.get("belief_action_hint_reason_summary", "") or "").lower()
+        barrier_reason_u = str(runtime_row.get("barrier_action_hint_reason_summary", "") or "").lower()
+        xau_countertrend_warning_count = 0
+        if any(token in forecast_reason_u for token in ("wait_bias_hold", "wait_reinforce")):
+            xau_countertrend_warning_count += 1
+        if any(token in belief_reason_u for token in ("fragile_thesis", "reduce_risk")):
+            xau_countertrend_warning_count += 1
+        if any(token in barrier_reason_u for token in ("wait_block", "unstable")):
+            xau_countertrend_warning_count += 1
+        xau_countertrend_warning_veto = bool(
+            str(symbol or "").upper() == "XAUUSD" and xau_countertrend_warning_count >= 2
+        )
         if side == "BUY":
             near_lower = (bb_dn > 0.0) and (px <= bb_dn * (1.0 + band_near))
             mid_retest_hold = near_mid and last_close >= bb_mid * (1.0 - retest_tol) and float(frame["low"].min()) <= bb_mid * (1.0 + retest_tol)
@@ -730,6 +960,25 @@ class EntryGuardEngine:
                 lower_band_reaction = float(frame["low"].min()) <= bb_dn * (1.0 + (band_near * 4.0))
                 mid_reclaim_hold = last_close >= bb_mid * (1.0 - (retest_tol * 2.0))
                 if channel_pos <= 0.68 or near_mid_support or (lower_band_reaction and mid_reclaim_hold):
+                    return True, ""
+            if (
+                str(symbol or "").upper() == "XAUUSD"
+                and str(setup_id or "").lower() in {"range_lower_reversal_buy", "trend_pullback_buy"}
+                and str(setup_reason or "").lower() in {
+                    "shadow_lower_rebound_probe_observe",
+                    "shadow_lower_rebound_probe_observe_bounded_probe_soft_edge",
+                    "shadow_outer_band_reversal_support_required_observe",
+                    "shadow_outer_band_reversal_support_required_observe_bounded_probe_soft_edge",
+                }
+                and bb_up > bb_dn > 0.0
+            ):
+                if xau_countertrend_warning_veto:
+                    return False, "xau_follow_through_countertrend_veto"
+                channel_pos = float((px - bb_dn) / max(1e-9, (bb_up - bb_dn)))
+                near_mid_support = last_close >= bb_mid * (1.0 - retest_tol) and float(frame["low"].min()) <= bb_mid * (1.0 + retest_tol)
+                lower_band_reaction = float(frame["low"].min()) <= bb_dn * (1.0 + (band_near * 4.0))
+                mid_reclaim_hold = last_close >= bb_mid * (1.0 - (retest_tol * 3.0))
+                if channel_pos <= 0.76 or near_mid_support or (lower_band_reaction and mid_reclaim_hold):
                     return True, ""
             if near_lower or mid_retest_hold:
                 return True, ""
@@ -1028,27 +1277,265 @@ class EntryThresholdEngine:
 class EntryDecisionRecorder:
     def __init__(self, runtime):
         self.runtime = runtime
+        self._header_cache: dict[str, object] = {}
+        self._path_cache: dict[str, object] = {}
+        self._rollover_cache: dict[str, object] = {}
+        self._detail_rotation_cache: dict[str, object] = {}
+        self._append_io_cache: dict[str, object] = {}
 
-    @staticmethod
-    def _rollover_if_needed(path: Path, cols: list[str]) -> dict[str, object]:
-        return execute_entry_decision_rollover(
+    def _close_append_handles(
+        self,
+        cache_key: str | None = None,
+        *,
+        path: Path | None = None,
+        detail_path: Path | None = None,
+    ) -> None:
+        cache_keys: list[str] = []
+        if cache_key is not None:
+            cache_keys.append(str(cache_key))
+        else:
+            for key, entry in list(self._append_io_cache.items()):
+                if not isinstance(entry, dict):
+                    continue
+                entry_path = Path(str(entry.get("path", "") or ""))
+                entry_detail_path = Path(str(entry.get("detail_path", "") or ""))
+                if path is not None and entry_path == Path(path):
+                    cache_keys.append(str(key))
+                elif detail_path is not None and entry_detail_path == Path(detail_path):
+                    cache_keys.append(str(key))
+        for key in cache_keys:
+            entry = self._append_io_cache.pop(str(key), None)
+            if not isinstance(entry, dict):
+                continue
+            for handle_key in ("csv_handle", "detail_handle"):
+                handle = entry.get(handle_key)
+                if handle is None:
+                    continue
+                try:
+                    handle.flush()
+                except Exception:
+                    pass
+                try:
+                    handle.close()
+                except Exception:
+                    pass
+
+    def _detail_rotation_if_needed(self, path: Path, *, cache_key: str) -> dict[str, object]:
+        detail_path = resolve_entry_decision_detail_path(path)
+        now_dt = datetime.now()
+        try:
+            stat = detail_path.stat()
+        except FileNotFoundError:
+            self._detail_rotation_cache.pop(cache_key, None)
+            return {
+                "contract_version": "entry_decision_detail_rotation_runtime_fast_path_v1",
+                "detail_path": str(detail_path),
+                "rotated": False,
+                "fast_skip_reason": "detail_missing",
+                "source_size_bytes": 0,
+            }
+        except Exception:
+            stat = None
+
+        try:
+            max_bytes = int(
+                os.getenv(
+                    "ENTRY_DECISION_DETAIL_ROTATE_MAX_BYTES",
+                    str(DEFAULT_ENTRY_DECISION_DETAIL_ROTATE_MAX_BYTES),
+                )
+                or DEFAULT_ENTRY_DECISION_DETAIL_ROTATE_MAX_BYTES
+            )
+        except Exception:
+            max_bytes = int(DEFAULT_ENTRY_DECISION_DETAIL_ROTATE_MAX_BYTES)
+        safe_margin_bytes = max(1 * 1024 * 1024, min(32 * 1024 * 1024, int(max_bytes // 20) or 0))
+        current_size = int(getattr(stat, "st_size", 0) or 0)
+        same_day = bool(
+            stat is not None
+            and datetime.fromtimestamp(float(getattr(stat, "st_mtime", 0.0) or 0.0)).date() == now_dt.date()
+        )
+        cached_result = self._detail_rotation_cache.get(cache_key)
+        if (
+            isinstance(cached_result, dict)
+            and same_day
+            and current_size + safe_margin_bytes < int(max_bytes)
+            and (time.perf_counter() - float(cached_result.get("checked_perf", 0.0) or 0.0)) <= 30.0
+            and not bool(cached_result.get("rotated", False))
+        ):
+            return {
+                **dict(cached_result.get("result", {}) or {}),
+                "fast_skip_reason": "cooldown_safe_window",
+                "source_size_bytes": int(current_size),
+            }
+
+        self._close_append_handles(cache_key)
+        result = rotate_entry_decision_detail_if_needed(path)
+        if not bool(result.get("rotated", False)):
+            self._detail_rotation_cache[cache_key] = {
+                "checked_perf": float(time.perf_counter()),
+                "rotated": False,
+                "result": dict(result or {}),
+            }
+        else:
+            self._detail_rotation_cache.pop(cache_key, None)
+        return result
+
+    def _get_or_open_append_handles(
+        self,
+        *,
+        cache_key: str,
+        path: Path,
+        detail_path: Path,
+        cols: list[str],
+        is_new: bool,
+    ) -> dict[str, object]:
+        cached = self._append_io_cache.get(cache_key)
+        if isinstance(cached, dict):
+            csv_handle = cached.get("csv_handle")
+            detail_handle = cached.get("detail_handle")
+            if (
+                not bool(is_new)
+                and Path(str(cached.get("path", "") or "")) == path
+                and Path(str(cached.get("detail_path", "") or "")) == detail_path
+                and csv_handle is not None
+                and detail_handle is not None
+                and not bool(getattr(csv_handle, "closed", True))
+                and not bool(getattr(detail_handle, "closed", True))
+            ):
+                return cached
+            self._close_append_handles(cache_key)
+
+        csv_handle = path.open("a", newline="", encoding="utf-8", buffering=1)
+        csv_writer = csv.writer(csv_handle)
+        if bool(is_new):
+            csv_writer.writerow(cols)
+            csv_handle.flush()
+            self._header_cache = {"cache_key": cache_key, "verified": True}
+        detail_handle = detail_path.open("a", encoding="utf-8", buffering=1)
+        opened = {
+            "path": str(path),
+            "detail_path": str(detail_path),
+            "csv_handle": csv_handle,
+            "csv_writer": csv_writer,
+            "detail_handle": detail_handle,
+        }
+        self._append_io_cache[cache_key] = opened
+        return opened
+
+    def _rollover_if_needed(self, path: Path, cols: list[str]) -> dict[str, object]:
+        cache_key = f"{str(path)}::{','.join(cols)}"
+        now_dt = datetime.now()
+        try:
+            stat = path.stat()
+        except FileNotFoundError:
+            self._rollover_cache.pop(cache_key, None)
+            return {
+                "contract_version": "entry_decision_rollover_runtime_fast_path_v1",
+                "source_path": str(path),
+                "exists": False,
+                "enabled": True,
+                "would_roll": False,
+                "rolled": False,
+                "fast_skip_reason": "source_missing",
+            }
+        except Exception:
+            stat = None
+
+        try:
+            max_bytes = int(os.getenv("ENTRY_DECISION_ROLLOVER_MAX_BYTES", str(DEFAULT_MAX_BYTES)) or DEFAULT_MAX_BYTES)
+        except Exception:
+            max_bytes = int(DEFAULT_MAX_BYTES)
+        safe_margin_bytes = max(1 * 1024 * 1024, min(32 * 1024 * 1024, int(max_bytes // 20) or 0))
+        header_cache_ok = bool(
+            self._header_cache.get("cache_key") == cache_key and self._header_cache.get("verified")
+        )
+        current_size = int(getattr(stat, "st_size", 0) or 0)
+        same_day = bool(
+            stat is not None
+            and datetime.fromtimestamp(float(getattr(stat, "st_mtime", 0.0) or 0.0)).date() == now_dt.date()
+        )
+        cached_result = self._rollover_cache.get(cache_key)
+        if (
+            isinstance(cached_result, dict)
+            and header_cache_ok
+            and same_day
+            and current_size + safe_margin_bytes < int(max_bytes)
+            and (time.perf_counter() - float(cached_result.get("checked_perf", 0.0) or 0.0)) <= 30.0
+            and not bool(cached_result.get("would_roll", False))
+        ):
+            return {
+                **dict(cached_result.get("result", {}) or {}),
+                "fast_skip_reason": "cooldown_safe_window",
+                "source_size_bytes": int(current_size),
+            }
+
+        self._close_append_handles(cache_key)
+        result = execute_entry_decision_rollover(
             path=path,
             columns=list(cols),
             root=Path(__file__).resolve().parents[2],
             create_if_missing=False,
             trigger_mode="runtime_append",
         )
+        if not bool(result.get("would_roll", False)) and not bool(result.get("rolled", False)):
+            self._rollover_cache[cache_key] = {
+                "checked_perf": float(time.perf_counter()),
+                "would_roll": False,
+                "result": dict(result or {}),
+            }
+        else:
+            self._rollover_cache.pop(cache_key, None)
+        return result
 
     def append_entry_decision_log(self, row: dict) -> dict[str, object]:
         if not bool(getattr(Config, "ENTRY_DECISION_LOG_ENABLED", True)):
             return {}
         try:
-            path = Path(getattr(Config, "ENTRY_DECISION_LOG_PATH", "data/trades/entry_decisions.csv"))
-            if not path.is_absolute():
-                path = Path(__file__).resolve().parents[2] / path
+            append_started_at = time.perf_counter()
+            append_stage_timings_ms: dict[str, float] = {}
+            file_write_stage_timings_ms: dict[str, float] = {}
+            detail_payload_stage_timings_ms: dict[str, float] = {}
+
+            def _record_append_stage(stage_name: str, started_at: float) -> None:
+                append_stage_timings_ms[str(stage_name)] = round(
+                    (time.perf_counter() - float(started_at)) * 1000.0,
+                    3,
+                )
+
+            def _record_file_write_stage(stage_name: str, started_at: float) -> None:
+                file_write_stage_timings_ms[str(stage_name)] = round(
+                    (time.perf_counter() - float(started_at)) * 1000.0,
+                    3,
+                )
+
+            def _record_detail_payload_stage(stage_name: str, started_at: float) -> None:
+                detail_payload_stage_timings_ms[str(stage_name)] = round(
+                    (time.perf_counter() - float(started_at)) * 1000.0,
+                    3,
+                )
+
+            stage_started_at = time.perf_counter()
+            path_raw = str(getattr(Config, "ENTRY_DECISION_LOG_PATH", "data/trades/entry_decisions.csv") or "")
+            path_cache_key = str(path_raw)
+            cached_path = self._path_cache.get(path_cache_key)
+            if isinstance(cached_path, dict):
+                path = cached_path.get("path")
+                detail_path = cached_path.get("detail_path")
+                cols = list(cached_path.get("cols", ENTRY_DECISION_LOG_COLUMNS))
+                full_cols = list(cached_path.get("full_cols", ENTRY_DECISION_FULL_COLUMNS))
+            else:
+                path = Path(path_raw or "data/trades/entry_decisions.csv")
+                if not path.is_absolute():
+                    path = Path(__file__).resolve().parents[2] / path
+                cols = list(ENTRY_DECISION_LOG_COLUMNS)
+                full_cols = list(ENTRY_DECISION_FULL_COLUMNS)
+                detail_path = resolve_entry_decision_detail_path(path)
+                self._path_cache[path_cache_key] = {
+                    "path": path,
+                    "detail_path": detail_path,
+                    "cols": tuple(cols),
+                    "full_cols": tuple(full_cols),
+                }
             path.parent.mkdir(parents=True, exist_ok=True)
-            cols = list(ENTRY_DECISION_LOG_COLUMNS)
-            full_cols = list(ENTRY_DECISION_FULL_COLUMNS)
             payload = {}
             for c in full_cols:
                 payload[c] = row.get(c, "")
@@ -1111,6 +1598,9 @@ class EntryDecisionRecorder:
                 payload["energy_compatibility_runtime_field"] = "energy_snapshot"
             if payload.get("energy_logging_replay_contract_field", "") == "":
                 payload["energy_logging_replay_contract_field"] = "energy_logging_replay_contract_v1"
+            _record_append_stage("payload_defaults", stage_started_at)
+            stage_started_at = time.perf_counter()
+            lean_no_action_row = str(payload.get("outcome", "") or "").strip().lower() in {"wait", "skipped"}
             observe_confirm_payload_v2 = row.get("observe_confirm_v2", "")
             if isinstance(observe_confirm_payload_v2, str) and observe_confirm_payload_v2.strip():
                 try:
@@ -1185,268 +1675,134 @@ class EntryDecisionRecorder:
             ):
                 payload["shadow_state_v1"] = str(resolved_observe_confirm_payload.get("archetype_id", "") or "")
             if payload.get("observe_confirm_input_contract_v2", "") == "":
-                payload["observe_confirm_input_contract_v2"] = json.dumps(
-                    OBSERVE_CONFIRM_INPUT_CONTRACT_V2,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
+                payload["observe_confirm_input_contract_v2"] = JSON_OBSERVE_CONFIRM_INPUT_CONTRACT_V2
             if payload.get("observe_confirm_migration_dual_write_v1", "") == "":
-                payload["observe_confirm_migration_dual_write_v1"] = json.dumps(
-                    OBSERVE_CONFIRM_MIGRATION_DUAL_WRITE_V1,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
+                payload["observe_confirm_migration_dual_write_v1"] = JSON_OBSERVE_CONFIRM_MIGRATION_DUAL_WRITE_V1
             if payload.get("observe_confirm_output_contract_v2", "") == "":
-                payload["observe_confirm_output_contract_v2"] = json.dumps(
-                    OBSERVE_CONFIRM_OUTPUT_CONTRACT_V2,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
+                payload["observe_confirm_output_contract_v2"] = JSON_OBSERVE_CONFIRM_OUTPUT_CONTRACT_V2
             if payload.get("observe_confirm_scope_contract_v1", "") == "":
-                payload["observe_confirm_scope_contract_v1"] = json.dumps(
-                    OBSERVE_CONFIRM_SCOPE_CONTRACT_V1,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
+                payload["observe_confirm_scope_contract_v1"] = JSON_OBSERVE_CONFIRM_SCOPE_CONTRACT_V1
             if payload.get("consumer_input_contract_v1", "") == "":
-                payload["consumer_input_contract_v1"] = json.dumps(
-                    CONSUMER_INPUT_CONTRACT_V1,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
+                payload["consumer_input_contract_v1"] = JSON_CONSUMER_INPUT_CONTRACT_V1
             if payload.get("consumer_migration_freeze_v1", "") == "":
-                payload["consumer_migration_freeze_v1"] = json.dumps(
-                    CONSUMER_MIGRATION_FREEZE_V1,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
+                payload["consumer_migration_freeze_v1"] = JSON_CONSUMER_MIGRATION_FREEZE_V1
             payload["consumer_migration_guard_v1"] = json.dumps(
                 dict(consumer_migration_guard_v1 or {}),
                 ensure_ascii=False,
                 separators=(",", ":"),
             )
             if payload.get("consumer_logging_contract_v1", "") == "":
-                payload["consumer_logging_contract_v1"] = json.dumps(
-                    CONSUMER_LOGGING_CONTRACT_V1,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
+                payload["consumer_logging_contract_v1"] = JSON_CONSUMER_LOGGING_CONTRACT_V1
             if payload.get("consumer_test_contract_v1", "") == "":
-                payload["consumer_test_contract_v1"] = json.dumps(
-                    CONSUMER_TEST_CONTRACT_V1,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
+                payload["consumer_test_contract_v1"] = JSON_CONSUMER_TEST_CONTRACT_V1
             if payload.get("consumer_freeze_handoff_v1", "") == "":
-                payload["consumer_freeze_handoff_v1"] = json.dumps(
-                    CONSUMER_FREEZE_HANDOFF_V1,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
+                payload["consumer_freeze_handoff_v1"] = JSON_CONSUMER_FREEZE_HANDOFF_V1
             if payload.get("layer_mode_contract_v1", "") == "":
-                payload["layer_mode_contract_v1"] = json.dumps(
-                    LAYER_MODE_MODE_CONTRACT_V1,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
+                payload["layer_mode_contract_v1"] = JSON_LAYER_MODE_MODE_CONTRACT_V1
             if payload.get("layer_mode_layer_inventory_v1", "") == "":
-                payload["layer_mode_layer_inventory_v1"] = json.dumps(
-                    LAYER_MODE_LAYER_INVENTORY_V1,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
+                payload["layer_mode_layer_inventory_v1"] = JSON_LAYER_MODE_LAYER_INVENTORY_V1
             if payload.get("layer_mode_default_policy_v1", "") == "":
-                payload["layer_mode_default_policy_v1"] = json.dumps(
-                    LAYER_MODE_DEFAULT_POLICY_V1,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
+                payload["layer_mode_default_policy_v1"] = JSON_LAYER_MODE_DEFAULT_POLICY_V1
             if payload.get("layer_mode_dual_write_contract_v1", "") == "":
-                payload["layer_mode_dual_write_contract_v1"] = json.dumps(
-                    LAYER_MODE_DUAL_WRITE_CONTRACT_V1,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
+                payload["layer_mode_dual_write_contract_v1"] = JSON_LAYER_MODE_DUAL_WRITE_CONTRACT_V1
             if payload.get("layer_mode_influence_semantics_v1", "") == "":
-                payload["layer_mode_influence_semantics_v1"] = json.dumps(
-                    LAYER_MODE_INFLUENCE_SEMANTICS_V1,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
+                payload["layer_mode_influence_semantics_v1"] = JSON_LAYER_MODE_INFLUENCE_SEMANTICS_V1
             if payload.get("layer_mode_application_contract_v1", "") == "":
-                payload["layer_mode_application_contract_v1"] = json.dumps(
-                    LAYER_MODE_APPLICATION_CONTRACT_V1,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
+                payload["layer_mode_application_contract_v1"] = JSON_LAYER_MODE_APPLICATION_CONTRACT_V1
             if payload.get("layer_mode_identity_guard_contract_v1", "") == "":
-                payload["layer_mode_identity_guard_contract_v1"] = json.dumps(
-                    LAYER_MODE_IDENTITY_GUARD_CONTRACT_V1,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
+                payload["layer_mode_identity_guard_contract_v1"] = JSON_LAYER_MODE_IDENTITY_GUARD_CONTRACT_V1
             if payload.get("layer_mode_policy_overlay_output_contract_v1", "") == "":
-                payload["layer_mode_policy_overlay_output_contract_v1"] = json.dumps(
-                    LAYER_MODE_POLICY_OVERLAY_OUTPUT_CONTRACT_V1,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
+                payload["layer_mode_policy_overlay_output_contract_v1"] = JSON_LAYER_MODE_POLICY_OVERLAY_OUTPUT_CONTRACT_V1
             if payload.get("layer_mode_logging_replay_contract_v1", "") == "":
-                payload["layer_mode_logging_replay_contract_v1"] = json.dumps(
-                    LAYER_MODE_LOGGING_REPLAY_CONTRACT_V1,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
+                payload["layer_mode_logging_replay_contract_v1"] = JSON_LAYER_MODE_LOGGING_REPLAY_CONTRACT_V1
             if payload.get("layer_mode_scope_contract_v1", "") == "":
-                payload["layer_mode_scope_contract_v1"] = json.dumps(
-                    LAYER_MODE_SCOPE_CONTRACT_V1,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
-            layer_mode_effective_defaults = build_layer_mode_effective_metadata(payload)
-            if payload.get("position_snapshot_effective_v1", "") == "":
-                payload["position_snapshot_effective_v1"] = json.dumps(
-                    layer_mode_effective_defaults.get("position_snapshot_effective_v1", {}),
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
-            if payload.get("response_vector_effective_v1", "") == "":
-                payload["response_vector_effective_v1"] = json.dumps(
-                    layer_mode_effective_defaults.get("response_vector_effective_v1", {}),
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
-            if payload.get("state_vector_effective_v1", "") == "":
-                payload["state_vector_effective_v1"] = json.dumps(
-                    layer_mode_effective_defaults.get("state_vector_effective_v1", {}),
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
-            if payload.get("evidence_vector_effective_v1", "") == "":
-                payload["evidence_vector_effective_v1"] = json.dumps(
-                    layer_mode_effective_defaults.get("evidence_vector_effective_v1", {}),
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
-            if payload.get("belief_state_effective_v1", "") == "":
-                payload["belief_state_effective_v1"] = json.dumps(
-                    layer_mode_effective_defaults.get("belief_state_effective_v1", {}),
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
-            if payload.get("barrier_state_effective_v1", "") == "":
-                payload["barrier_state_effective_v1"] = json.dumps(
-                    layer_mode_effective_defaults.get("barrier_state_effective_v1", {}),
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
-            if payload.get("forecast_effective_policy_v1", "") == "":
-                payload["forecast_effective_policy_v1"] = json.dumps(
-                    layer_mode_effective_defaults.get("forecast_effective_policy_v1", {}),
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
-            if payload.get("layer_mode_effective_trace_v1", "") == "":
-                payload["layer_mode_effective_trace_v1"] = json.dumps(
-                    layer_mode_effective_defaults.get("layer_mode_effective_trace_v1", {}),
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
-            layer_mode_influence_defaults = build_layer_mode_influence_metadata()
+                payload["layer_mode_scope_contract_v1"] = JSON_LAYER_MODE_SCOPE_CONTRACT_V1
+            if not lean_no_action_row:
+                layer_mode_effective_defaults = build_layer_mode_effective_metadata(payload)
+                if payload.get("position_snapshot_effective_v1", "") == "":
+                    payload["position_snapshot_effective_v1"] = json.dumps(
+                        layer_mode_effective_defaults.get("position_snapshot_effective_v1", {}),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                if payload.get("response_vector_effective_v1", "") == "":
+                    payload["response_vector_effective_v1"] = json.dumps(
+                        layer_mode_effective_defaults.get("response_vector_effective_v1", {}),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                if payload.get("state_vector_effective_v1", "") == "":
+                    payload["state_vector_effective_v1"] = json.dumps(
+                        layer_mode_effective_defaults.get("state_vector_effective_v1", {}),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                if payload.get("evidence_vector_effective_v1", "") == "":
+                    payload["evidence_vector_effective_v1"] = json.dumps(
+                        layer_mode_effective_defaults.get("evidence_vector_effective_v1", {}),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                if payload.get("belief_state_effective_v1", "") == "":
+                    payload["belief_state_effective_v1"] = json.dumps(
+                        layer_mode_effective_defaults.get("belief_state_effective_v1", {}),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                if payload.get("barrier_state_effective_v1", "") == "":
+                    payload["barrier_state_effective_v1"] = json.dumps(
+                        layer_mode_effective_defaults.get("barrier_state_effective_v1", {}),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                if payload.get("forecast_effective_policy_v1", "") == "":
+                    payload["forecast_effective_policy_v1"] = json.dumps(
+                        layer_mode_effective_defaults.get("forecast_effective_policy_v1", {}),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                if payload.get("layer_mode_effective_trace_v1", "") == "":
+                    payload["layer_mode_effective_trace_v1"] = json.dumps(
+                        layer_mode_effective_defaults.get("layer_mode_effective_trace_v1", {}),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
             if payload.get("layer_mode_influence_trace_v1", "") == "":
-                payload["layer_mode_influence_trace_v1"] = json.dumps(
-                    layer_mode_influence_defaults.get("layer_mode_influence_trace_v1", {}),
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
-            layer_mode_application_defaults = build_layer_mode_application_metadata()
+                payload["layer_mode_influence_trace_v1"] = JSON_LAYER_MODE_INFLUENCE_TRACE_V1
             if payload.get("layer_mode_application_trace_v1", "") == "":
-                payload["layer_mode_application_trace_v1"] = json.dumps(
-                    layer_mode_application_defaults.get("layer_mode_application_trace_v1", {}),
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
-            layer_mode_identity_guard_defaults = build_layer_mode_identity_guard_metadata()
+                payload["layer_mode_application_trace_v1"] = JSON_LAYER_MODE_APPLICATION_TRACE_V1
             if payload.get("layer_mode_identity_guard_trace_v1", "") == "":
-                payload["layer_mode_identity_guard_trace_v1"] = json.dumps(
-                    layer_mode_identity_guard_defaults.get("layer_mode_identity_guard_trace_v1", {}),
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
-            layer_mode_policy_overlay_defaults = build_layer_mode_policy_overlay_metadata()
+                payload["layer_mode_identity_guard_trace_v1"] = JSON_LAYER_MODE_IDENTITY_GUARD_TRACE_V1
             if payload.get("layer_mode_policy_v1", "") == "":
-                payload["layer_mode_policy_v1"] = json.dumps(
-                    layer_mode_policy_overlay_defaults.get("layer_mode_policy_v1", {}),
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
-            layer_mode_logging_replay_defaults = build_layer_mode_logging_replay_metadata(payload)
-            if payload.get("layer_mode_logging_replay_v1", "") == "":
-                payload["layer_mode_logging_replay_v1"] = json.dumps(
-                    layer_mode_logging_replay_defaults.get("layer_mode_logging_replay_v1", {}),
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
+                payload["layer_mode_policy_v1"] = JSON_LAYER_MODE_POLICY_V1
+            if not lean_no_action_row:
+                layer_mode_logging_replay_defaults = build_layer_mode_logging_replay_metadata(payload)
+                if payload.get("layer_mode_logging_replay_v1", "") == "":
+                    payload["layer_mode_logging_replay_v1"] = json.dumps(
+                        layer_mode_logging_replay_defaults.get("layer_mode_logging_replay_v1", {}),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
             if payload.get("layer_mode_test_contract_v1", "") == "":
-                payload["layer_mode_test_contract_v1"] = json.dumps(
-                    LAYER_MODE_TEST_CONTRACT_V1,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
+                payload["layer_mode_test_contract_v1"] = JSON_LAYER_MODE_TEST_CONTRACT_V1
             if payload.get("layer_mode_freeze_handoff_v1", "") == "":
-                payload["layer_mode_freeze_handoff_v1"] = json.dumps(
-                    LAYER_MODE_FREEZE_HANDOFF_V1,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
+                payload["layer_mode_freeze_handoff_v1"] = JSON_LAYER_MODE_FREEZE_HANDOFF_V1
             if payload.get("setup_detector_responsibility_contract_v1", "") == "":
-                payload["setup_detector_responsibility_contract_v1"] = json.dumps(
-                    SETUP_DETECTOR_RESPONSIBILITY_CONTRACT_V1,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
+                payload["setup_detector_responsibility_contract_v1"] = JSON_SETUP_DETECTOR_RESPONSIBILITY_CONTRACT_V1
             if payload.get("setup_mapping_contract_v1", "") == "":
-                payload["setup_mapping_contract_v1"] = json.dumps(
-                    SETUP_MAPPING_CONTRACT_V1,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
+                payload["setup_mapping_contract_v1"] = JSON_SETUP_MAPPING_CONTRACT_V1
             if payload.get("entry_guard_contract_v1", "") == "":
-                payload["entry_guard_contract_v1"] = json.dumps(
-                    ENTRY_GUARD_CONTRACT_V1,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
+                payload["entry_guard_contract_v1"] = JSON_ENTRY_GUARD_CONTRACT_V1
             if payload.get("entry_service_responsibility_contract_v1", "") == "":
-                payload["entry_service_responsibility_contract_v1"] = json.dumps(
-                    ENTRY_SERVICE_RESPONSIBILITY_CONTRACT_V1,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
+                payload["entry_service_responsibility_contract_v1"] = JSON_ENTRY_SERVICE_RESPONSIBILITY_CONTRACT_V1
             if payload.get("exit_handoff_contract_v1", "") == "":
-                payload["exit_handoff_contract_v1"] = json.dumps(
-                    EXIT_HANDOFF_CONTRACT_V1,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
+                payload["exit_handoff_contract_v1"] = JSON_EXIT_HANDOFF_CONTRACT_V1
             if payload.get("re_entry_contract_v1", "") == "":
-                payload["re_entry_contract_v1"] = json.dumps(
-                    RE_ENTRY_CONTRACT_V1,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
+                payload["re_entry_contract_v1"] = JSON_RE_ENTRY_CONTRACT_V1
             if payload.get("consumer_scope_contract_v1", "") == "":
-                payload["consumer_scope_contract_v1"] = json.dumps(
-                    CONSUMER_SCOPE_CONTRACT_V1,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
+                payload["consumer_scope_contract_v1"] = JSON_CONSUMER_SCOPE_CONTRACT_V1
             if payload.get("consumer_layer_mode_integration_v1", "") == "":
-                payload["consumer_layer_mode_integration_v1"] = json.dumps(
-                    CONSUMER_LAYER_MODE_INTEGRATION_V1,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
+                payload["consumer_layer_mode_integration_v1"] = JSON_CONSUMER_LAYER_MODE_INTEGRATION_V1
             if payload.get("consumer_input_observe_confirm_field", "") == "":
                 inferred_field = (
                     CONSUMER_INPUT_CONTRACT_V1["compatibility_observe_confirm_field_v1"]
@@ -1500,6 +1856,8 @@ class EntryDecisionRecorder:
                 payload["consumer_handoff_contract_version"] = str(
                     output_contract.get("contract_version", "") or "observe_confirm_output_contract_v2"
                 )
+            _record_append_stage("observe_confirm_and_contracts", stage_started_at)
+            stage_started_at = time.perf_counter()
             energy_snapshot_payload = row.get("energy_snapshot", "")
             if isinstance(energy_snapshot_payload, str) and energy_snapshot_payload.strip():
                 try:
@@ -1509,29 +1867,13 @@ class EntryDecisionRecorder:
             elif not isinstance(energy_snapshot_payload, dict):
                 energy_snapshot_payload = {}
             if payload.get("energy_migration_dual_write_v1", "") == "":
-                payload["energy_migration_dual_write_v1"] = json.dumps(
-                    ENERGY_MIGRATION_DUAL_WRITE_V1,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
+                payload["energy_migration_dual_write_v1"] = JSON_ENERGY_MIGRATION_DUAL_WRITE_V1
             if payload.get("energy_scope_contract_v1", "") == "":
-                payload["energy_scope_contract_v1"] = json.dumps(
-                    ENERGY_SCOPE_CONTRACT_V1,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
+                payload["energy_scope_contract_v1"] = JSON_ENERGY_SCOPE_CONTRACT_V1
             if payload.get("runtime_alignment_scope_contract_v1", "") == "":
-                payload["runtime_alignment_scope_contract_v1"] = json.dumps(
-                    RUNTIME_ALIGNMENT_SCOPE_CONTRACT_V1,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
+                payload["runtime_alignment_scope_contract_v1"] = JSON_RUNTIME_ALIGNMENT_SCOPE_CONTRACT_V1
             if payload.get("energy_logging_replay_contract_v1", "") == "":
-                payload["energy_logging_replay_contract_v1"] = json.dumps(
-                    ENERGY_LOGGING_REPLAY_CONTRACT_V1,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
+                payload["energy_logging_replay_contract_v1"] = JSON_ENERGY_LOGGING_REPLAY_CONTRACT_V1
             energy_helper_payload = row.get("energy_helper_v2", "")
             if isinstance(energy_helper_payload, str) and energy_helper_payload.strip():
                 try:
@@ -1598,23 +1940,16 @@ class EntryDecisionRecorder:
                     ensure_ascii=False,
                     separators=(",", ":"),
                 )
-            payload["layer_mode_logging_replay_v1"] = json.dumps(
-                build_layer_mode_logging_replay_metadata(payload).get("layer_mode_logging_replay_v1", {}),
-                ensure_ascii=False,
-                separators=(",", ":"),
-            )
+            if not lean_no_action_row:
+                payload["layer_mode_logging_replay_v1"] = json.dumps(
+                    build_layer_mode_logging_replay_metadata(payload).get("layer_mode_logging_replay_v1", {}),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
             if payload.get("forecast_calibration_contract_v1", "") == "":
-                payload["forecast_calibration_contract_v1"] = json.dumps(
-                    FORECAST_CALIBRATION_CONTRACT_V1,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
+                payload["forecast_calibration_contract_v1"] = JSON_FORECAST_CALIBRATION_CONTRACT_V1
             if payload.get("outcome_labeler_scope_contract_v1", "") == "":
-                payload["outcome_labeler_scope_contract_v1"] = json.dumps(
-                    OUTCOME_LABELER_SCOPE_CONTRACT_V1,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
+                payload["outcome_labeler_scope_contract_v1"] = JSON_OUTCOME_LABELER_SCOPE_CONTRACT_V1
             payload["time"] = payload.get("time") or datetime.now().isoformat(timespec="seconds")
             decision_generated_ts = row.get("_decision_generated_ts", payload.get("_decision_generated_ts"))
             runtime_snapshot_generated_ts = row.get("_runtime_snapshot_generated_ts", payload.get("_runtime_snapshot_generated_ts"))
@@ -1631,7 +1966,6 @@ class EntryDecisionRecorder:
                 payload["runtime_snapshot_key"] = existing_runtime_snapshot_key
             else:
                 payload["runtime_snapshot_key"] = str(resolve_runtime_signal_row_key(payload))
-            detail_path = resolve_entry_decision_detail_path(path)
             trace_quality = summarize_trace_quality(
                 payload,
                 decision_ts=(float(decision_generated_ts) if decision_generated_ts not in ("", None) else None),
@@ -1653,11 +1987,7 @@ class EntryDecisionRecorder:
                 ensure_ascii=False,
                 separators=(",", ":"),
             )
-            payload["p0_decision_trace_contract_v1"] = json.dumps(
-                P0_DECISION_TRACE_CONTRACT_V1,
-                ensure_ascii=False,
-                separators=(",", ":"),
-            )
+            payload["p0_decision_trace_contract_v1"] = JSON_P0_DECISION_TRACE_CONTRACT_V1
             p7_size_overlay = payload.get("p7_guarded_size_overlay_v1", {})
             if isinstance(p7_size_overlay, str):
                 try:
@@ -1688,9 +2018,36 @@ class EntryDecisionRecorder:
             payload["p7_size_overlay_applied"] = int(1 if bool(p7_size_overlay.get("applied")) else 0)
             payload["p7_size_overlay_gate_reason"] = str(p7_size_overlay.get("gate_reason", "") or "")
             payload["p7_size_overlay_source"] = str(p7_size_overlay.get("source_path", "") or "")
-            detail_record = build_entry_decision_detail_record(payload, row_key=detail_row_key)
-            hot_payload = build_entry_decision_hot_payload(payload, detail_row_key=detail_row_key)
-            detail_blob_bytes = json_payload_size_bytes(detail_record)
+            detail_record_mode = "compact_runtime_signal_row" if lean_no_action_row else "full_payload"
+            detail_substage_started_at = time.perf_counter()
+            compact_runtime_row = (
+                compact_runtime_signal_row(payload)
+                if detail_record_mode == "compact_runtime_signal_row"
+                else {}
+            )
+            _record_detail_payload_stage("compact_runtime_row", detail_substage_started_at)
+            detail_substage_started_at = time.perf_counter()
+            detail_payload = (
+                compact_runtime_row
+                if detail_record_mode == "compact_runtime_signal_row"
+                else payload
+            )
+            detail_record = build_entry_decision_detail_record(detail_payload, row_key=detail_row_key)
+            detail_record_json = json.dumps(detail_record, ensure_ascii=False, separators=(",", ":"))
+            _record_detail_payload_stage("detail_record_json", detail_substage_started_at)
+            detail_substage_started_at = time.perf_counter()
+            hot_payload = (
+                build_entry_decision_hot_payload_lean(
+                    payload,
+                    detail_row_key=detail_row_key,
+                    compact_runtime_row=compact_runtime_row,
+                )
+                if detail_record_mode == "compact_runtime_signal_row"
+                else build_entry_decision_hot_payload(payload, detail_row_key=detail_row_key)
+            )
+            _record_detail_payload_stage("hot_payload_build", detail_substage_started_at)
+            detail_substage_started_at = time.perf_counter()
+            detail_blob_bytes = len(detail_record_json.encode("utf-8"))
             snapshot_payload_bytes = int(
                 row.get("snapshot_payload_bytes", payload.get("snapshot_payload_bytes", 0) or 0)
             )
@@ -1713,29 +2070,96 @@ class EntryDecisionRecorder:
             hot_payload["detail_blob_bytes"] = int(detail_blob_bytes)
             hot_payload["snapshot_payload_bytes"] = int(snapshot_payload_bytes)
             hot_payload["row_payload_bytes"] = int(row_payload_bytes)
-            hot_payload = {column: hot_payload.get(column, "") for column in cols}
+            _record_detail_payload_stage("payload_size_metrics", detail_substage_started_at)
+            _record_append_stage("detail_payload_build", stage_started_at)
+            stage_started_at = time.perf_counter()
+            file_write_stage_started_at = time.perf_counter()
+            substage_started_at = time.perf_counter()
             rollover_result = self._rollover_if_needed(path, cols)
+            _record_file_write_stage("rollover", substage_started_at)
             if rollover_result.get("error") and "WinError 32" not in str(rollover_result.get("error", "")):
                 logger.warning(
                     "entry decision rollover skipped: %s",
                     str(rollover_result.get("error", "") or ""),
                 )
+            substage_started_at = time.perf_counter()
+            cache_key = f"{str(path)}::{','.join(cols)}"
+            cache_hit = bool(self._header_cache.get("cache_key") == cache_key and self._header_cache.get("verified"))
             is_new = not path.exists()
+            if path.exists() and not cache_hit:
+                self._close_append_handles(cache_key)
+                try:
+                    with path.open("r", newline="", encoding="utf-8-sig") as existing_handle:
+                        existing_reader = csv.reader(existing_handle)
+                        existing_header = next(existing_reader, [])
+                    if list(existing_header) != list(cols):
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        legacy_path = path.with_name(f"{path.stem}.legacy_{timestamp}{path.suffix}")
+                        path.replace(legacy_path)
+                        is_new = True
+                        self._header_cache = {}
+                    else:
+                        self._header_cache = {"cache_key": cache_key, "verified": True}
+                except Exception:
+                    is_new = not path.exists()
+            elif path.exists() and cache_hit:
+                is_new = False
+            _record_file_write_stage("header_check", substage_started_at)
+            substage_started_at = time.perf_counter()
             detail_path.parent.mkdir(parents=True, exist_ok=True)
-            detail_rotation = rotate_entry_decision_detail_if_needed(path)
+            detail_rotation = self._detail_rotation_if_needed(path, cache_key=cache_key)
             if detail_rotation.get("error") and "WinError 32" not in str(detail_rotation.get("error", "")):
                 logger.warning(
                     "entry decision detail rotation skipped: %s",
                     str(detail_rotation.get("error", "") or ""),
                 )
-            with detail_path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(detail_record, ensure_ascii=False, separators=(",", ":")) + "\n")
-            with path.open("a", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=cols)
-                if is_new:
-                    writer.writeheader()
-                writer.writerow(hot_payload)
-            return dict(hot_payload)
+            _record_file_write_stage("detail_rotation", substage_started_at)
+            substage_started_at = time.perf_counter()
+            append_handles = self._get_or_open_append_handles(
+                cache_key=cache_key,
+                path=path,
+                detail_path=detail_path,
+                cols=cols,
+                is_new=bool(is_new),
+            )
+            detail_handle = append_handles.get("detail_handle")
+            if detail_handle is None:
+                raise RuntimeError("detail append handle unavailable")
+            detail_handle.write(detail_record_json + "\n")
+            detail_handle.flush()
+            _record_file_write_stage("detail_append", substage_started_at)
+            substage_started_at = time.perf_counter()
+            row_values = [hot_payload.get(column, "") for column in cols]
+            csv_writer = append_handles.get("csv_writer")
+            csv_handle = append_handles.get("csv_handle")
+            if csv_writer is None or csv_handle is None:
+                raise RuntimeError("csv append handle unavailable")
+            csv_writer.writerow(row_values)
+            csv_handle.flush()
+            _record_file_write_stage("csv_append", substage_started_at)
+            _record_append_stage("file_write", file_write_stage_started_at)
+            runtime_rows = getattr(self.runtime, "latest_signal_by_symbol", None)
+            runtime_symbol = str((row or {}).get("symbol", "") or "")
+            if isinstance(runtime_rows, dict) and runtime_symbol:
+                runtime_row = runtime_rows.get(runtime_symbol, {})
+                if not isinstance(runtime_row, dict):
+                    runtime_row = {}
+                runtime_row["entry_append_log_profile_v1"] = {
+                    "contract_version": "entry_append_log_profile_v1",
+                    "total_ms": round((time.perf_counter() - append_started_at) * 1000.0, 3),
+                    "stage_timings_ms": dict(append_stage_timings_ms),
+                    "file_write_stage_timings_ms": dict(file_write_stage_timings_ms),
+                    "detail_payload_stage_timings_ms": dict(detail_payload_stage_timings_ms),
+                    "detail_record_mode": str(detail_record_mode),
+                }
+                runtime_rows[runtime_symbol] = runtime_row
+            result_row = dict(hot_payload)
+            result_row["_append_stage_timings_ms"] = dict(append_stage_timings_ms)
+            result_row["_append_total_ms"] = round((time.perf_counter() - append_started_at) * 1000.0, 3)
+            result_row["_file_write_stage_timings_ms"] = dict(file_write_stage_timings_ms)
+            result_row["_detail_payload_stage_timings_ms"] = dict(detail_payload_stage_timings_ms)
+            result_row["_detail_record_mode"] = str(detail_record_mode)
+            return result_row
         except Exception:
             logger.exception("entry decision log append failed")
             return {}

@@ -475,6 +475,9 @@ def compact_entry_wait_context_v1(context: Mapping[str, Any] | None = None) -> d
             "state": _to_str(policy.get("state", "")),
             "reason": _to_str(policy.get("reason", "")),
             "hard_wait": _to_bool(policy.get("hard_wait", False)),
+            "lower_rebound_probe_active": _to_bool(policy.get("lower_rebound_probe_active", False)),
+            "upper_reject_probe_active": _to_bool(policy.get("upper_reject_probe_active", False)),
+            "lower_soft_wait_candidate": _to_bool(policy.get("lower_soft_wait_candidate", False)),
             "btc_lower_strong_score_soft_wait": _to_bool(
                 policy.get("btc_lower_strong_score_soft_wait", False)
             ),

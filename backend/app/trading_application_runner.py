@@ -6,6 +6,8 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import os
+import sys
 import time
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
@@ -22,7 +24,22 @@ from backend.services.entry_service import EntryService
 from backend.services.exit_service import ExitService
 from backend.services.context_classifier import ContextClassifier
 from backend.services.exit_profile_router import resolve_exit_profile
+from backend.services.belief_state25_runtime_bridge import (
+    build_belief_state25_runtime_bridge_v1,
+)
+from backend.services.barrier_state25_runtime_bridge import (
+    build_barrier_state25_runtime_bridge_v1,
+)
+from backend.services.forecast_state25_runtime_bridge import (
+    build_forecast_state25_runtime_bridge_v1,
+)
 from backend.services.policy_service import PolicyService
+from backend.services.runtime_recycle import evaluate_runtime_recycle
+from backend.services.runtime_recycle import (
+    build_runtime_recycle_drift_v1,
+    build_runtime_recycle_health_v1,
+)
+from backend.services.telegram_ops_service import TelegramOpsService
 from backend.services.storage_compaction import (
     build_probe_quick_trace_fields,
     json_payload_size_bytes,
@@ -32,6 +49,16 @@ from backend.services.storage_compaction import (
 from backend.services.strategy_service import StrategyService
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_boottrace(stage: str) -> None:
+    message = str(stage or "").strip()
+    if not message:
+        return
+    try:
+        print(f"[boottrace] {message}", flush=True)
+    except OSError:
+        logger.debug("boottrace suppressed: %s", message)
 
 
 def _resolve_symbol_loop_profile_path(config=Config) -> Path:
@@ -143,6 +170,44 @@ def _write_symbol_loop_profile(app, profile: dict) -> None:
         logger.exception("Failed to write symbol loop profile: %s", path)
 
 
+def _write_runtime_status_progress(app, *, loop_count: int, symbols: dict, policy_service, detail: str = "") -> None:
+    try:
+        app._write_runtime_status(
+            loop_count,
+            symbols,
+            policy_service.entry_threshold,
+            policy_service.exit_threshold,
+            adverse_loss_usd=policy_service.adverse_loss_usd,
+            reverse_signal_threshold=policy_service.reverse_signal_threshold,
+            policy_snapshot=policy_service.get_runtime_snapshot(),
+        )
+        if detail:
+            app._write_loop_debug(loop_count=loop_count, stage="runtime_status_progress", detail=str(detail or ""))
+    except Exception:
+        logger.exception("Failed to write runtime status progress: %s", detail)
+
+
+def _sync_flow_history_from_runtime_rows(app, painter: Painter, symbols: dict) -> None:
+    if not isinstance(symbols, dict):
+        return
+    latest_rows = getattr(app, "latest_signal_by_symbol", None)
+    if not isinstance(latest_rows, dict):
+        return
+    timeframe_1m = None
+    try:
+        timeframe_1m = (getattr(app, "TIMEFRAMES", {}) or {}).get("1M")
+    except Exception:
+        timeframe_1m = None
+    for symbol in symbols.values():
+        row = latest_rows.get(symbol, {})
+        if not isinstance(row, dict) or not row:
+            continue
+        try:
+            painter.sync_flow_history_from_runtime_row(symbol, row)
+        except Exception:
+            logger.exception("Failed to sync flow history from runtime row: %s", symbol)
+
+
 def _decision_time_to_epoch(text: str) -> int:
     value = str(text or "").strip()
     if not value:
@@ -183,6 +248,121 @@ def _resolve_recent_setup_from_decisions(*, decision_csv: Path, symbol: str, dir
         return ""
 
 
+def _collect_runtime_recycle_position_counts(app) -> dict[str, int]:
+    total_open_positions = 0
+    owned_open_positions = 0
+    try:
+        positions = app.broker.positions_get() or []
+        total_open_positions = len(positions)
+        owned_open_positions = sum(
+            1
+            for position in positions
+            if int(getattr(position, "magic", 0) or 0) == int(getattr(Config, "MAGIC_NUMBER", 0))
+        )
+    except Exception:
+        logger.exception("Failed to collect runtime recycle position counts")
+    return {
+        "open_positions_count": int(total_open_positions),
+        "owned_open_positions_count": int(owned_open_positions),
+    }
+
+
+def _maybe_handle_runtime_recycle(app, *, loop_count: int) -> dict:
+    counts = _collect_runtime_recycle_position_counts(app)
+    now_ts = time.time()
+    recent_runtime_summary = dict(getattr(app, "runtime_recent_summary_cache", {}) or {})
+    default_recent_window = dict(getattr(app, "runtime_recent_default_window_cache", {}) or {})
+    health_snapshot = build_runtime_recycle_health_v1(
+        recent_runtime_summary=recent_runtime_summary,
+        default_recent_window=default_recent_window,
+        latest_signal_by_symbol=getattr(app, "latest_signal_by_symbol", {}),
+        now_ts=now_ts,
+        signal_stale_sec=int(getattr(Config, "RUNTIME_RECYCLE_SIGNAL_STALE_SEC", 900) or 900),
+    )
+    drift_snapshot = build_runtime_recycle_drift_v1(
+        recent_runtime_summary=recent_runtime_summary,
+        default_recent_window=default_recent_window,
+        latest_signal_by_symbol=getattr(app, "latest_signal_by_symbol", {}),
+        now_ts=now_ts,
+        min_rows=int(getattr(Config, "RUNTIME_RECYCLE_DRIFT_MIN_ROWS", 40) or 40),
+        stage_dominance_threshold=float(getattr(Config, "RUNTIME_RECYCLE_DRIFT_STAGE_DOMINANCE", 0.85) or 0.85),
+        block_dominance_threshold=float(getattr(Config, "RUNTIME_RECYCLE_DRIFT_BLOCK_DOMINANCE", 0.85) or 0.85),
+        decision_dominance_threshold=float(
+            getattr(Config, "RUNTIME_RECYCLE_DRIFT_DECISION_DOMINANCE", 0.90) or 0.90
+        ),
+        min_signal_count=int(getattr(Config, "RUNTIME_RECYCLE_DRIFT_SIGNAL_MIN_COUNT", 2) or 2),
+    )
+    app.runtime_recycle_health_state = dict(health_snapshot or {})
+    app.runtime_recycle_drift_state = dict(drift_snapshot or {})
+    decision = evaluate_runtime_recycle(
+        getattr(app, "runtime_recycle_state", {}),
+        loop_count=int(loop_count),
+        mode=str(getattr(Config, "RUNTIME_RECYCLE_MODE", "log_only") or "log_only"),
+        interval_sec=int(getattr(Config, "RUNTIME_RECYCLE_INTERVAL_SEC", 3600) or 0),
+        flat_grace_sec=int(getattr(Config, "RUNTIME_RECYCLE_FLAT_GRACE_SEC", 30) or 0),
+        post_order_grace_sec=int(getattr(Config, "RUNTIME_RECYCLE_POST_ORDER_GRACE_SEC", 90) or 0),
+        open_positions_count=int(counts.get("open_positions_count", 0) or 0),
+        owned_open_positions_count=int(counts.get("owned_open_positions_count", 0) or 0),
+        last_order_ts=float(getattr(app, "last_order_ts", 0.0) or 0.0),
+        health_snapshot=health_snapshot,
+        drift_snapshot=drift_snapshot,
+        now_ts=now_ts,
+    )
+    app.runtime_recycle_state = dict(decision.get("state", {}) or {})
+    action = str(decision.get("action", "") or "")
+    if action == "none":
+        return decision
+
+    stage = "runtime_recycle_log_only" if action == "log_only" else "runtime_recycle_reexec"
+    detail = (
+        f"reason={decision.get('reason', '')} "
+        f"trigger_family={decision.get('trigger_family', '')} "
+        f"uptime_sec={int(decision.get('uptime_sec', 0) or 0)} "
+        f"open_positions={int(decision.get('open_positions_count', 0) or 0)} "
+        f"owned_positions={int(decision.get('owned_open_positions_count', 0) or 0)}"
+    )
+    app._write_loop_debug(loop_count=loop_count, stage=stage, detail=detail)
+    app._obs_inc("runtime_recycle_trigger_total", 1)
+    app._obs_event(stage, payload={k: v for k, v in decision.items() if k != "state"})
+    logger.info(
+        "runtime recycle action=%s reason=%s trigger_family=%s uptime_sec=%s open_positions=%s owned_positions=%s",
+        action,
+        decision.get("reason", ""),
+        decision.get("trigger_family", ""),
+        int(decision.get("uptime_sec", 0) or 0),
+        int(decision.get("open_positions_count", 0) or 0),
+        int(decision.get("owned_open_positions_count", 0) or 0),
+    )
+    return decision
+
+
+def _build_runtime_reexec_argv() -> list[str]:
+    project_root = Path(__file__).resolve().parents[2]
+    argv = list(sys.argv or [])
+    if not argv:
+        return [sys.executable, str(project_root / "main.py")]
+
+    first = str(argv[0] or "").strip()
+    if first.endswith(".py"):
+        script_path = Path(first)
+        if not script_path.is_absolute():
+            argv[0] = str((project_root / script_path).resolve())
+        return [sys.executable, *argv]
+
+    return list(argv)
+
+
+def _perform_runtime_reexec() -> None:
+    exec_argv = _build_runtime_reexec_argv()
+    if exec_argv and exec_argv[0] != sys.executable:
+        program = exec_argv[0]
+    else:
+        program = sys.executable
+    os.chdir(Path(__file__).resolve().parents[2])
+    logger.warning("Executing guarded runtime recycle via execv: %s", exec_argv)
+    os.execv(program, exec_argv)
+
+
 def _wait_for_mt5_connection(app) -> None:
     retry_delay_sec = max(1.0, float(getattr(Config, "MT5_CONNECT_RETRY_DELAY_SEC", 10) or 10))
     attempt = 0
@@ -209,6 +389,7 @@ def _wait_for_mt5_connection(app) -> None:
             stage="mt5_connect_failed",
             detail=f"attempt={attempt} retry_in_sec={retry_delay_sec:.0f}",
         )
+        app.refresh_state25_candidate_runtime_state()
         app._write_runtime_status(
             0,
             {},
@@ -253,6 +434,7 @@ def run_trading_application(app) -> None:
     scorer = Scorer()
     strategy_service = StrategyService(scorer)
     trade_logger = TradeLogger(filename=str(getattr(Config, "TRADE_HISTORY_CSV_PATH", r"data\trades\trade_history.csv")))
+    telegram_ops = TelegramOpsService()
     decision_csv = Path(trade_logger.filepath).with_name("entry_decisions.csv")
     policy_service = PolicyService(trade_logger, Config)
     entry_service = EntryService(app, trade_logger)
@@ -266,6 +448,18 @@ def run_trading_application(app) -> None:
             f"closed_with_deal={closed_with_deal}, force_closed_unknown={force_closed_unknown}"
         )
     painter = Painter()
+    def _runtime_flow_history_sync_hook(rows: dict) -> None:
+        if not isinstance(rows, dict):
+            return
+        for symbol, row in rows.items():
+            if not isinstance(row, dict):
+                continue
+            try:
+                painter.sync_flow_history_from_runtime_row(str(symbol), row)
+            except Exception:
+                logger.exception("Failed to sync runtime flow history hook: %s", symbol)
+
+    app.runtime_flow_history_sync_hook = _runtime_flow_history_sync_hook
     if getattr(scorer, "session_mgr", None) is not None:
         painter.session_mgr = scorer.session_mgr
     if getattr(scorer, "trend_mgr", None) is not None:
@@ -276,12 +470,15 @@ def run_trading_application(app) -> None:
         app.last_entry_time[sym] = 0
 
     loop_count = 0
+    recycle_request = None
     try:
         while True:
             loop_count += 1
             if loop_count == 1:
-                print("[boottrace] stage=loop_start", flush=True)
+                _safe_boottrace("stage=loop_start")
             app._write_loop_debug(loop_count=loop_count, stage="loop_start")
+            app.refresh_state25_candidate_runtime_state()
+            _sync_flow_history_from_runtime_rows(app, painter, symbols)
             app._write_runtime_status(
                 loop_count,
                 symbols,
@@ -292,32 +489,33 @@ def run_trading_application(app) -> None:
                 policy_snapshot=policy_service.get_runtime_snapshot(),
             )
             if loop_count == 1:
-                print("[boottrace] stage=runtime_status_returned", flush=True)
+                _safe_boottrace("stage=runtime_status_returned")
             app._write_loop_debug(loop_count=loop_count, stage="runtime_status_written")
+            app._write_loop_debug(loop_count=loop_count, stage="runtime_flow_history_synced")
             app._refresh_ai_runtime_if_needed()
             if loop_count == 1:
-                print("[boottrace] stage=ai_runtime_refreshed", flush=True)
+                _safe_boottrace("stage=ai_runtime_refreshed")
             app._write_loop_debug(loop_count=loop_count, stage="ai_runtime_refreshed")
 
             if loop_count % 10 == 1:
                 if loop_count == 1:
-                    print("[boottrace] stage=active_symbols_refresh_start", flush=True)
+                    _safe_boottrace("stage=active_symbols_refresh_start")
                 app._write_loop_debug(loop_count=loop_count, stage="active_symbols_refresh_start")
                 resolver.get_active_symbols()
                 if loop_count == 1:
-                    print("[boottrace] stage=active_symbols_refresh_done", flush=True)
+                    _safe_boottrace("stage=active_symbols_refresh_done")
                 app._write_loop_debug(loop_count=loop_count, stage="active_symbols_refresh_done")
                 if loop_count % 100 == 1:
                     if loop_count == 1:
-                        print("[boottrace] stage=resolver_status_print_start", flush=True)
+                        _safe_boottrace("stage=resolver_status_print_start")
                     app._write_loop_debug(loop_count=loop_count, stage="resolver_status_print_start")
                     resolver.print_status()
                     if loop_count == 1:
-                        print("[boottrace] stage=resolver_status_print_done", flush=True)
+                        _safe_boottrace("stage=resolver_status_print_done")
                     app._write_loop_debug(loop_count=loop_count, stage="resolver_status_print_done")
 
             if loop_count == 1:
-                print("[boottrace] stage=policy_refresh_start", flush=True)
+                _safe_boottrace("stage=policy_refresh_start")
             app._write_loop_debug(loop_count=loop_count, stage="policy_refresh_start")
             if bool(getattr(Config, "ENABLE_POLICY_LOOP_REFRESH", False)):
                 for note in policy_service.maybe_refresh(loop_count):
@@ -325,19 +523,19 @@ def run_trading_application(app) -> None:
                 for note in policy_service.maybe_maintain_shock_ops(loop_count):
                     print(f"[ShockOps] {note}")
                 if loop_count == 1:
-                    print("[boottrace] stage=policy_refresh_done", flush=True)
+                    _safe_boottrace("stage=policy_refresh_done")
                 app._write_loop_debug(loop_count=loop_count, stage="policy_refresh_done")
             else:
                 if loop_count == 1:
-                    print("[boottrace] stage=policy_refresh_skipped", flush=True)
+                    _safe_boottrace("stage=policy_refresh_skipped")
                 app._write_loop_debug(loop_count=loop_count, stage="policy_refresh_skipped")
 
             if loop_count == 1:
-                print("[boottrace] stage=account_info_start", flush=True)
+                _safe_boottrace("stage=account_info_start")
             app._write_loop_debug(loop_count=loop_count, stage="account_info_start")
             account = app.broker.account_info()
             if loop_count == 1:
-                print("[boottrace] stage=account_info_done", flush=True)
+                _safe_boottrace("stage=account_info_done")
             app._write_loop_debug(loop_count=loop_count, stage="account_info_done")
             loss_limit = account.balance * Config.LOSS_LIMIT_PERCENT if account else 99999
 
@@ -634,6 +832,9 @@ def run_trading_application(app) -> None:
                 current_snapshot_row["timestamp"] = datetime.fromtimestamp(
                     float(snapshot_generated_ts)
                 ).isoformat()
+                current_snapshot_row["state25_candidate_runtime_v1"] = dict(
+                    getattr(app, "state25_candidate_runtime_state", {}) or {}
+                )
                 current_snapshot_row["observe_action"] = str(observe_summary.get("action", "") or "")
                 current_snapshot_row["observe_side"] = str(observe_summary.get("side", "") or "")
                 current_snapshot_row["observe_reason"] = str(observe_summary.get("reason", "") or "")
@@ -651,6 +852,15 @@ def run_trading_application(app) -> None:
                         decision_ts=float(snapshot_generated_ts),
                         runtime_snapshot_ts=float(snapshot_generated_ts),
                     )
+                )
+                current_snapshot_row["forecast_state25_runtime_bridge_v1"] = (
+                    build_forecast_state25_runtime_bridge_v1(current_snapshot_row)
+                )
+                current_snapshot_row["belief_state25_runtime_bridge_v1"] = (
+                    build_belief_state25_runtime_bridge_v1(current_snapshot_row)
+                )
+                current_snapshot_row["barrier_state25_runtime_bridge_v1"] = (
+                    build_barrier_state25_runtime_bridge_v1(current_snapshot_row)
                 )
                 current_snapshot_row["snapshot_payload_bytes"] = int(json_payload_size_bytes(current_snapshot_row))
                 app.latest_signal_by_symbol[symbol] = current_snapshot_row
@@ -729,6 +939,9 @@ def run_trading_application(app) -> None:
                                 "management_profile_id": snapshot_management_profile_id,
                                 "invalidation_id": snapshot_invalidation_id,
                                 "exit_profile": snapshot_exit_profile,
+                                "manual_entry_tag": str(
+                                    getattr(p, "comment", "") or existing_trade_ctx.get("manual_entry_tag", "") or ""
+                                ).strip(),
                                 "entry_wait_state": str(((app.latest_signal_by_symbol.get(symbol, {}) or {}).get("entry_wait_state", "") or "")).strip().upper(),
                                 "indicators": entry_indicators,
                                 "source": source,
@@ -774,6 +987,26 @@ def run_trading_application(app) -> None:
                     app._write_loop_debug(loop_count=loop_count, stage="symbol_inactive", symbol=symbol, detail=str(reason or ""))
                     continue
 
+                stage_started_at = time.perf_counter()
+                entry_runtime_row = app.build_entry_runtime_signal_row(
+                    symbol,
+                    dict((app.latest_signal_by_symbol.get(symbol, {}) or {})),
+                )
+                entry_runtime_row["symbol"] = str(symbol)
+                app.latest_signal_by_symbol[symbol] = dict(entry_runtime_row)
+                _record_symbol_stage_timing(stage_timings_ms, "entry_runtime_enrich", stage_started_at)
+                try:
+                    painter.sync_flow_history_from_runtime_row(symbol, entry_runtime_row)
+                except Exception:
+                    logger.exception("Failed to sync entry runtime flow history: %s", symbol)
+                _write_runtime_status_progress(
+                    app,
+                    loop_count=loop_count,
+                    symbols=symbols,
+                    policy_service=policy_service,
+                    detail=f"entry_runtime_ready:{symbol}",
+                )
+
                 app._write_loop_debug(loop_count=loop_count, stage="entry_eval", symbol=symbol)
                 stage_started_at = time.perf_counter()
                 entry_service.try_open_entry(
@@ -790,7 +1023,12 @@ def run_trading_application(app) -> None:
                 )
                 _record_symbol_stage_timing(stage_timings_ms, "entry_eval", stage_started_at)
 
-                app._write_loop_debug(loop_count=loop_count, stage="exit_eval", symbol=symbol)
+                app._write_loop_debug(
+                    loop_count=loop_count,
+                    stage="exit_eval",
+                    symbol=symbol,
+                    detail=f"pos_count={int(pos_count)}",
+                )
                 stage_started_at = time.perf_counter()
                 reverse_action, reverse_score, reverse_reasons = exit_service.manage_positions(
                     symbol=symbol,
@@ -809,7 +1047,50 @@ def run_trading_application(app) -> None:
                     ),
                     exit_policy=sym_policy.get("exit_policy", policy_service.exit_policy),
                 )
+                app._write_loop_debug(
+                    loop_count=loop_count,
+                    stage="exit_eval_done",
+                    symbol=symbol,
+                    detail=(
+                        f"pos_count={int(pos_count)} reverse_action={str(reverse_action or '')} "
+                        f"reverse_score={float(reverse_score or 0.0):.2f}"
+                    ),
+                )
                 _record_symbol_stage_timing(stage_timings_ms, "exit_eval", stage_started_at)
+
+                if reverse_action:
+                    live_positions_after_exit = app.broker.positions_get(symbol=symbol) or []
+                    managed_positions_after_exit = [
+                        p
+                        for p in live_positions_after_exit
+                        if int(getattr(p, "magic", 0) or 0) == int(Config.MAGIC_NUMBER)
+                    ]
+                    reverse_pending = bool(managed_positions_after_exit)
+                    reverse_price = (
+                        float(tick.ask if str(reverse_action).upper() == "BUY" else tick.bid)
+                        if tick is not None
+                        else 0.0
+                    )
+                    reverse_signature = app.build_reverse_message_signature(
+                        symbol,
+                        reverse_action,
+                        reverse_score,
+                        reverse_reasons,
+                        pending=reverse_pending,
+                    )
+                    if app.should_notify_reverse_message(symbol, reverse_signature):
+                        reverse_message = app.format_reverse_message(
+                            symbol,
+                            reverse_action,
+                            reverse_score,
+                            reverse_price,
+                            reverse_reasons,
+                            len(managed_positions_after_exit),
+                            int(Config.get_max_positions(symbol)),
+                            pending=reverse_pending,
+                            row=dict((app.latest_signal_by_symbol or {}).get(symbol, {}) or {}),
+                        )
+                        app.notify(reverse_message)
 
                 stage_started_at = time.perf_counter()
                 app._try_reverse_entry(
@@ -833,6 +1114,7 @@ def run_trading_application(app) -> None:
                 painter.add_bollinger_lines(df_all["1H"], period=20, std_mult=2.0, lookback=60)
                 painter.add_mtf_ma_lines(df_all)
                 latest_row = {}
+                painter_row = {}
                 try:
                     if isinstance(app.latest_signal_by_symbol, dict):
                         latest_row = app.latest_signal_by_symbol.get(symbol, {})
@@ -840,11 +1122,19 @@ def run_trading_application(app) -> None:
                             latest_row = {}
                 except Exception:
                     latest_row = {}
-                painter.add_decision_flow_overlay(symbol, latest_row, df_all, tick)
+                try:
+                    painter_row = app.build_chart_painter_runtime_row(symbol, latest_row)
+                    if not isinstance(painter_row, dict):
+                        painter_row = dict(latest_row)
+                except Exception:
+                    painter_row = dict(latest_row)
+                painter.add_decision_flow_overlay(symbol, painter_row, df_all, tick)
                 painter_status = painter.save(symbol) or {}
                 try:
                     if isinstance(app.latest_signal_by_symbol, dict):
-                        row = app.latest_signal_by_symbol.get(symbol, {})
+                        row = dict(painter_row or {})
+                        if not row:
+                            row = app.latest_signal_by_symbol.get(symbol, {})
                         if not isinstance(row, dict):
                             row = {}
                         row["chart_painter"] = painter_status
@@ -874,13 +1164,54 @@ def run_trading_application(app) -> None:
                         float(profile.get("dominant_stage_ms", 0.0) or 0.0),
                     )
                 app._write_loop_debug(loop_count=loop_count, stage="symbol_done", symbol=symbol, detail=f"elapsed={elapsed:.2f}")
+                try:
+                    synced_flow_row = dict((app.latest_signal_by_symbol.get(symbol, {}) or {}))
+                    if synced_flow_row:
+                        painter.clear()
+                        painter.add_decision_flow_overlay(symbol, synced_flow_row, df_all, tick)
+                except Exception:
+                    logger.exception("Failed to sync chart flow history from enriched runtime row: %s", symbol)
+                _write_runtime_status_progress(
+                    app,
+                    loop_count=loop_count,
+                    symbols=symbols,
+                    policy_service=policy_service,
+                    detail=f"symbol_done:{symbol}",
+                )
 
             app._write_loop_debug(loop_count=loop_count, stage="check_closed_start")
             exit_msgs = trade_logger.check_closed_trades()
             app._write_loop_debug(loop_count=loop_count, stage="check_closed_done", detail=f"count={len(exit_msgs)}")
+            _sync_flow_history_from_runtime_rows(app, painter, symbols)
+            _write_runtime_status_progress(
+                app,
+                loop_count=loop_count,
+                symbols=symbols,
+                policy_service=policy_service,
+                detail=f"check_closed_done:{len(exit_msgs)}",
+            )
             for msg in exit_msgs:
                 app.notify(msg)
                 print(f"\n{msg}")
+
+            try:
+                telegram_ops.tick(trade_logger)
+            except Exception:
+                logger.exception("Telegram ops tick failed")
+
+            recycle_request = _maybe_handle_runtime_recycle(app, loop_count=loop_count)
+            if str(recycle_request.get("action", "") or "") != "none":
+                app._write_runtime_status(
+                    loop_count,
+                    symbols,
+                    policy_service.entry_threshold,
+                    policy_service.exit_threshold,
+                    adverse_loss_usd=policy_service.adverse_loss_usd,
+                    reverse_signal_threshold=policy_service.reverse_signal_threshold,
+                    policy_snapshot=policy_service.get_runtime_snapshot(),
+                )
+            if str(recycle_request.get("action", "") or "") == "reexec":
+                break
 
             app._write_loop_debug(loop_count=loop_count, stage="loop_sleep")
             time.sleep(1)
@@ -896,3 +1227,5 @@ def run_trading_application(app) -> None:
         app._obs_event("trading_loop_shutdown")
         app.notify_shutdown()
         disconnect_mt5()
+    if str((recycle_request or {}).get("action", "") or "") == "reexec":
+        _perform_runtime_reexec()

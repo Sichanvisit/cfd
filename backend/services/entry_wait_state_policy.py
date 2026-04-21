@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from backend.services.symbol_temperament import resolve_probe_scene_direction
+
 
 def _as_mapping(value: object) -> dict[str, Any]:
     return dict(value or {}) if isinstance(value, Mapping) else {}
@@ -95,6 +97,11 @@ def resolve_entry_wait_state_policy_v1(
     setup_trigger_state_upper = _upper(setup_trigger_state)
     wait_vs_enter_hint_text = _lower(wait_vs_enter_hint)
     symbol_probe_scene_id = str(symbol_probe_temperament.get("scene_id", "") or "").lower()
+    probe_scene_direction = resolve_probe_scene_direction(
+        symbol_probe_scene_id,
+        reason=observe_reason_text,
+        action=action_upper,
+    )
 
     required_side = _required_side(preflight_allowed_action_upper) or _required_side(core_allowed_action_upper)
     need_retest = blocked_by_text in {
@@ -105,22 +112,42 @@ def resolve_entry_wait_state_policy_v1(
     if blocked_by_text == "preflight_action_blocked":
         against_mode = True
 
+    lower_rebound_probe_active = bool(
+        action_upper in {"", "BUY"}
+        and observe_reason_text == "lower_rebound_probe_observe"
+        and (
+            probe_scene_direction == "BUY"
+            or _to_bool(observe_metadata_local.get("xau_second_support_probe_relief", False))
+        )
+        and box_state_upper in {"LOWER", "LOWER_EDGE", "BELOW"}
+        and bb_state_upper in {"MID", "MIDDLE", "LOWER", "LOWER_EDGE", "BREAKDOWN", "UNKNOWN"}
+    )
+    upper_reject_probe_active = bool(
+        action_upper in {"", "SELL"}
+        and observe_reason_text == "upper_reject_probe_observe"
+        and probe_scene_direction == "SELL"
+        and box_state_upper in {"UPPER", "UPPER_EDGE", "ABOVE", "LOWER", "LOWER_EDGE", "BELOW", "MIDDLE"}
+        and bb_state_upper in {"MID", "MIDDLE", "UPPER", "UPPER_EDGE", "ABOVE", "BREAKOUT", "UNKNOWN"}
+    )
+    lower_soft_wait_candidate = bool(
+        action_upper in {"", "BUY"}
+        and box_state_upper == "LOWER"
+        and bb_state_upper in {"MID", "MIDDLE", "UNKNOWN"}
+        and preflight_allowed_action_upper in {"BOTH", "BUY_ONLY"}
+        and blocked_by_text in {"core_not_passed", "dynamic_threshold_not_met"}
+        and _to_float(wait_score) <= 80.0
+        and _to_float(wait_conflict) <= 20.0
+        and _to_float(wait_noise) <= 18.0
+    )
     xau_second_support_probe = bool(
         symbol_upper == "XAUUSD"
-        and action_upper in {"", "BUY"}
-        and box_state_upper in {"LOWER", "LOWER_EDGE"}
-        and bb_state_upper in {"MID", "MIDDLE", "LOWER", "LOWER_EDGE"}
+        and lower_rebound_probe_active
         and _to_bool(observe_metadata_local.get("xau_second_support_probe_relief", False))
     )
     xau_upper_sell_probe = bool(
         symbol_upper == "XAUUSD"
-        and action_upper in {"", "SELL"}
-        and box_state_upper in {"UPPER", "UPPER_EDGE", "ABOVE"}
-        and bb_state_upper in {"MID", "MIDDLE", "UPPER", "UPPER_EDGE", "ABOVE", "BREAKOUT"}
-        and (
-            symbol_probe_scene_id == "xau_upper_sell_probe"
-            or observe_reason_text == "upper_reject_probe_observe"
-        )
+        and upper_reject_probe_active
+        and symbol_probe_scene_id == "xau_upper_sell_probe"
     )
 
     state = "NONE"
@@ -134,12 +161,12 @@ def resolve_entry_wait_state_policy_v1(
     elif against_mode:
         state = "AGAINST_MODE"
         reason = blocked_by_text or action_none_reason_text or f"required_{required_side.lower()}"
-    elif xau_second_support_probe:
+    elif lower_rebound_probe_active:
         state = "ACTIVE"
-        reason = observe_reason_text or action_none_reason_text or blocked_by_text or "xau_second_support_probe_wait"
-    elif xau_upper_sell_probe:
+        reason = observe_reason_text or action_none_reason_text or blocked_by_text or "lower_rebound_probe_wait"
+    elif upper_reject_probe_active:
         state = "ACTIVE"
-        reason = observe_reason_text or action_none_reason_text or blocked_by_text or "xau_upper_sell_probe_wait"
+        reason = observe_reason_text or action_none_reason_text or blocked_by_text or "upper_reject_probe_wait"
     elif observe_reason_text == "edge_approach_observe":
         state = "EDGE_APPROACH"
         reason = observe_reason_text
@@ -171,17 +198,7 @@ def resolve_entry_wait_state_policy_v1(
         state = "HELPER_WAIT"
         reason = observe_reason_text or action_none_reason_text or blocked_by_text or "energy_wait_bias"
 
-    btc_lower_strong_score_soft_wait = bool(
-        symbol_upper == "BTCUSD"
-        and box_state_upper == "LOWER"
-        and bb_state_upper in {"MID", "UNKNOWN"}
-        and preflight_allowed_action_upper in {"BOTH", "BUY_ONLY"}
-        and blocked_by_text in {"core_not_passed", "dynamic_threshold_not_met"}
-        and action_upper in {"", "BUY"}
-        and _to_float(wait_score) <= 80.0
-        and _to_float(wait_conflict) <= 20.0
-        and _to_float(wait_noise) <= 18.0
-    )
+    btc_lower_strong_score_soft_wait = bool(symbol_upper == "BTCUSD" and lower_soft_wait_candidate)
 
     hard_wait = bool(
         state in {"POLICY_BLOCK", "POLICY_SUPPRESSED", "AGAINST_MODE", "NEED_RETEST"}
@@ -248,10 +265,10 @@ def resolve_entry_wait_state_policy_v1(
         and wait_vs_enter_hint_text != "prefer_enter"
     ):
         hard_wait = True
-    if btc_lower_strong_score_soft_wait and state in {"CENTER", "CONFLICT"}:
+    if lower_soft_wait_candidate and state in {"CENTER", "CONFLICT"}:
         hard_wait = False
     if (
-        (xau_second_support_probe or xau_upper_sell_probe)
+        (lower_rebound_probe_active or upper_reject_probe_active)
         and state in {"ACTIVE", "CENTER", "NOISE", "EDGE_APPROACH", "HELPER_WAIT", "HELPER_SOFT_BLOCK"}
         and not policy_hard_block_active
         and not policy_suppressed
@@ -268,6 +285,9 @@ def resolve_entry_wait_state_policy_v1(
         "required_side": str(required_side),
         "need_retest": bool(need_retest),
         "against_mode": bool(against_mode),
+        "lower_rebound_probe_active": bool(lower_rebound_probe_active),
+        "upper_reject_probe_active": bool(upper_reject_probe_active),
+        "lower_soft_wait_candidate": bool(lower_soft_wait_candidate),
         "btc_lower_strong_score_soft_wait": bool(btc_lower_strong_score_soft_wait),
         "xau_second_support_probe": bool(xau_second_support_probe),
         "xau_upper_sell_probe": bool(xau_upper_sell_probe),

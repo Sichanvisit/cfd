@@ -5,6 +5,7 @@ Shared context classifier for entry/exit decision layers.
 from __future__ import annotations
 
 import copy
+from time import perf_counter
 
 import pandas as pd
 
@@ -143,6 +144,41 @@ class ContextClassifier:
 
     def __init__(self, broker: BrokerPort | None = None):
         self._broker = broker
+
+    @staticmethod
+    def _record_profile_stage(profile: dict[str, float], stage: str, started_at: float) -> None:
+        try:
+            profile[str(stage)] = round((perf_counter() - float(started_at)) * 1000.0, 3)
+        except Exception:
+            profile[str(stage)] = 0.0
+
+    @classmethod
+    def _resolve_indicator_frame(
+        cls,
+        *,
+        timeframe: str,
+        frame,
+        trend_mgr,
+        indicator_frame_cache: dict[str, pd.DataFrame] | None = None,
+    ) -> tuple[pd.DataFrame | None, bool]:
+        tf = str(timeframe or "").upper()
+        cache = indicator_frame_cache if isinstance(indicator_frame_cache, dict) else None
+        if cache is not None:
+            cached = cache.get(tf)
+            if cached is not None:
+                return cached, True
+        if frame is None or getattr(frame, "empty", True):
+            return None, False
+        if trend_mgr is None:
+            frame_ind = frame
+        else:
+            try:
+                frame_ind = trend_mgr.add_indicators(frame.copy())
+            except Exception:
+                frame_ind = frame
+        if cache is not None:
+            cache[tf] = frame_ind
+        return frame_ind, False
 
     @staticmethod
     def apply_edge_direction_override(
@@ -316,8 +352,65 @@ class ContextClassifier:
         slope_agreement = abs(positive_weight - negative_weight) / total_weight
         return float(max(-1.0, min(1.0, slope_bias))), float(max(0.0, min(1.0, slope_agreement)))
 
+    @staticmethod
+    def _can_use_native_ma_fast_path(trend_mgr) -> bool:
+        if trend_mgr is None:
+            return False
+        cls = getattr(trend_mgr, "__class__", None)
+        return bool(
+            cls is not None
+            and getattr(cls, "__name__", "") == "TrendManager"
+            and getattr(cls, "__module__", "") == "backend.trading.trend_manager"
+        )
+
     @classmethod
-    def _build_mtf_ma_big_map(cls, *, df_all: dict, scorer, price: float, volatility_scale: float | None) -> dict:
+    def _resolve_ma20_frame(
+        cls,
+        *,
+        timeframe: str,
+        frame,
+        trend_mgr,
+        indicator_frame_cache: dict[str, pd.DataFrame] | None = None,
+    ) -> tuple[pd.DataFrame | None, bool]:
+        tf = str(timeframe or "").upper()
+        cache = indicator_frame_cache if isinstance(indicator_frame_cache, dict) else None
+        if cache is not None:
+            cached_full = cache.get(tf)
+            if cached_full is not None:
+                return cached_full, True
+            cached_fast = cache.get(f"{tf}:MA20_ONLY")
+            if cached_fast is not None:
+                return cached_fast, True
+        if frame is None or getattr(frame, "empty", True):
+            return None, False
+        if "ma_20" in getattr(frame, "columns", []):
+            resolved = frame
+        elif cls._can_use_native_ma_fast_path(trend_mgr) and "close" in getattr(frame, "columns", []):
+            resolved = frame.copy()
+            close = pd.to_numeric(resolved["close"], errors="coerce")
+            resolved["ma_20"] = close.rolling(window=20).mean()
+        else:
+            resolved, reused = cls._resolve_indicator_frame(
+                timeframe=tf,
+                frame=frame,
+                trend_mgr=trend_mgr,
+                indicator_frame_cache=cache,
+            )
+            return resolved, reused
+        if cache is not None:
+            cache[f"{tf}:MA20_ONLY"] = resolved
+        return resolved, False
+
+    @classmethod
+    def _build_mtf_ma_big_map(
+        cls,
+        *,
+        df_all: dict,
+        scorer,
+        price: float,
+        volatility_scale: float | None,
+        indicator_frame_cache: dict[str, pd.DataFrame] | None = None,
+    ) -> dict:
         trend_mgr = getattr(scorer, "trend_mgr", None) if scorer is not None else None
         scale = float(volatility_scale or max(abs(float(price or 0.0)) * 0.002, 1e-6))
         entries: dict[str, dict] = {}
@@ -326,10 +419,12 @@ class ContextClassifier:
             frame = (df_all or {}).get(tf)
             if frame is None or frame.empty or trend_mgr is None:
                 continue
-            try:
-                frame_ind = trend_mgr.add_indicators(frame.copy())
-            except Exception:
-                frame_ind = frame
+            frame_ind, _ = cls._resolve_ma20_frame(
+                timeframe=tf,
+                frame=frame,
+                trend_mgr=trend_mgr,
+                indicator_frame_cache=indicator_frame_cache,
+            )
             if frame_ind is None or frame_ind.empty:
                 continue
             cur = frame_ind.iloc[-1]
@@ -685,12 +780,14 @@ class ContextClassifier:
         }
 
     @staticmethod
-    def resolve_h1_box_state(df_all: dict, tick, scorer) -> str:
+    def resolve_h1_box_state(df_all: dict, tick, scorer, *, session_range: dict | None = None) -> str:
         try:
             h1 = (df_all or {}).get("1H")
             if h1 is None or h1.empty:
                 return "UNKNOWN"
-            session = scorer.session_mgr.get_session_range(h1, 8, 16)
+            session = session_range
+            if not session:
+                session = scorer.session_mgr.get_session_range(h1, 8, 16)
             if not session:
                 return "UNKNOWN"
             px = float(getattr(tick, "bid", 0.0) or 0.0)
@@ -700,15 +797,29 @@ class ContextClassifier:
         except Exception:
             return "UNKNOWN"
 
-    @staticmethod
-    def resolve_bb_state(symbol: str, tick, df_all: dict, scorer) -> str:
+    @classmethod
+    def resolve_bb_state(
+        cls,
+        symbol: str,
+        tick,
+        df_all: dict,
+        scorer,
+        *,
+        m15_ind=None,
+    ) -> str:
         try:
             m15 = (df_all or {}).get("15M")
             if m15 is None or m15.empty:
                 return "UNKNOWN"
             if scorer is None or not hasattr(scorer, "trend_mgr"):
                 return "UNKNOWN"
-            m15_ind = scorer.trend_mgr.add_indicators(m15)
+            if m15_ind is None:
+                m15_ind, _ = cls._resolve_indicator_frame(
+                    timeframe="15M",
+                    frame=m15,
+                    trend_mgr=getattr(scorer, "trend_mgr", None),
+                    indicator_frame_cache=None,
+                )
             if m15_ind is None or m15_ind.empty:
                 return "UNKNOWN"
             cur = m15_ind.iloc[-1]
@@ -919,7 +1030,10 @@ class ContextClassifier:
         buy_s: float,
         sell_s: float,
     ) -> dict:
+        build_context_started_at = perf_counter()
+        build_context_profile: dict[str, float] = {}
         regime = (result or {}).get("regime", {}) if isinstance(result, dict) else {}
+        stage_started_at = perf_counter()
         preflight = self.build_preflight_2h(
             symbol=symbol,
             tick=tick,
@@ -928,9 +1042,41 @@ class ContextClassifier:
             buy_s=buy_s,
             sell_s=sell_s,
         )
+        self._record_profile_stage(build_context_profile, "build_preflight_2h", stage_started_at)
         comps = (result or {}).get("components", {}) if isinstance(result, dict) else {}
-        box_state = self.resolve_h1_box_state(df_all=df_all, tick=tick, scorer=scorer)
-        bb_state = self.resolve_bb_state(symbol=symbol, tick=tick, df_all=df_all, scorer=scorer)
+        session_range = None
+        stage_started_at = perf_counter()
+        h1 = (df_all or {}).get("1H")
+        if h1 is not None and not h1.empty and scorer is not None and hasattr(scorer, "session_mgr"):
+            try:
+                session_range = scorer.session_mgr.get_session_range(h1, 8, 16)
+            except Exception:
+                session_range = None
+        box_state = self.resolve_h1_box_state(
+            df_all=df_all,
+            tick=tick,
+            scorer=scorer,
+            session_range=session_range,
+        )
+        self._record_profile_stage(build_context_profile, "resolve_h1_box_state", stage_started_at)
+        indicator_frame_cache: dict[str, pd.DataFrame] = {}
+        stage_started_at = perf_counter()
+        m15_ind, _ = self._resolve_indicator_frame(
+            timeframe="15M",
+            frame=(df_all or {}).get("15M"),
+            trend_mgr=getattr(scorer, "trend_mgr", None) if scorer is not None else None,
+            indicator_frame_cache=indicator_frame_cache,
+        )
+        self._record_profile_stage(build_context_profile, "prepare_indicator_cache", stage_started_at)
+        stage_started_at = perf_counter()
+        bb_state = self.resolve_bb_state(
+            symbol=symbol,
+            tick=tick,
+            df_all=df_all,
+            scorer=scorer,
+            m15_ind=m15_ind,
+        )
+        self._record_profile_stage(build_context_profile, "resolve_bb_state", stage_started_at)
         raw_direction_policy = str(preflight.get("allowed_action", "BOTH") or "BOTH").upper()
         direction_policy, direction_override_reason = self.apply_edge_direction_override(
             symbol=symbol,
@@ -969,6 +1115,7 @@ class ContextClassifier:
                 "preflight_ret2h_signed": float(preflight.get("ret2h_signed", 0.0) or 0.0),
             },
         )
+        stage_started_at = perf_counter()
         engine_bundle = self.build_engine_context_snapshot(
             symbol=symbol,
             tick=tick,
@@ -981,7 +1128,11 @@ class ContextClassifier:
             box_state=context.box_state,
             bb_state=context.bb_state,
             raw_scores=context.raw_scores,
+            indicator_frame_cache=indicator_frame_cache,
+            session_range=session_range,
         )
+        self._record_profile_stage(build_context_profile, "build_engine_context_snapshot", stage_started_at)
+        stage_started_at = perf_counter()
         context.metadata["engine_context_v1"] = engine_bundle["engine_context"].to_dict()
         context.metadata["position_snapshot_v2"] = engine_bundle["position_snapshot"].to_dict()
         context.metadata["position_vector_v2"] = engine_bundle["position_vector"].to_dict()
@@ -1002,6 +1153,9 @@ class ContextClassifier:
         context.metadata["trade_management_forecast_v1"] = engine_bundle["trade_management_forecast"].to_dict()
         context.metadata["forecast_gap_metrics_v1"] = dict(engine_bundle.get("forecast_gap_metrics", {}) or {})
         context.metadata["energy_snapshot"] = engine_bundle["energy_snapshot"].to_dict()
+        context.metadata["engine_context_snapshot_profile_v1"] = copy.deepcopy(
+            engine_bundle.get("engine_context_snapshot_profile", {}) or {}
+        )
         observe_confirm_payload = engine_bundle["observe_confirm"].to_dict()
         context.metadata["observe_confirm_v1"] = copy.deepcopy(observe_confirm_payload)
         context.metadata["observe_confirm_v2"] = copy.deepcopy(observe_confirm_payload)
@@ -1126,6 +1280,16 @@ class ContextClassifier:
             "forecast_calibration_contract_field": "forecast_calibration_contract_v1",
             "outcome_labeler_scope_contract_field": "outcome_labeler_scope_contract_v1",
         }
+        self._record_profile_stage(build_context_profile, "metadata_materialization", stage_started_at)
+        context_build_profile_payload = {
+            "contract_version": "build_entry_context_profile_v1",
+            "total_ms": round((perf_counter() - build_context_started_at) * 1000.0, 3),
+            "stage_timings_ms": dict(build_context_profile),
+            "indicator_cache_timeframes": sorted(str(key) for key in indicator_frame_cache.keys()),
+            "m15_indicator_cached": bool("15M" in indicator_frame_cache),
+        }
+        context.metadata["build_entry_context_profile_v1"] = copy.deepcopy(context_build_profile_payload)
+        engine_bundle["build_entry_context_profile"] = copy.deepcopy(context_build_profile_payload)
         return {"context": context, "preflight": preflight, **engine_bundle}
 
     def build_engine_context_snapshot(
@@ -1142,7 +1306,12 @@ class ContextClassifier:
         box_state: str,
         bb_state: str,
         raw_scores: dict | None = None,
+        indicator_frame_cache: dict[str, pd.DataFrame] | None = None,
+        session_range: dict | None = None,
     ) -> dict:
+        snapshot_started_at = perf_counter()
+        snapshot_profile: dict[str, float] = {}
+        indicator_cache = indicator_frame_cache if isinstance(indicator_frame_cache, dict) else {}
         price = float(getattr(tick, "bid", 0.0) or getattr(tick, "ask", 0.0) or 0.0)
         tick_bid = self._coerce_float(getattr(tick, "bid", 0.0))
         tick_ask = self._coerce_float(getattr(tick, "ask", 0.0))
@@ -1159,11 +1328,14 @@ class ContextClassifier:
         session_position_bias = 0.0
         session_expansion_progress = 0.0
         h1 = (df_all or {}).get("1H")
+        stage_started_at = perf_counter()
         if h1 is not None and not h1.empty and scorer is not None and hasattr(scorer, "session_mgr"):
-            try:
-                session = scorer.session_mgr.get_session_range(h1, 8, 16)
-            except Exception:
-                session = None
+            session = session_range
+            if not session:
+                try:
+                    session = scorer.session_mgr.get_session_range(h1, 8, 16)
+                except Exception:
+                    session = None
             if session:
                 box_low = self._coerce_float(session.get("low"))
                 box_high = self._coerce_float(session.get("high"))
@@ -1195,6 +1367,7 @@ class ContextClassifier:
                         session_expansion_progress = float((price - session_high) / session_box_height)
                     elif price < session_low:
                         session_expansion_progress = float((session_low - price) / session_box_height)
+        self._record_profile_stage(snapshot_profile, "session_box_context", stage_started_at)
 
         bb20_up = bb20_mid = bb20_dn = None
         bb44_up = bb44_mid = bb44_dn = None
@@ -1204,10 +1377,16 @@ class ContextClassifier:
         metadata = {"source": "context_classifier", "raw_scores": dict(raw_scores or {})}
         mtf_ma_big_map_v1 = {}
         mtf_trendline_map_v1 = {}
+        stage_started_at = perf_counter()
         try:
             m15 = (df_all or {}).get("15M")
             if m15 is not None and not m15.empty and scorer is not None and hasattr(scorer, "trend_mgr"):
-                m15_ind = scorer.trend_mgr.add_indicators(m15)
+                m15_ind, _ = self._resolve_indicator_frame(
+                    timeframe="15M",
+                    frame=m15,
+                    trend_mgr=getattr(scorer, "trend_mgr", None),
+                    indicator_frame_cache=indicator_cache,
+                )
                 if m15_ind is not None and not m15_ind.empty:
                     signal_bar_ts = self._extract_frame_event_ts(m15_ind)
                     metadata["signal_timeframe"] = "15M"
@@ -1366,18 +1545,23 @@ class ContextClassifier:
                     )
         except Exception:
             pass
+        self._record_profile_stage(snapshot_profile, "m15_indicator_context", stage_started_at)
 
+        stage_started_at = perf_counter()
         try:
             mtf_ma_big_map_v1 = self._build_mtf_ma_big_map(
                 df_all=df_all,
                 scorer=scorer,
                 price=price,
                 volatility_scale=volatility_scale,
+                indicator_frame_cache=indicator_cache,
             )
-            metadata["mtf_ma_big_map_v1"] = dict(mtf_ma_big_map_v1)
+            metadata["mtf_ma_big_map_v1"] = mtf_ma_big_map_v1
         except Exception:
             metadata["mtf_ma_big_map_v1"] = {}
+        self._record_profile_stage(snapshot_profile, "mtf_ma_big_map", stage_started_at)
 
+        stage_started_at = perf_counter()
         try:
             mtf_trendline_map_v1 = self._build_mtf_trendline_map(
                 df_all=df_all,
@@ -1385,25 +1569,29 @@ class ContextClassifier:
                 price=price,
                 volatility_scale=volatility_scale,
             )
-            metadata["mtf_trendline_map_v1"] = dict(mtf_trendline_map_v1)
+            metadata["mtf_trendline_map_v1"] = mtf_trendline_map_v1
         except Exception:
             metadata["mtf_trendline_map_v1"] = {}
+        self._record_profile_stage(snapshot_profile, "mtf_trendline_map", stage_started_at)
 
+        stage_started_at = perf_counter()
         try:
-            metadata["mtf_trendline_bar_map_v1"] = dict(self._build_mtf_trendline_bar_map(df_all=df_all))
+            metadata["mtf_trendline_bar_map_v1"] = self._build_mtf_trendline_bar_map(df_all=df_all)
         except Exception:
             metadata["mtf_trendline_bar_map_v1"] = {}
 
         try:
-            metadata["micro_tf_bar_map_v1"] = dict(self._build_micro_tf_bar_map(df_all=df_all))
+            metadata["micro_tf_bar_map_v1"] = self._build_micro_tf_bar_map(df_all=df_all)
         except Exception:
             metadata["micro_tf_bar_map_v1"] = {}
 
         try:
-            metadata["micro_tf_window_map_v1"] = dict(self._build_micro_tf_window_map(df_all=df_all))
+            metadata["micro_tf_window_map_v1"] = self._build_micro_tf_window_map(df_all=df_all)
         except Exception:
             metadata["micro_tf_window_map_v1"] = {}
+        self._record_profile_stage(snapshot_profile, "mtf_bar_maps", stage_started_at)
 
+        stage_started_at = perf_counter()
         try:
             h1 = (df_all or {}).get("1H")
             if h1 is not None and not h1.empty:
@@ -1419,7 +1607,9 @@ class ContextClassifier:
                 metadata["sr_touch_count"] = 0
         except Exception:
             pass
+        self._record_profile_stage(snapshot_profile, "sr_levels", stage_started_at)
 
+        stage_started_at = perf_counter()
         try:
             advanced_state_inputs_v1 = collect_optional_advanced_state_inputs(
                 symbol=symbol,
@@ -1444,7 +1634,9 @@ class ContextClassifier:
             }
             metadata["advanced_input_activation_state"] = "UNAVAILABLE"
             metadata["advanced_input_activation_reasons"] = ["collector_failed"]
+        self._record_profile_stage(snapshot_profile, "advanced_state_inputs", stage_started_at)
 
+        stage_started_at = perf_counter()
         engine_ctx = build_engine_context(
             symbol=symbol,
             price=price,
@@ -1470,6 +1662,8 @@ class ContextClassifier:
             volatility_scale=volatility_scale,
             metadata={**metadata, "liquidity_state": str(liquidity_state or "UNKNOWN").upper()},
         )
+        self._record_profile_stage(snapshot_profile, "engine_context_core", stage_started_at)
+        stage_started_at = perf_counter()
         position_snapshot = build_position_snapshot(engine_ctx)
         position_vector = position_snapshot.vector
         engine_ctx.metadata["position_gate_input_v1"] = {
@@ -1499,10 +1693,14 @@ class ContextClassifier:
                 (position_snapshot.interpretation.metadata or {}).get("position_scale", {}) or {}
             ),
         }
+        self._record_profile_stage(snapshot_profile, "position_snapshot", stage_started_at)
+        stage_started_at = perf_counter()
         response_raw_snapshot = build_response_raw_snapshot(engine_ctx)
         response_vector_legacy = build_response_vector_from_raw(response_raw_snapshot)
         response_vector_v2 = build_response_vector_v2_from_raw(response_raw_snapshot)
         response_vector_execution_bridge = build_response_vector_execution_bridge_from_raw(response_raw_snapshot)
+        self._record_profile_stage(snapshot_profile, "response_vectors", stage_started_at)
+        stage_started_at = perf_counter()
         state_raw_snapshot = build_state_raw_snapshot(engine_ctx)
         state_vector = build_state_vector(engine_ctx)
         state_vector_v2 = build_state_vector_v2(engine_ctx, position_snapshot=position_snapshot)
@@ -1524,6 +1722,8 @@ class ContextClassifier:
                 "event_risk_state": str((state_vector_v2.metadata or {}).get("event_risk_state", "") or ""),
             },
         }
+        self._record_profile_stage(snapshot_profile, "state_vectors", stage_started_at)
+        stage_started_at = perf_counter()
         evidence_vector = build_evidence_vector(position_snapshot, response_vector_v2, state_vector_v2)
         belief_state = build_belief_state(
             key=(str(symbol or ""), str((engine_ctx.metadata or {}).get("signal_timeframe") or "15M")),
@@ -1536,6 +1736,8 @@ class ContextClassifier:
             evidence_vector,
             belief_state,
         )
+        self._record_profile_stage(snapshot_profile, "evidence_belief_barrier", stage_started_at)
+        stage_started_at = perf_counter()
         forecast_features = build_forecast_features(
             position_snapshot,
             response_vector_v2,
@@ -1555,6 +1757,8 @@ class ContextClassifier:
         transition_forecast = build_transition_forecast(forecast_features)
         trade_management_forecast = build_trade_management_forecast(forecast_features)
         forecast_gap_metrics = extract_forecast_gap_metrics(transition_forecast, trade_management_forecast)
+        self._record_profile_stage(snapshot_profile, "forecast_stack", stage_started_at)
+        stage_started_at = perf_counter()
         energy_snapshot = compute_energy_snapshot(
             position_vector,
             response_vector_execution_bridge,
@@ -1573,6 +1777,14 @@ class ContextClassifier:
             trade_management_forecast_v1=trade_management_forecast,
             forecast_gap_metrics_v1=forecast_gap_metrics,
         )
+        self._record_profile_stage(snapshot_profile, "energy_observe_confirm", stage_started_at)
+        snapshot_profile_payload = {
+            "contract_version": "engine_context_snapshot_profile_v1",
+            "total_ms": round((perf_counter() - snapshot_started_at) * 1000.0, 3),
+            "stage_timings_ms": dict(snapshot_profile),
+            "indicator_cache_timeframes": sorted(str(key) for key in indicator_cache.keys()),
+        }
+        engine_ctx.metadata["engine_context_snapshot_profile_v1"] = dict(snapshot_profile_payload)
         return {
             "engine_context": engine_ctx,
             "position_snapshot": position_snapshot,
@@ -1597,6 +1809,7 @@ class ContextClassifier:
             "forecast_gap_metrics": dict(forecast_gap_metrics),
             "energy_snapshot": energy_snapshot,
             "observe_confirm": observe_confirm,
+            "engine_context_snapshot_profile": dict(snapshot_profile_payload),
         }
 
     def build_exit_context(

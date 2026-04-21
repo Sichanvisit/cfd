@@ -142,6 +142,56 @@ def test_semantic_shadow_runtime_unavailable_prediction_exposes_reason():
     assert prediction["reason"] == "model_files_missing"
 
 
+def test_semantic_shadow_runtime_emits_wait_better_entry_when_quality_passes_but_timing_fails(monkeypatch):
+    probabilities = {
+        "timing": 0.32,
+        "entry_quality": 0.74,
+        "exit_management": 0.22,
+    }
+
+    def fake_predict_bundle_proba(bundle, _frame):
+        return np.asarray([probabilities[bundle["dataset_key"]]], dtype=float)
+
+    monkeypatch.setattr(
+        "ml.semantic_v1.runtime_adapter.predict_bundle_proba",
+        fake_predict_bundle_proba,
+    )
+
+    runtime = SemanticShadowRuntime(
+        bundles={
+            "timing": {"dataset_key": "timing", "feature_columns": ["position_x_box"]},
+            "entry_quality": {"dataset_key": "entry_quality", "feature_columns": ["position_x_box"]},
+            "exit_management": {"dataset_key": "exit_management", "feature_columns": ["position_x_box"]},
+        }
+    )
+
+    prediction = runtime.predict_shadow(
+        {
+            "symbol": "BTCUSD",
+            "position_x_box": 0.12,
+            "data_completeness_ratio": 1.0,
+            "missing_feature_count": 0,
+            "used_fallback_count": 0,
+            "compatibility_mode": "",
+        },
+        action_hint="WAIT",
+        timing_threshold=0.55,
+        entry_quality_threshold=0.60,
+    )
+
+    assert prediction["available"] is True
+    assert prediction["should_enter"] is False
+    assert prediction["recommendation"] == "wait_better_entry"
+    assert (
+        resolve_semantic_shadow_compare_label(
+            prediction,
+            baseline_outcome="entered",
+            baseline_action="BUY",
+        )
+        == "semantic_wait_for_better_entry"
+    )
+
+
 def test_resolve_trace_quality_state_distinguishes_degraded_rows():
     assert resolve_trace_quality_state({"data_completeness_ratio": 1.0}) == "clean"
     assert (

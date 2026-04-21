@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import json
+import sys
 import time
 from datetime import datetime
 
@@ -17,24 +19,166 @@ from backend.services.consumer_check_state import (
     evaluate_consumer_open_guard_v1,
     resolve_effective_consumer_check_state_v1,
 )
+from backend.services.entry_candidate_bridge import (
+    build_entry_candidate_bridge_flat_fields,
+    build_entry_candidate_bridge_v1,
+)
 from backend.services.exit_profile_router import resolve_exit_profile
+from backend.services.belief_state25_runtime_bridge import (
+    build_belief_state25_runtime_bridge_v1,
+)
+from backend.services.barrier_state25_runtime_bridge import (
+    build_barrier_state25_runtime_bridge_v1,
+)
+from backend.services.breakout_event_overlay import (
+    build_breakout_event_overlay_candidates_v1,
+    build_breakout_event_overlay_trace_v1,
+)
+from backend.services.breakout_event_runtime import (
+    build_breakout_event_runtime_v1,
+)
+from backend.services.forecast_state25_runtime_bridge import (
+    build_forecast_state25_log_only_overlay_trace_v1,
+    build_forecast_state25_runtime_bridge_v1,
+)
+from backend.services.state25_context_bridge import (
+    build_state25_candidate_context_bridge_flat_fields_v1,
+    build_state25_candidate_context_bridge_v1,
+)
 from backend.services.observe_confirm_contract import (
     OBSERVE_CONFIRM_INPUT_CONTRACT_V2,
     OBSERVE_CONFIRM_MIGRATION_DUAL_WRITE_V1,
     OBSERVE_CONFIRM_OUTPUT_CONTRACT_V2,
     OBSERVE_CONFIRM_SCOPE_CONTRACT_V1,
 )
+from backend.services.path_leg_runtime import (
+    assign_leg_id,
+    extract_leg_runtime_fields,
+)
+from backend.services.path_checkpoint_segmenter import (
+    assign_checkpoint_context,
+    extract_checkpoint_fields,
+)
+from backend.services.path_checkpoint_context import (
+    build_flat_position_state,
+    record_checkpoint_context,
+)
 from backend.services.p7_guarded_size_overlay import (
     P7_GUARDED_SIZE_OVERLAY_CONTRACT_V1,
     resolve_p7_guarded_size_overlay_v1,
 )
 from backend.services.storage_compaction import resolve_trade_link_key
+from backend.services.teacher_pattern_active_candidate_runtime import (
+    build_state25_candidate_entry_log_only_trace_v1,
+    resolve_state25_candidate_live_threshold_adjustment_v1,
+)
 from ml.semantic_v1.promotion_guard import SemanticPromotionGuard
 from ml.semantic_v1.runtime_adapter import (
     SemanticShadowRuntime,
     build_semantic_shadow_feature_row,
     resolve_semantic_shadow_compare_label,
 )
+
+
+def _build_trade_logger_micro_payload_from_decision_row(decision_row: dict | None) -> dict[str, object]:
+    row = dict(decision_row or {})
+    text_fields = (
+        "micro_breakout_readiness_state",
+        "micro_reversal_risk_state",
+        "micro_participation_state",
+        "micro_gap_context_state",
+    )
+    float_fields = (
+        "micro_body_size_pct_20",
+        "micro_doji_ratio_20",
+        "micro_range_compression_ratio_20",
+        "micro_volume_burst_ratio_20",
+        "micro_volume_burst_decay_20",
+        "micro_gap_fill_progress",
+        "micro_upper_wick_ratio_20",
+        "micro_lower_wick_ratio_20",
+    )
+    int_fields = (
+        "micro_same_color_run_current",
+        "micro_same_color_run_max_20",
+        "micro_swing_high_retest_count_20",
+        "micro_swing_low_retest_count_20",
+    )
+
+    payload: dict[str, object] = {}
+    for field in text_fields:
+        payload[field] = str(row.get(field, "") or "").strip()
+    for field in float_fields:
+        parsed = pd.to_numeric(row.get(field), errors="coerce")
+        payload[field] = 0.0 if pd.isna(parsed) else float(parsed)
+    for field in int_fields:
+        parsed = pd.to_numeric(row.get(field), errors="coerce")
+        payload[field] = 0 if pd.isna(parsed) else int(parsed)
+    return payload
+
+
+def _safe_console_print(message: str) -> None:
+    text = f"\n{str(message or '')}"
+    try:
+        print(text)
+        return
+    except UnicodeEncodeError:
+        pass
+
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    safe_text = text.encode(encoding, errors="replace").decode(encoding, errors="replace")
+    buffer = getattr(sys.stdout, "buffer", None)
+    try:
+        if buffer is not None:
+            buffer.write((safe_text + "\n").encode(encoding, errors="replace"))
+            buffer.flush()
+        else:
+            sys.stdout.write(safe_text + "\n")
+            sys.stdout.flush()
+    except Exception:
+        try:
+            sys.stdout.write("\n[entry message omitted due to console encoding]\n")
+            sys.stdout.flush()
+        except Exception:
+            return
+
+
+def _build_semantic_shadow_prediction_cache_key(
+    *,
+    symbol: str,
+    runtime_snapshot_row: Mapping[str, object] | None = None,
+    action_hint: str = "",
+    setup_id: str = "",
+    setup_side: str = "",
+    entry_stage: str = "",
+) -> str:
+    row = dict(runtime_snapshot_row or {})
+    anchor_candidates = (
+        row.get("runtime_snapshot_key"),
+        row.get("decision_row_key"),
+        row.get("signal_bar_ts"),
+        row.get("time"),
+        row.get("timestamp"),
+        row.get("bar_time"),
+    )
+    anchor = ""
+    for value in anchor_candidates:
+        text = str(value or "").strip()
+        if text:
+            anchor = text
+            break
+    if not anchor:
+        return ""
+    return "|".join(
+        [
+            str(symbol or "").upper().strip(),
+            str(action_hint or "").upper().strip(),
+            str(setup_id or "").strip().lower(),
+            str(setup_side or "").upper().strip(),
+            str(entry_stage or "").strip().lower(),
+            anchor,
+        ]
+    )
 
 
 def _resolve_setup_specific_pyramid_policy(
@@ -78,6 +222,47 @@ def _resolve_setup_specific_pyramid_policy(
         out["edge_guard"] = False
         mult = 0.22 if symbol_u == "BTCUSD" else 0.40
         out["min_prog"] = float(max(0.0, float(min_prog) * mult))
+        return out
+
+    if (
+        symbol_u == "BTCUSD"
+        and setup_u == "range_upper_reversal_sell"
+        and action_u == "SELL"
+        and preflight_u in {"SELL_ONLY", "BOTH"}
+        and box_u in {"UPPER", "ABOVE", "UPPER_EDGE"}
+        and same_dir_count <= 2
+        and setup_reason_u in {
+            "shadow_upper_reject_probe_observe",
+            "shadow_upper_reject_confirm",
+            "shadow_upper_break_fail_confirm",
+            "upper_break_fail_confirm",
+        }
+    ):
+        out["pyramid_mode"] = "progressive"
+        out["require_drawdown"] = False
+        out["edge_guard"] = True
+        out["min_prog"] = float(max(0.0, float(min_prog) * 0.32))
+        return out
+
+    if (
+        symbol_u == "NAS100"
+        and setup_u == "range_lower_reversal_buy"
+        and action_u == "BUY"
+        and preflight_u in {"BUY_ONLY", "BOTH"}
+        and box_u in {"LOWER", "BELOW", "LOWER_EDGE"}
+        and same_dir_count <= 2
+        and (
+            setup_reason_u in {
+                "shadow_outer_band_reversal_support_required_observe",
+                "shadow_lower_rebound_confirm",
+            }
+            or setup_reason_u.startswith("shadow_lower_rebound_probe_observe")
+        )
+    ):
+        out["pyramid_mode"] = "progressive"
+        out["require_drawdown"] = False
+        out["edge_guard"] = False
+        out["min_prog"] = float(max(0.0, float(min_prog) * 0.36))
         return out
 
     return out
@@ -174,6 +359,17 @@ def _build_probe_promotion_guard_v1(
     )
     quick_trace_state_u = str(runtime_row.get("quick_trace_state", "") or "").upper().strip()
     quick_trace_reason = str(runtime_row.get("quick_trace_reason", "") or "").strip()
+    default_side_aligned = bool(plan.get("default_side_aligned", False))
+    near_confirm = bool(plan.get("near_confirm", False))
+
+    def _plan_float(name: str, default: float = 0.0) -> float:
+        try:
+            parsed = pd.to_numeric(plan.get(name), errors="coerce")
+            if pd.isna(parsed):
+                return float(default)
+            return float(parsed)
+        except Exception:
+            return float(default)
 
     probe_surface = bool(
         action_u in {"BUY", "SELL"}
@@ -199,13 +395,70 @@ def _build_probe_promotion_guard_v1(
         )
         and not consumer_entry_ready
     )
+    bounded_middle_sr_probe_relief = bool(
+        probe_surface
+        and probe_not_ready_surface
+        and blocked_by_u == "middle_sr_anchor_guard"
+        and observe_reason_u == "middle_sr_anchor_required_observe"
+        and plan_active
+        and action_u in {"BUY", "SELL"}
+        and plan_side_u in {"", action_u}
+        and default_side_aligned
+        and (
+            near_confirm
+            or _plan_float("pair_gap") >= 0.17
+        )
+        and _plan_float("candidate_support") >= 0.11
+        and _plan_float("action_confirm_score") >= 0.08
+        and _plan_float("confirm_fake_gap") >= -0.26
+        and _plan_float("wait_confirm_gap") >= -0.21
+        and _plan_float("continue_fail_gap") >= -0.30
+        and _plan_float("same_side_barrier", default=1.0) <= 0.60
+    )
+    bounded_xau_outer_band_followthrough_relief = bool(
+        probe_surface
+        and probe_not_ready_surface
+        and symbol_u == "XAUUSD"
+        and action_u == "BUY"
+        and blocked_by_u == "outer_band_guard"
+        and observe_reason_u == "outer_band_reversal_support_required_observe"
+        and plan_active
+        and plan_side_u in {"", action_u}
+        and default_side_aligned
+        and (
+            near_confirm
+            or bool(plan.get("structural_relief_applied", False))
+            or _plan_float("pair_gap") >= 0.18
+        )
+        and _plan_float("candidate_support") >= 0.14
+        and _plan_float("action_confirm_score") >= 0.10
+        and _plan_float("confirm_fake_gap") >= -0.18
+        and _plan_float("wait_confirm_gap") >= -0.05
+        and _plan_float("continue_fail_gap") >= -0.22
+        and _plan_float("same_side_barrier", default=1.0) <= 0.66
+    )
+    bounded_probe_promotion_active = bool(
+        bounded_middle_sr_probe_relief or bounded_xau_outer_band_followthrough_relief
+    )
+    bounded_probe_promotion_reason = ""
+    bounded_probe_size_multiplier = 1.0
+    bounded_probe_entry_stage = ""
+    if bounded_middle_sr_probe_relief:
+        bounded_probe_promotion_reason = "bounded_middle_sr_anchor_probe_promotion"
+        bounded_probe_size_multiplier = 0.35
+        bounded_probe_entry_stage = "conservative"
+    elif bounded_xau_outer_band_followthrough_relief:
+        bounded_probe_promotion_reason = "bounded_xau_outer_band_followthrough_probe"
+        bounded_probe_size_multiplier = 0.45
+        bounded_probe_entry_stage = "balanced"
     guard_active = bool(
         probe_surface
         and probe_not_ready_surface
-        and blocked_by_u in {"", "probe_promotion_gate"}
+        and blocked_by_u in {"", "probe_promotion_gate", "middle_sr_anchor_guard", "outer_band_guard"}
         and symbol_u in {"XAUUSD", "BTCUSD", "NAS100"}
     )
-    failure_code = "probe_promotion_gate" if guard_active else ""
+    allows_open = bool((not guard_active) or bounded_probe_promotion_active)
+    failure_code = "probe_promotion_gate" if (guard_active and not allows_open) else ""
     return {
         "contract_version": "probe_promotion_guard_v1",
         "symbol": str(symbol_u or ""),
@@ -223,8 +476,843 @@ def _build_probe_promotion_guard_v1(
         "quick_trace_state": str(quick_trace_state_u or ""),
         "quick_trace_reason": str(quick_trace_reason or ""),
         "guard_active": bool(guard_active),
-        "allows_open": bool(not failure_code),
+        "allows_open": bool(allows_open),
         "failure_code": str(failure_code or ""),
+        "bounded_probe_promotion_active": bool(bounded_probe_promotion_active),
+        "bounded_probe_promotion_reason": str(bounded_probe_promotion_reason or ""),
+        "bounded_probe_size_multiplier": float(bounded_probe_size_multiplier),
+        "bounded_probe_entry_stage": str(bounded_probe_entry_stage or ""),
+    }
+
+
+def _directional_reason_tokens_v1(direction: str) -> tuple[str, ...]:
+    direction_u = str(direction or "").upper().strip()
+    if direction_u == "UP":
+        return (
+            "upper_break_fail",
+            "upper_reclaim",
+            "lower_rebound",
+            "buy_watch",
+            "buy_probe",
+            "buy_wait",
+        )
+    return (
+        "upper_reject",
+        "middle_sr_anchor",
+        "upper_dominant",
+        "lower_dominant",
+        "sell_watch",
+        "sell_probe",
+        "sell_wait",
+        "breakdown",
+        "lower_break",
+    )
+
+
+def _build_directional_structural_context_v1(
+    direction: str,
+    runtime_signal_row: dict | None,
+) -> dict[str, object]:
+    direction_u = str(direction or "").upper().strip()
+    runtime_row = dict(runtime_signal_row or {})
+    if direction_u not in {"UP", "DOWN"}:
+        return {
+            "direction": "",
+            "score": 0.0,
+            "confirmed": False,
+            "trend_alignment_count": 0,
+        }
+
+    if direction_u == "UP":
+        break_states = {"BREAKOUT_HELD", "RECLAIMED"}
+        relations = {"ABOVE", "AT_HIGH"}
+        box_states = {"ABOVE", "UPPER", "UPPER_EDGE"}
+        bb_states = {"UPPER", "UPPER_EDGE", "ABOVE", "BREAKOUT"}
+        side_expected = "BUY"
+    else:
+        break_states = {"BREAKDOWN_HELD", "BREAKOUT_FAILED", "REJECTED"}
+        relations = {"BELOW", "AT_LOW"}
+        box_states = {"BELOW", "LOWER", "LOWER_EDGE"}
+        bb_states = {"LOWER", "LOWER_EDGE", "BELOW", "BREAKDOWN"}
+        side_expected = "SELL"
+
+    htf_alignment_state = str(runtime_row.get("htf_alignment_state", "") or "").upper().strip()
+    break_state = str(runtime_row.get("previous_box_break_state", "") or "").upper().strip()
+    relation = str(runtime_row.get("previous_box_relation", "") or "").upper().strip()
+    box_state = str(runtime_row.get("box_state", "") or "").upper().strip()
+    bb_state = str(runtime_row.get("bb_state", "") or "").upper().strip()
+    breakout_direction = str(
+        runtime_row.get("breakout_direction", runtime_row.get("breakout_candidate_direction", "")) or ""
+    ).upper().strip()
+    breakout_target = str(runtime_row.get("breakout_candidate_action_target", "") or "").upper().strip()
+    current_side = str(
+        runtime_row.get("consumer_check_side")
+        or runtime_row.get("setup_side")
+        or runtime_row.get("observe_side")
+        or ""
+    ).upper().strip()
+    current_reason = str(
+        runtime_row.get("consumer_check_reason")
+        or runtime_row.get("observe_reason")
+        or runtime_row.get("action_none_reason")
+        or runtime_row.get("blocked_by")
+        or ""
+    ).lower().strip()
+    breakout_runtime = dict(runtime_row.get("breakout_event_runtime_v1", {}) or {})
+    breakout_overlay = dict(runtime_row.get("breakout_event_overlay_candidates_v1", {}) or {})
+    trend_alignment_count = 0
+    for field in ("trend_15m_direction", "trend_1h_direction", "trend_4h_direction", "trend_1d_direction"):
+        trend_direction = str(runtime_row.get(field, "") or "").upper().strip()
+        if direction_u == "UP" and trend_direction == "UPTREND":
+            trend_alignment_count += 1
+        elif direction_u == "DOWN" and trend_direction == "DOWNTREND":
+            trend_alignment_count += 1
+
+    supportive_break_state = break_state in break_states
+    supportive_relation = relation in relations or (relation == "INSIDE" and supportive_break_state)
+    supportive_box = box_state in box_states
+    supportive_bb = bb_state in bb_states
+    breakout_supportive = bool(
+        breakout_direction == direction_u
+        and breakout_target in {"WATCH_BREAKOUT", "PROBE_BREAKOUT", "ENTER_NOW"}
+    )
+    breakout_opposing = bool(
+        breakout_direction in {"UP", "DOWN"}
+        and breakout_direction != direction_u
+        and breakout_target in {"WATCH_BREAKOUT", "PROBE_BREAKOUT", "ENTER_NOW"}
+    )
+    reason_tokens = _directional_reason_tokens_v1(direction_u)
+    opposite_tokens = _directional_reason_tokens_v1("DOWN" if direction_u == "UP" else "UP")
+    reason_supportive = any(token in current_reason for token in reason_tokens)
+    reason_opposing = any(token in current_reason for token in opposite_tokens)
+    breakout_state = str(
+        breakout_runtime.get("breakout_state") or runtime_row.get("breakout_candidate_surface_state") or ""
+    ).lower().strip()
+    breakout_retest_status = str(breakout_runtime.get("breakout_retest_status", "") or "").lower().strip()
+    breakout_reference_type = str(breakout_runtime.get("breakout_reference_type", "") or "").lower().strip()
+    breakout_confidence = float(
+        breakout_runtime.get("breakout_confidence", runtime_row.get("breakout_candidate_confidence", 0.0))
+        or 0.0
+    )
+    breakout_followthrough = float(
+        breakout_runtime.get(
+            "breakout_followthrough_score",
+            runtime_row.get("breakout_followthrough_score", 0.0),
+        )
+        or 0.0
+    )
+    low_retests = float(
+        runtime_row.get("previous_box_low_retest_count", runtime_row.get("swing_low_retest_count_20", 0.0))
+        or 0.0
+    )
+    high_retests = float(
+        runtime_row.get("previous_box_high_retest_count", runtime_row.get("swing_high_retest_count_20", 0.0))
+        or 0.0
+    )
+
+    continuation_resume_score = 0.0
+    if breakout_direction == direction_u:
+        continuation_resume_score += 0.18
+    if breakout_target in {"WATCH_BREAKOUT", "PROBE_BREAKOUT", "ENTER_NOW"}:
+        continuation_resume_score += 0.12
+    if breakout_state in {"breakout_pullback", "continuation_follow", "reclaim_breakout_candidate"}:
+        continuation_resume_score += 0.14
+    if breakout_retest_status in {"passed", "holding", "ready"}:
+        continuation_resume_score += 0.12
+    if breakout_reference_type in {"squeeze", "reclaim", "retest"}:
+        continuation_resume_score += 0.06
+    continuation_resume_score += max(0.0, min(1.0, breakout_confidence)) * 0.10
+    continuation_resume_score += max(0.0, min(1.0, breakout_followthrough)) * 0.12
+    if direction_u == "UP":
+        if break_state in {"BREAKOUT_HELD", "RECLAIMED"}:
+            continuation_resume_score += 0.08
+        if relation in {"ABOVE", "AT_HIGH", "INSIDE"}:
+            continuation_resume_score += 0.08
+        if low_retests >= 2:
+            continuation_resume_score += 0.10
+    else:
+        if break_state in {"BREAKDOWN_HELD", "BREAKOUT_FAILED", "REJECTED"}:
+            continuation_resume_score += 0.08
+        if relation in {"BELOW", "AT_LOW", "INSIDE"}:
+            continuation_resume_score += 0.08
+        if high_retests >= 2:
+            continuation_resume_score += 0.10
+    continuation_resume_score = max(0.0, min(1.0, float(continuation_resume_score)))
+    continuation_resume_confirmed = bool(
+        breakout_direction == direction_u
+        and breakout_target in {"WATCH_BREAKOUT", "PROBE_BREAKOUT", "ENTER_NOW"}
+        and continuation_resume_score >= 0.44
+    )
+
+    score = 0.0
+    if htf_alignment_state == "WITH_HTF":
+        score += 0.20
+    if trend_alignment_count >= 3:
+        score += 0.18
+    elif trend_alignment_count == 2:
+        score += 0.12
+    elif trend_alignment_count == 1:
+        score += 0.05
+    if supportive_break_state:
+        score += 0.18
+    if supportive_relation:
+        score += 0.10
+    if supportive_box:
+        score += 0.07
+    if supportive_bb:
+        score += 0.06
+    if breakout_supportive:
+        score += 0.12
+    if reason_supportive:
+        score += 0.09
+    if continuation_resume_confirmed:
+        score += 0.10
+    score += continuation_resume_score * 0.08
+    if current_side == side_expected:
+        score += 0.05
+    elif current_side:
+        score -= 0.04
+    if breakout_opposing:
+        score -= 0.15
+    if reason_opposing:
+        score -= 0.10
+
+    normalized_score = max(0.0, min(1.0, float(score)))
+    confirmed = bool(
+        normalized_score >= 0.42
+        and htf_alignment_state == "WITH_HTF"
+        and trend_alignment_count >= 2
+        and (
+            supportive_break_state
+            or breakout_supportive
+            or reason_supportive
+            or continuation_resume_confirmed
+        )
+    )
+    return {
+        "direction": str(direction_u),
+        "score": round(normalized_score, 4),
+        "confirmed": bool(confirmed),
+        "trend_alignment_count": int(trend_alignment_count),
+        "supportive_break_state": bool(supportive_break_state),
+        "supportive_relation": bool(supportive_relation),
+        "breakout_supportive": bool(breakout_supportive),
+        "reason_supportive": bool(reason_supportive),
+        "reason_opposing": bool(reason_opposing),
+        "continuation_resume_score": round(continuation_resume_score, 4),
+        "continuation_resume_confirmed": bool(continuation_resume_confirmed),
+    }
+
+
+def _build_directional_continuation_promotion_v1(
+    *,
+    symbol: str,
+    baseline_action: str,
+    runtime_signal_row: dict | None = None,
+    active_action_conflict_guard_v1: dict | None = None,
+) -> dict[str, object]:
+    symbol_u = str(symbol or "").upper().strip()
+    runtime_row = dict(runtime_signal_row or {})
+    baseline_action_u = _resolve_directional_baseline_action_side_v1(
+        baseline_action,
+        runtime_row.get("consumer_check_side", ""),
+        runtime_row.get("setup_side", ""),
+        runtime_row.get("action_selected", ""),
+        runtime_row.get("core_allowed_action", ""),
+    )
+    guard = dict(active_action_conflict_guard_v1 or {})
+
+    overlay_payload = _safe_mapping(runtime_row.get("directional_continuation_overlay_v1", {}))
+    overlay_enabled = _safe_bool_flag(
+        overlay_payload.get(
+            "overlay_enabled",
+            runtime_row.get("directional_continuation_overlay_enabled", False),
+        )
+    )
+    overlay_direction = str(
+        overlay_payload.get(
+            "overlay_direction",
+            runtime_row.get("directional_continuation_overlay_direction", ""),
+        )
+        or ""
+    ).upper().strip()
+    overlay_selection_state = str(
+        overlay_payload.get(
+            "overlay_selection_state",
+            runtime_row.get("directional_continuation_overlay_selection_state", ""),
+        )
+        or ""
+    ).upper().strip()
+    overlay_event_kind = str(
+        overlay_payload.get(
+            "overlay_event_kind_hint",
+            runtime_row.get("directional_continuation_overlay_event_kind_hint", ""),
+        )
+        or ""
+    ).upper().strip()
+    try:
+        overlay_score = max(
+            0.0,
+            min(
+                1.0,
+                float(
+                    overlay_payload.get(
+                        "overlay_score",
+                        runtime_row.get("directional_continuation_overlay_score", 0.0),
+                    )
+                    or 0.0
+                ),
+            ),
+        )
+    except (TypeError, ValueError):
+        overlay_score = 0.0
+
+    htf_alignment_state = str(runtime_row.get("htf_alignment_state", "") or "").upper().strip()
+    context_conflict_state = str(runtime_row.get("context_conflict_state", "") or "").upper().strip()
+    try:
+        context_conflict_score = float(runtime_row.get("context_conflict_score", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        context_conflict_score = 0.0
+    trend_fields = (
+        "trend_15m_direction",
+        "trend_1h_direction",
+        "trend_4h_direction",
+        "trend_1d_direction",
+    )
+    trend_alignment_count = 0
+    for field in trend_fields:
+        trend_direction = str(runtime_row.get(field, "") or "").upper().strip()
+        if overlay_direction == "UP" and trend_direction == "UPTREND":
+            trend_alignment_count += 1
+        elif overlay_direction == "DOWN" and trend_direction == "DOWNTREND":
+            trend_alignment_count += 1
+    structural_context = _build_directional_structural_context_v1(overlay_direction, runtime_row)
+    structural_support_score = float(structural_context.get("score", 0.0) or 0.0)
+    structural_continuation_confirmed = bool(structural_context.get("confirmed", False))
+
+    breakout_direction = str(
+        runtime_row.get("breakout_direction", runtime_row.get("breakout_candidate_direction", "")) or ""
+    ).upper().strip()
+    breakout_target = str(runtime_row.get("breakout_candidate_action_target", "") or "").upper().strip()
+    try:
+        breakout_confidence = float(
+            runtime_row.get(
+                "breakout_confidence",
+                runtime_row.get("breakout_candidate_confidence", 0.0),
+            )
+            or 0.0
+        )
+    except (TypeError, ValueError):
+        breakout_confidence = 0.0
+
+    promoted_action = ""
+    if overlay_direction == "UP":
+        promoted_action = "BUY"
+    elif overlay_direction == "DOWN":
+        promoted_action = "SELL"
+
+    action_conflict = bool(
+        overlay_enabled
+        and baseline_action_u in {"BUY", "SELL"}
+        and promoted_action in {"BUY", "SELL"}
+        and promoted_action != baseline_action_u
+    )
+    overlay_side_confirmed = bool(
+        (overlay_direction == "UP" and overlay_event_kind in {"BUY_WATCH", "BUY_READY", "BUY"})
+        or (overlay_direction == "DOWN" and overlay_event_kind in {"SELL_WATCH", "SELL_READY", "SELL"})
+    )
+    context_confirmed = bool(
+        htf_alignment_state == "WITH_HTF"
+        and (
+            context_conflict_state in {"AGAINST_HTF", "AGAINST_PREV_BOX", "AGAINST_PREV_BOX_AND_HTF"}
+            or context_conflict_score >= 0.80
+        )
+    )
+    multi_tf_supportive = bool(trend_alignment_count >= 3 and htf_alignment_state == "WITH_HTF")
+    breakout_supportive = bool(
+        breakout_direction == overlay_direction
+        and breakout_target in {"WATCH_BREAKOUT", "PROBE_BREAKOUT", "ENTER_NOW"}
+        and breakout_confidence >= 0.28
+    )
+    strong_overlay = bool(overlay_score >= 0.88)
+    supportive_overlay = bool(overlay_score >= 0.74 and breakout_supportive)
+    aligned_overlay = bool(overlay_score >= 0.60 and multi_tf_supportive and context_conflict_score >= 0.75)
+    structural_overlay = bool(overlay_score >= 0.56 and structural_continuation_confirmed)
+    guard_applied = bool(guard.get("guard_applied", False))
+    suppressed_reason = ""
+
+    active = bool(
+        action_conflict
+        and overlay_side_confirmed
+        and (context_confirmed or structural_continuation_confirmed)
+        and (strong_overlay or supportive_overlay or aligned_overlay or structural_overlay)
+    )
+    recommended_entry_stage = "balanced" if bool(overlay_score >= 0.86 and breakout_supportive) else "conservative"
+    size_multiplier = 0.45 if recommended_entry_stage == "balanced" else 0.30
+    reason = ""
+    if active:
+        reason = (
+            "directional_continuation_overlay_breakout_promotion"
+            if breakout_supportive
+            else "directional_continuation_overlay_structural_promotion"
+            if structural_overlay and not context_confirmed
+            else "directional_continuation_overlay_multitf_promotion"
+            if aligned_overlay and not strong_overlay
+            else "directional_continuation_overlay_promotion"
+        )
+    else:
+        if not action_conflict:
+            suppressed_reason = "no_action_conflict"
+        elif not overlay_side_confirmed:
+            suppressed_reason = "overlay_not_confirmed"
+        elif not (context_confirmed or structural_continuation_confirmed):
+            suppressed_reason = "guard_or_structure_not_confirmed"
+        elif not (strong_overlay or supportive_overlay or aligned_overlay or structural_overlay):
+            suppressed_reason = (
+                "overlay_not_strong_enough"
+                if overlay_score > 0.0
+                else "overlay_score_missing"
+            )
+        else:
+            suppressed_reason = "inactive_unspecified"
+
+    return {
+        "contract_version": "directional_continuation_promotion_v1",
+        "symbol": str(symbol_u or ""),
+        "baseline_action": str(baseline_action_u or ""),
+        "overlay_enabled": bool(overlay_enabled),
+        "overlay_direction": str(overlay_direction or ""),
+        "overlay_selection_state": str(overlay_selection_state or ""),
+        "overlay_event_kind_hint": str(overlay_event_kind or ""),
+        "overlay_score": float(overlay_score),
+        "htf_alignment_state": str(htf_alignment_state or ""),
+        "context_conflict_state": str(context_conflict_state or ""),
+        "context_conflict_score": float(context_conflict_score),
+        "trend_alignment_count": int(trend_alignment_count),
+        "multi_tf_supportive": bool(multi_tf_supportive),
+        "breakout_direction": str(breakout_direction or ""),
+        "breakout_candidate_target": str(breakout_target or ""),
+        "breakout_confidence": float(breakout_confidence),
+        "breakout_supportive": bool(breakout_supportive),
+        "strong_overlay": bool(strong_overlay),
+        "supportive_overlay": bool(supportive_overlay),
+        "aligned_overlay": bool(aligned_overlay),
+        "structural_continuation_confirmed": bool(structural_continuation_confirmed),
+        "structural_support_score": float(structural_support_score),
+        "structural_overlay": bool(structural_overlay),
+        "guard_applied": bool(guard_applied),
+        "promoted_action": str(promoted_action or ""),
+        "active": bool(active),
+        "recommended_entry_stage": str(recommended_entry_stage or ""),
+        "size_multiplier": float(size_multiplier),
+        "promotion_reason": str(reason or ""),
+        "promotion_suppressed_reason": str(suppressed_reason or ""),
+    }
+
+
+def _normalize_execution_action_side(value: object) -> str:
+    text = str(value or "").upper().strip()
+    return text if text in {"BUY", "SELL"} else ""
+
+
+def _resolve_directional_baseline_action_side_v1(*candidates: object) -> str:
+    for value in candidates:
+        normalized = _normalize_execution_action_side(value)
+        if normalized:
+            return normalized
+        text = str(value or "").upper().strip()
+        if text == "BUY_ONLY":
+            return "BUY"
+        if text == "SELL_ONLY":
+            return "SELL"
+    return ""
+
+
+def _display_execution_action_side(
+    value: object,
+    *,
+    default: str = "NONE",
+) -> str:
+    normalized = _normalize_execution_action_side(value)
+    if normalized:
+        return normalized
+    fallback = str(default or "NONE").upper().strip()
+    return fallback or "NONE"
+
+
+def _build_execution_action_diff_v1(
+    *,
+    original_action_side: str,
+    current_action_side: str,
+    blocked_by: str = "",
+    observe_reason: str = "",
+    action_none_reason: str = "",
+    active_action_conflict_guard_v1: dict | None = None,
+    directional_continuation_promotion_v1: dict | None = None,
+) -> dict[str, object]:
+    original_side = _normalize_execution_action_side(original_action_side)
+    current_side = _normalize_execution_action_side(current_action_side)
+    guard_map = dict(active_action_conflict_guard_v1 or {})
+    promotion_map = dict(directional_continuation_promotion_v1 or {})
+    guard_applied = bool(guard_map.get("guard_applied", False))
+    promotion_active = bool(promotion_map.get("active", False))
+    guarded_action_side = "SKIP" if guard_applied else _display_execution_action_side(original_side)
+    promoted_action_side = _normalize_execution_action_side(
+        promotion_map.get("promoted_action", "")
+    )
+    final_action_side = current_side or ("SKIP" if guard_applied or blocked_by or action_none_reason else "NONE")
+    reason_keys: list[str] = []
+    for item in (
+        guard_map.get("failure_code", ""),
+        promotion_map.get("promotion_reason", ""),
+        blocked_by,
+        action_none_reason,
+    ):
+        text = str(item or "").strip()
+        if text and text not in reason_keys:
+            reason_keys.append(text)
+    if observe_reason and final_action_side == "SKIP":
+        observe_key = f"observe:{str(observe_reason).strip()}"
+        if observe_key not in reason_keys:
+            reason_keys.append(observe_key)
+    return {
+        "contract_version": "execution_action_diff_v1",
+        "original_action_side": _display_execution_action_side(original_side),
+        "guarded_action_side": str(guarded_action_side),
+        "promoted_action_side": _display_execution_action_side(promoted_action_side),
+        "final_action_side": str(final_action_side),
+        "guard_applied": bool(guard_applied),
+        "promotion_active": bool(promotion_active),
+        "action_changed": bool(
+            guard_applied
+            or promotion_active
+            or str(original_side) != str(final_action_side)
+        ),
+        "action_change_reason_keys": list(reason_keys),
+        "guard_reason_summary": str(guard_map.get("reason_summary", "") or ""),
+        "promotion_reason": str(promotion_map.get("promotion_reason", "") or ""),
+        "promotion_suppressed_reason": str(
+            promotion_map.get("promotion_suppressed_reason", "") or ""
+        ),
+        "blocked_by": str(blocked_by or ""),
+        "observe_reason": str(observe_reason or ""),
+        "action_none_reason": str(action_none_reason or ""),
+    }
+
+
+def _build_execution_action_diff_flat_fields_v1(payload: dict | None) -> dict[str, object]:
+    row = dict(payload or {})
+    return {
+        "execution_diff_original_action_side": str(row.get("original_action_side", "") or ""),
+        "execution_diff_guarded_action_side": str(row.get("guarded_action_side", "") or ""),
+        "execution_diff_promoted_action_side": str(row.get("promoted_action_side", "") or ""),
+        "execution_diff_final_action_side": str(row.get("final_action_side", "") or ""),
+        "execution_diff_changed": bool(row.get("action_changed", False)),
+        "execution_diff_guard_applied": bool(row.get("guard_applied", False)),
+        "execution_diff_promotion_active": bool(row.get("promotion_active", False)),
+        "execution_diff_reason_keys": list(row.get("action_change_reason_keys", []) or []),
+        "execution_diff_guard_reason_summary": str(row.get("guard_reason_summary", "") or ""),
+        "execution_diff_promotion_reason": str(row.get("promotion_reason", "") or ""),
+        "execution_diff_promotion_suppressed_reason": str(
+            row.get("promotion_suppressed_reason", "") or ""
+        ),
+    }
+
+
+def _refresh_directional_runtime_execution_surface_v1(
+    *,
+    runtime_owner: object | None,
+    symbol: str,
+    runtime_row: dict | None,
+    baseline_action: str,
+    current_action: str,
+    blocked_by: str = "",
+    observe_reason: str = "",
+    action_none_reason: str = "",
+    setup_id: str = "",
+    setup_reason: str = "",
+    forecast_state25_log_only_overlay_trace_v1: dict | None = None,
+    belief_action_hint_v1: dict | None = None,
+    barrier_action_hint_v1: dict | None = None,
+    countertrend_continuation_signal_v1: dict | None = None,
+    breakout_event_runtime_v1: dict | None = None,
+    breakout_event_overlay_candidates_v1: dict | None = None,
+) -> dict[str, object]:
+    canonical_row = dict(runtime_row or {})
+    builder = getattr(runtime_owner, "build_entry_runtime_signal_row", None)
+    if callable(builder):
+        try:
+            rebuilt_row = builder(str(symbol), canonical_row)
+            if isinstance(rebuilt_row, dict):
+                canonical_row = dict(rebuilt_row)
+        except Exception:
+            pass
+
+    guard = _build_active_action_conflict_guard_v1(
+        symbol=str(symbol),
+        baseline_action=str(baseline_action or ""),
+        setup_id=str(setup_id or ""),
+        setup_reason=str(setup_reason or observe_reason or ""),
+        runtime_signal_row=canonical_row,
+        forecast_state25_log_only_overlay_trace_v1=dict(
+            forecast_state25_log_only_overlay_trace_v1 or {}
+        ),
+        belief_action_hint_v1=dict(belief_action_hint_v1 or {}),
+        barrier_action_hint_v1=dict(barrier_action_hint_v1 or {}),
+        countertrend_continuation_signal_v1=dict(countertrend_continuation_signal_v1 or {}),
+        breakout_event_runtime_v1=dict(breakout_event_runtime_v1 or {}),
+        breakout_event_overlay_candidates_v1=dict(
+            breakout_event_overlay_candidates_v1 or {}
+        ),
+    )
+    promotion = _build_directional_continuation_promotion_v1(
+        symbol=str(symbol),
+        baseline_action=str(guard.get("baseline_action", "") or baseline_action or ""),
+        runtime_signal_row=canonical_row,
+        active_action_conflict_guard_v1=guard,
+    )
+    execution_diff = _build_execution_action_diff_v1(
+        original_action_side=str(baseline_action or ""),
+        current_action_side=str(current_action or ""),
+        blocked_by=str(blocked_by or ""),
+        observe_reason=str(observe_reason or ""),
+        action_none_reason=str(action_none_reason or ""),
+        active_action_conflict_guard_v1=guard,
+        directional_continuation_promotion_v1=promotion,
+    )
+    canonical_row["execution_action_diff_v1"] = dict(execution_diff or {})
+    canonical_row.update(_build_execution_action_diff_flat_fields_v1(execution_diff))
+    canonical_row["directional_continuation_promotion_v1"] = dict(promotion or {})
+    canonical_row["directional_continuation_promotion_active"] = int(
+        1 if bool((promotion or {}).get("active", False)) else 0
+    )
+    canonical_row["directional_continuation_promotion_action"] = str(
+        (promotion or {}).get("promoted_action", "") or ""
+    )
+    canonical_row["directional_continuation_promotion_reason"] = str(
+        (promotion or {}).get("promotion_reason", "") or ""
+    )
+    canonical_row["directional_continuation_promotion_overlay_score"] = float(
+        (promotion or {}).get("overlay_score", 0.0) or 0.0
+    )
+    canonical_row["directional_continuation_promotion_entry_stage"] = str(
+        (promotion or {}).get("recommended_entry_stage", "") or ""
+    )
+    canonical_row["directional_continuation_promotion_size_multiplier"] = float(
+        (promotion or {}).get("size_multiplier", 0.0) or 0.0
+    )
+    return {
+        "runtime_row": canonical_row,
+        "active_action_conflict_guard_v1": guard,
+        "directional_continuation_promotion_v1": promotion,
+        "execution_action_diff_v1": execution_diff,
+    }
+
+
+def _resolve_teacher_label_exploration_family_v1(
+    *,
+    symbol: str,
+    action: str,
+    observe_reason: str,
+    probe_scene_id: str,
+) -> str:
+    symbol_u = str(symbol or "").upper().strip()
+    action_u = str(action or "").upper().strip()
+    observe_reason_u = str(observe_reason or "").strip().lower()
+    probe_scene_u = str(probe_scene_id or "").strip().lower()
+
+    if (
+        action_u == "BUY"
+        and observe_reason_u == "lower_rebound_probe_observe"
+        and probe_scene_u
+        in {
+            "btc_lower_buy_conservative_probe",
+            "xau_second_support_buy_probe",
+            "nas_clean_confirm_probe",
+        }
+    ):
+        return f"{symbol_u.lower()}_lower_rebound_probe_buy"
+
+    if (
+        action_u == "SELL"
+        and observe_reason_u == "upper_reject_probe_observe"
+        and probe_scene_u
+        in {
+            "btc_upper_sell_probe",
+            "xau_upper_sell_probe",
+            "nas_clean_confirm_probe",
+        }
+    ):
+        return f"{symbol_u.lower()}_upper_reject_probe_sell"
+
+    if action_u == "SELL" and observe_reason_u == "upper_break_fail_confirm":
+        return f"{symbol_u.lower()}_upper_break_fail_confirm_sell"
+
+    if action_u == "SELL" and observe_reason_u == "outer_band_reversal_support_required_observe":
+        if (not probe_scene_u) or probe_scene_u in {
+            "btc_upper_sell_probe",
+            "xau_upper_sell_probe",
+            "nas_clean_confirm_probe",
+        }:
+            return f"{symbol_u.lower()}_outer_band_reversal_observe_sell"
+
+    return ""
+
+
+def _build_teacher_label_exploration_entry_v1(
+    *,
+    symbol: str,
+    action: str,
+    observe_reason: str,
+    action_none_reason: str,
+    blocked_by: str,
+    probe_scene_id: str,
+    consumer_check_state_v1: dict | None,
+    guard_failure_code: str,
+    score: float,
+    effective_threshold: float,
+    same_dir_count: int,
+) -> dict:
+    symbol_u = str(symbol or "").upper().strip()
+    action_u = str(action or "").upper().strip()
+    observe_reason_u = str(observe_reason or "").strip().lower()
+    action_none_u = str(action_none_reason or "").strip().lower()
+    blocked_u = str(blocked_by or "").strip().lower()
+    guard_failure_u = str(guard_failure_code or "").strip().lower()
+    probe_scene_u = str(probe_scene_id or "").strip()
+    state_local = dict(consumer_check_state_v1 or {})
+
+    allowed_symbols = {
+        str(item or "").upper().strip()
+        for item in tuple(getattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_ALLOWED_SYMBOLS", ()) or ())
+        if str(item or "").strip()
+    }
+    allowed_observe_reasons = {
+        str(item or "").strip().lower()
+        for item in tuple(getattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_ALLOWED_OBSERVE_REASONS", ()) or ())
+        if str(item or "").strip()
+    }
+    allowed_soft_blocks = {
+        str(item or "").strip().lower()
+        for item in tuple(getattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_ALLOWED_SOFT_BLOCKS", ()) or ())
+        if str(item or "").strip()
+    }
+
+    family = _resolve_teacher_label_exploration_family_v1(
+        symbol=symbol_u,
+        action=action_u,
+        observe_reason=observe_reason_u,
+        probe_scene_id=probe_scene_u,
+    )
+    check_side_u = str(state_local.get("check_side", "") or "").upper().strip()
+    check_stage_u = str(state_local.get("check_stage", "") or "").upper().strip()
+    entry_ready = bool(state_local.get("entry_ready", False))
+    check_candidate = bool(state_local.get("check_candidate", False))
+    display_ready = bool(state_local.get("check_display_ready", False))
+    chart_hint_u = str(state_local.get("chart_event_kind_hint", "") or "").upper().strip()
+    chart_display_reason_u = str(state_local.get("chart_display_reason", "") or "").strip().lower()
+    state_block_reason_u = str(
+        state_local.get("entry_block_reason", "")
+        or state_local.get("blocked_display_reason", "")
+        or ""
+    ).strip().lower()
+    soft_block_reason = state_block_reason_u or blocked_u or guard_failure_u
+    require_flat_position = bool(
+        getattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_REQUIRE_FLAT_POSITION", True)
+    )
+    max_same_dir_count = max(
+        0,
+        int(getattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_MAX_SAME_DIR_COUNT", 1) or 0),
+    )
+
+    score_f = float(score or 0.0)
+    threshold_f = max(1.0, float(effective_threshold or 1.0))
+    score_ratio = score_f / threshold_f
+    threshold_gap = max(0.0, threshold_f - score_f)
+    quality_ok = bool(
+        score_ratio >= float(getattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_MIN_SCORE_RATIO", 0.82) or 0.82)
+        or threshold_gap <= float(getattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_MAX_THRESHOLD_GAP", 60.0) or 60.0)
+    )
+    # Some live no-action observe rows reach exploration before consumer display/candidate
+    # flags are fully promoted. Once a teacher-label family is already identified, treat
+    # that family match itself as sufficient signal presence for the exploration layer.
+    signal_present = bool(check_candidate or display_ready or probe_scene_u or family)
+    side_ok = bool(not check_side_u or check_side_u == action_u)
+    stage_ok = bool(check_stage_u in {"", "PROBE", "OBSERVE", "BLOCKED"})
+    family_ok = bool(family and observe_reason_u in allowed_observe_reasons)
+    soft_block_ok = bool(
+        soft_block_reason in allowed_soft_blocks
+        or (
+            guard_failure_u in {"consumer_stage_blocked", "consumer_entry_not_ready"}
+            and state_block_reason_u in allowed_soft_blocks
+        )
+    )
+    flat_ok = bool((not require_flat_position) or int(same_dir_count or 0) <= max_same_dir_count)
+    explicit_wait_guard = bool(
+        chart_hint_u == "WAIT"
+        and not entry_ready
+        and check_stage_u in {"OBSERVE", "PROBE", "BLOCKED"}
+        and (
+            "wait_as_wait" in chart_display_reason_u
+            or "promotion_wait" in chart_display_reason_u
+            or "wait_checks" in chart_display_reason_u
+        )
+    )
+
+    active = bool(
+        bool(getattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_ENABLED", False))
+        and action_u in {"BUY", "SELL"}
+        and symbol_u in allowed_symbols
+        and family_ok
+        and soft_block_ok
+        and signal_present
+        and side_ok
+        and stage_ok
+        and not entry_ready
+        and flat_ok
+        and quality_ok
+        and not explicit_wait_guard
+    )
+
+    size_multiplier = float(
+        Config.get_symbol_float(
+            symbol_u,
+            getattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_SIZE_MULTIPLIER_BY_SYMBOL", {}),
+            getattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_SIZE_MULTIPLIER", 0.40),
+        )
+    )
+    activation_reason = ""
+    if active:
+        activation_reason = "teacher_label_exploration_soft_guard_bypass"
+
+    return {
+        "contract_version": "teacher_label_exploration_entry_v1",
+        "enabled": bool(getattr(Config, "ENTRY_TEACHER_LABEL_EXPLORATION_ENABLED", False)),
+        "active": bool(active),
+        "symbol": str(symbol_u or ""),
+        "action": str(action_u or ""),
+        "observe_reason": str(observe_reason or ""),
+        "action_none_reason": str(action_none_reason or ""),
+        "guard_failure_code": str(guard_failure_u or ""),
+        "soft_block_reason": str(soft_block_reason or ""),
+        "probe_scene_id": str(probe_scene_u or ""),
+        "family": str(family or ""),
+        "layer": "teacher_label_exploration_entry_v1",
+        "activation_reason": str(activation_reason or ""),
+        "require_flat_position": bool(require_flat_position),
+        "max_same_dir_count": int(max_same_dir_count),
+        "same_dir_count": int(same_dir_count or 0),
+        "check_candidate": bool(check_candidate),
+        "check_display_ready": bool(display_ready),
+        "check_entry_ready": bool(entry_ready),
+        "check_side": str(check_side_u or ""),
+        "check_stage": str(check_stage_u or ""),
+        "check_chart_hint": str(chart_hint_u or ""),
+        "check_chart_display_reason": str(chart_display_reason_u or ""),
+        "explicit_wait_guard": bool(explicit_wait_guard),
+        "score_ratio": round(float(score_ratio), 4),
+        "threshold_gap": round(float(threshold_gap), 4),
+        "size_multiplier": round(float(size_multiplier), 4),
     }
 
 
@@ -298,15 +1386,13 @@ def _resolve_probe_execution_plan(
 def _resolve_entry_handoff_ids(
     *,
     shadow_observe_confirm: dict | None = None,
-    shadow_entry_context_v1: dict | None = None,
+    shadow_context_metadata_v1: Mapping[str, object] | None = None,
+    shadow_entry_context_v1: Mapping[str, object] | None = None,
 ) -> tuple[str, str]:
     observe_confirm = dict(shadow_observe_confirm or {})
-    entry_context = dict(shadow_entry_context_v1 or {})
-    metadata = (
-        dict(entry_context.get("metadata", {}) or {})
-        if isinstance(entry_context, dict)
-        else {}
-    )
+    metadata = dict(shadow_context_metadata_v1 or {})
+    if not metadata and isinstance(shadow_entry_context_v1, Mapping):
+        metadata = dict(shadow_entry_context_v1.get("metadata", {}) or {})
     management_profile_id = str(
         observe_confirm.get("management_profile_id", "")
         or metadata.get("management_profile_id", "")
@@ -341,6 +1427,670 @@ def _build_runtime_observe_confirm_dual_write(
         "observe_confirm_output_contract_v2": dict(OBSERVE_CONFIRM_OUTPUT_CONTRACT_V2),
         "observe_confirm_scope_contract_v1": dict(OBSERVE_CONFIRM_SCOPE_CONTRACT_V1),
         "consumer_input_contract_v1": dict(CONSUMER_INPUT_CONTRACT_V1),
+    }
+
+
+def _safe_mapping(value: object | None) -> dict[str, object]:
+    if isinstance(value, Mapping):
+        return dict(value)
+    to_dict = getattr(value, "to_dict", None)
+    if callable(to_dict):
+        try:
+            payload = to_dict()
+        except Exception:
+            return {}
+        if isinstance(payload, Mapping):
+            return dict(payload)
+    return {}
+
+
+def _safe_float_metric(row: object | None, key: str) -> float:
+    row_map = _safe_mapping(row)
+    value = row_map.get(key, None)
+    if value in ("", None):
+        return 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _safe_bool_flag(value: object | None) -> bool:
+    if isinstance(value, bool):
+        return bool(value)
+    if value in ("", None):
+        return False
+    if isinstance(value, (int, float)):
+        return bool(value)
+    value_u = str(value).strip().lower()
+    return value_u in {"1", "true", "yes", "y", "on"}
+
+
+def _wait_state_snapshot(wait_state: object | None) -> dict[str, object]:
+    metadata = _safe_mapping(getattr(wait_state, "metadata", {}))
+    return {
+        "state": str(getattr(wait_state, "state", "") or ""),
+        "reason": str(getattr(wait_state, "reason", "") or ""),
+        "metadata": metadata,
+    }
+
+
+def _build_semantic_owner_forecast_gap_metrics_v1(
+    *,
+    runtime_snapshot_row: object | None,
+    shadow_transition_forecast_v1: object | None,
+    shadow_trade_management_forecast_v1: object | None,
+) -> dict[str, float]:
+    transition_metadata = _safe_mapping(
+        _safe_mapping(shadow_transition_forecast_v1).get("metadata", {})
+    )
+    management_metadata = _safe_mapping(
+        _safe_mapping(shadow_trade_management_forecast_v1).get("metadata", {})
+    )
+    return {
+        "transition_side_separation": float(transition_metadata.get("side_separation", 0.0) or 0.0),
+        "transition_confirm_fake_gap": float(transition_metadata.get("confirm_fake_gap", 0.0) or 0.0),
+        "transition_reversal_continuation_gap": float(
+            transition_metadata.get("reversal_continuation_gap", 0.0) or 0.0
+        ),
+        "management_continue_fail_gap": float(
+            management_metadata.get("continue_fail_gap", 0.0) or 0.0
+        ),
+        "management_recover_reentry_gap": float(
+            management_metadata.get("recover_reentry_gap", 0.0) or 0.0
+        ),
+        "wait_confirm_gap": _safe_float_metric(runtime_snapshot_row, "wait_confirm_gap"),
+        "hold_exit_gap": _safe_float_metric(runtime_snapshot_row, "hold_exit_gap"),
+        "same_side_flip_gap": _safe_float_metric(runtime_snapshot_row, "same_side_flip_gap"),
+        "belief_barrier_tension_gap": _safe_float_metric(
+            runtime_snapshot_row,
+            "belief_barrier_tension_gap",
+        ),
+    }
+
+
+def _build_semantic_owner_bridge_seed_v1(
+    *,
+    runtime_snapshot_row: object | None,
+    symbol: str,
+    action: str,
+    setup_id: str,
+    setup_side: str,
+    entry_session_name: str,
+    wait_state: object | None,
+    entry_wait_decision: str,
+    score: float,
+    contra_score: float,
+    prediction_bundle: object | None,
+    shadow_transition_forecast_v1: object | None,
+    shadow_trade_management_forecast_v1: object | None,
+    observe_confirm_runtime_payload: object | None,
+    state25_candidate_runtime_state: object | None = None,
+    forecast_state25_runtime_bridge_v1: object | None = None,
+    belief_state25_runtime_bridge_v1: object | None = None,
+) -> dict[str, object]:
+    runtime_snapshot = _safe_mapping(runtime_snapshot_row)
+    wait_snapshot = _wait_state_snapshot(wait_state)
+    observe_confirm_payload = _safe_mapping(observe_confirm_runtime_payload)
+    seed: dict[str, object] = {
+        **runtime_snapshot,
+        "symbol": str(symbol),
+        "action": str(action or ""),
+        "direction": str(action or ""),
+        "setup_id": str(setup_id or ""),
+        "entry_setup_id": str(setup_id or ""),
+        "setup_side": str(setup_side or action or ""),
+        "entry_session_name": str(entry_session_name or ""),
+        "entry_wait_state": str(wait_snapshot["state"] or ""),
+        "entry_wait_reason": str(wait_snapshot["reason"] or ""),
+        "entry_wait_decision": str(entry_wait_decision or ""),
+        "entry_score": float(score),
+        "contra_score_at_entry": float(contra_score),
+        "raw_score": float(score),
+        "contra_score": float(contra_score),
+        "prediction_bundle": prediction_bundle,
+        "transition_forecast_v1": _safe_mapping(shadow_transition_forecast_v1),
+        "trade_management_forecast_v1": _safe_mapping(shadow_trade_management_forecast_v1),
+        "forecast_gap_metrics_v1": _build_semantic_owner_forecast_gap_metrics_v1(
+            runtime_snapshot_row=runtime_snapshot_row,
+            shadow_transition_forecast_v1=shadow_transition_forecast_v1,
+            shadow_trade_management_forecast_v1=shadow_trade_management_forecast_v1,
+        ),
+        "observe_confirm_v2": _safe_mapping(observe_confirm_payload.get("observe_confirm_v2", {})),
+        "state25_candidate_runtime_v1": _safe_mapping(state25_candidate_runtime_state),
+    }
+    if forecast_state25_runtime_bridge_v1 is not None:
+        seed["forecast_state25_runtime_bridge_v1"] = _safe_mapping(
+            forecast_state25_runtime_bridge_v1
+        )
+    if belief_state25_runtime_bridge_v1 is not None:
+        seed["belief_state25_runtime_bridge_v1"] = _safe_mapping(
+            belief_state25_runtime_bridge_v1
+        )
+    return seed
+
+
+def _clone_semantic_owner_bridge_seed_v1(
+    base_seed: object | None,
+    *,
+    forecast_state25_runtime_bridge_v1: object | None = None,
+    belief_state25_runtime_bridge_v1: object | None = None,
+    barrier_state25_runtime_bridge_v1: object | None = None,
+    countertrend_continuation_signal_v1: object | None = None,
+) -> dict[str, object]:
+    seed = dict(_safe_mapping(base_seed))
+    if forecast_state25_runtime_bridge_v1 is not None:
+        seed["forecast_state25_runtime_bridge_v1"] = _safe_mapping(
+            forecast_state25_runtime_bridge_v1
+        )
+    else:
+        seed.pop("forecast_state25_runtime_bridge_v1", None)
+    if belief_state25_runtime_bridge_v1 is not None:
+        seed["belief_state25_runtime_bridge_v1"] = _safe_mapping(
+            belief_state25_runtime_bridge_v1
+        )
+    else:
+        seed.pop("belief_state25_runtime_bridge_v1", None)
+    if barrier_state25_runtime_bridge_v1 is not None:
+        seed["barrier_state25_runtime_bridge_v1"] = _safe_mapping(
+            barrier_state25_runtime_bridge_v1
+        )
+    else:
+        seed.pop("barrier_state25_runtime_bridge_v1", None)
+    if countertrend_continuation_signal_v1 is not None:
+        seed["countertrend_continuation_signal_v1"] = _safe_mapping(
+            countertrend_continuation_signal_v1
+        )
+    else:
+        seed.pop("countertrend_continuation_signal_v1", None)
+    return seed
+
+
+def _build_semantic_owner_flat_fields_v1(
+    *,
+    state25_candidate_log_only_trace_v1: object | None,
+    forecast_state25_log_only_overlay_trace_v1: object | None,
+    belief_action_hint_v1: object | None,
+    barrier_action_hint_v1: object | None,
+    countertrend_continuation_signal_v1: object | None,
+    actual_effective_entry_threshold: float,
+    actual_size_multiplier: float,
+) -> dict[str, object]:
+    candidate_trace = _safe_mapping(state25_candidate_log_only_trace_v1)
+    forecast_overlay_trace = _safe_mapping(forecast_state25_log_only_overlay_trace_v1)
+    belief_action_hint = _safe_mapping(belief_action_hint_v1)
+    barrier_action_hint = _safe_mapping(barrier_action_hint_v1)
+    countertrend_signal = _safe_mapping(countertrend_continuation_signal_v1)
+    return {
+        "state25_candidate_active_candidate_id": str(
+            candidate_trace.get("active_candidate_id", "") or ""
+        ),
+        "state25_candidate_policy_source": str(
+            candidate_trace.get("active_policy_source", "") or ""
+        ),
+        "state25_candidate_rollout_phase": str(candidate_trace.get("rollout_phase", "") or ""),
+        "state25_candidate_binding_mode": str(candidate_trace.get("binding_mode", "") or ""),
+        "state25_candidate_threshold_log_only_enabled": bool(
+            candidate_trace.get("threshold_log_only_enabled", False)
+        ),
+        "state25_candidate_threshold_symbol_scope_hit": bool(
+            candidate_trace.get("threshold_symbol_scope_hit", False)
+        ),
+        "state25_candidate_threshold_stage_scope_hit": bool(
+            candidate_trace.get("threshold_stage_scope_hit", False)
+        ),
+        "state25_candidate_effective_entry_threshold": float(
+            candidate_trace.get(
+                "candidate_effective_entry_threshold",
+                actual_effective_entry_threshold,
+            )
+            or 0.0
+        ),
+        "state25_candidate_entry_threshold_delta": float(
+            candidate_trace.get("candidate_entry_threshold_delta", 0.0) or 0.0
+        ),
+        "state25_candidate_size_log_only_enabled": bool(
+            candidate_trace.get("size_log_only_enabled", False)
+        ),
+        "state25_candidate_size_symbol_scope_hit": bool(
+            candidate_trace.get("size_symbol_scope_hit", False)
+        ),
+        "state25_candidate_size_multiplier": float(
+            candidate_trace.get("candidate_size_multiplier", actual_size_multiplier) or 0.0
+        ),
+        "state25_candidate_size_multiplier_delta": float(
+            candidate_trace.get("candidate_size_multiplier_delta", 0.0) or 0.0
+        ),
+        "state25_candidate_size_min_multiplier": float(
+            candidate_trace.get("candidate_size_min_multiplier", actual_size_multiplier) or 0.0
+        ),
+        "state25_candidate_size_max_multiplier": float(
+            candidate_trace.get("candidate_size_max_multiplier", actual_size_multiplier) or 0.0
+        ),
+        "forecast_state25_overlay_mode": str(
+            forecast_overlay_trace.get("binding_mode", "") or ""
+        ),
+        "forecast_state25_overlay_enabled": bool(
+            forecast_overlay_trace.get("overlay_enabled", False)
+        ),
+        "forecast_state25_candidate_effective_entry_threshold": float(
+            forecast_overlay_trace.get(
+                "candidate_effective_entry_threshold",
+                actual_effective_entry_threshold,
+            )
+            or 0.0
+        ),
+        "forecast_state25_candidate_entry_threshold_delta": float(
+            forecast_overlay_trace.get("candidate_entry_threshold_delta", 0.0) or 0.0
+        ),
+        "forecast_state25_candidate_size_multiplier": float(
+            forecast_overlay_trace.get("candidate_size_multiplier", actual_size_multiplier) or 0.0
+        ),
+        "forecast_state25_candidate_size_multiplier_delta": float(
+            forecast_overlay_trace.get("candidate_size_multiplier_delta", 0.0) or 0.0
+        ),
+        "forecast_state25_candidate_wait_bias_action": str(
+            forecast_overlay_trace.get("candidate_wait_bias_action", "") or ""
+        ),
+        "forecast_state25_candidate_management_bias": str(
+            forecast_overlay_trace.get("candidate_management_bias", "") or ""
+        ),
+        "forecast_state25_overlay_reason_summary": str(
+            forecast_overlay_trace.get("reason_summary", "") or ""
+        ),
+        "belief_action_hint_mode": str(belief_action_hint.get("hint_mode", "") or ""),
+        "belief_action_hint_enabled": bool(belief_action_hint.get("enabled", False)),
+        "belief_candidate_recommended_family": str(
+            belief_action_hint.get("recommended_family", "") or ""
+        ),
+        "belief_candidate_supporting_label": str(
+            belief_action_hint.get("supporting_label_candidate", "") or ""
+        ),
+        "belief_action_hint_confidence": str(
+            belief_action_hint.get("overlay_confidence", "") or ""
+        ),
+        "belief_action_hint_reason_summary": str(
+            belief_action_hint.get("reason_summary", "") or ""
+        ),
+        "barrier_action_hint_mode": str(barrier_action_hint.get("hint_mode", "") or ""),
+        "barrier_action_hint_enabled": bool(barrier_action_hint.get("enabled", False)),
+        "barrier_candidate_recommended_family": str(
+            barrier_action_hint.get("recommended_family", "") or ""
+        ),
+        "barrier_candidate_supporting_label": str(
+            barrier_action_hint.get("supporting_label_candidate", "") or ""
+        ),
+        "barrier_action_hint_confidence": str(
+            barrier_action_hint.get("overlay_confidence", "") or ""
+        ),
+        "barrier_action_hint_cost_hint": str(
+            barrier_action_hint.get("overlay_cost_hint", "") or ""
+        ),
+        "barrier_action_hint_reason_summary": str(
+            barrier_action_hint.get("reason_summary", "") or ""
+        ),
+        "countertrend_continuation_enabled": bool(
+            countertrend_signal.get("enabled", False)
+        ),
+        "countertrend_continuation_state": str(
+            countertrend_signal.get("signal_state", "") or ""
+        ),
+        "countertrend_continuation_action": str(
+            countertrend_signal.get("signal_action", "") or ""
+        ),
+        "countertrend_continuation_confidence": float(
+            countertrend_signal.get("signal_confidence", 0.0) or 0.0
+        ),
+        "countertrend_continuation_reason_summary": str(
+            countertrend_signal.get("reason_summary", "") or ""
+        ),
+        "countertrend_continuation_warning_count": int(
+            countertrend_signal.get("warning_count", 0) or 0
+        ),
+        "countertrend_continuation_surface_family": str(
+            countertrend_signal.get("surface_family", "") or ""
+        ),
+        "countertrend_continuation_surface_state": str(
+            countertrend_signal.get("surface_state", "") or ""
+        ),
+        "countertrend_anti_long_score": float(
+            countertrend_signal.get("anti_long_score", 0.0) or 0.0
+        ),
+        "countertrend_anti_short_score": float(
+            countertrend_signal.get("anti_short_score", 0.0) or 0.0
+        ),
+        "countertrend_pro_up_score": float(
+            countertrend_signal.get("pro_up_score", 0.0) or 0.0
+        ),
+        "countertrend_pro_down_score": float(
+            countertrend_signal.get("pro_down_score", 0.0) or 0.0
+        ),
+        "countertrend_directional_bias": str(
+            countertrend_signal.get("directional_bias", "") or ""
+        ),
+        "countertrend_action_state": str(
+            countertrend_signal.get("directional_action_state", "") or ""
+        ),
+        "countertrend_directional_candidate_action": str(
+            countertrend_signal.get("directional_candidate_action", "") or ""
+        ),
+        "countertrend_directional_execution_action": str(
+            countertrend_signal.get("directional_execution_action", "") or ""
+        ),
+        "countertrend_directional_state_reason": str(
+            countertrend_signal.get("directional_state_reason", "") or ""
+        ),
+        "countertrend_directional_state_rank": int(
+            countertrend_signal.get("directional_state_rank", 0) or 0
+        ),
+        "countertrend_directional_owner_family": str(
+            countertrend_signal.get("directional_owner_family", "") or ""
+        ),
+        "countertrend_directional_down_bias_score": float(
+            countertrend_signal.get("directional_down_bias_score", 0.0) or 0.0
+        ),
+        "countertrend_directional_up_bias_score": float(
+            countertrend_signal.get("directional_up_bias_score", 0.0) or 0.0
+        ),
+    }
+
+
+def _build_semantic_owner_runtime_bundle_v1(
+    *,
+    runtime_snapshot_row: object | None,
+    symbol: str,
+    action: str,
+    setup_id: str,
+    setup_reason: str = "",
+    setup_side: str,
+    entry_session_name: str,
+    wait_state: object | None,
+    entry_wait_decision: str,
+    score: float,
+    contra_score: float,
+    prediction_bundle: object | None,
+    shadow_transition_forecast_v1: object | None,
+    shadow_trade_management_forecast_v1: object | None,
+    shadow_observe_confirm: dict | None,
+    entry_stage: str,
+    actual_effective_entry_threshold: float,
+    actual_size_multiplier: float,
+    state25_candidate_runtime_state: object | None,
+) -> dict[str, object]:
+    base_bridge_seed_v1 = _build_semantic_owner_bridge_seed_v1(
+        runtime_snapshot_row=runtime_snapshot_row,
+        symbol=symbol,
+        action=action,
+        setup_id=setup_id,
+        setup_side=setup_side,
+        entry_session_name=entry_session_name,
+        wait_state=wait_state,
+        entry_wait_decision=entry_wait_decision,
+        score=score,
+        contra_score=contra_score,
+        prediction_bundle=prediction_bundle,
+        shadow_transition_forecast_v1=shadow_transition_forecast_v1,
+        shadow_trade_management_forecast_v1=shadow_trade_management_forecast_v1,
+        observe_confirm_runtime_payload=None,
+        state25_candidate_runtime_state=state25_candidate_runtime_state,
+    )
+    state25_candidate_log_only_trace_v1 = build_state25_candidate_entry_log_only_trace_v1(
+        _safe_mapping(state25_candidate_runtime_state),
+        symbol=str(symbol),
+        entry_stage=str(entry_stage or ""),
+        actual_effective_entry_threshold=float(actual_effective_entry_threshold),
+        actual_size_multiplier=float(actual_size_multiplier),
+    )
+    observe_confirm_runtime_payload = _build_runtime_observe_confirm_dual_write(
+        shadow_observe_confirm=shadow_observe_confirm,
+    )
+    base_bridge_seed_v1["observe_confirm_v2"] = _safe_mapping(
+        _safe_mapping(observe_confirm_runtime_payload).get("observe_confirm_v2", {})
+    )
+    forecast_state25_runtime_bridge_v1 = build_forecast_state25_runtime_bridge_v1(
+        _clone_semantic_owner_bridge_seed_v1(base_bridge_seed_v1)
+    )
+    forecast_state25_log_only_overlay_trace_v1 = build_forecast_state25_log_only_overlay_trace_v1(
+        forecast_state25_runtime_bridge_v1,
+        symbol=str(symbol),
+        entry_stage=str(entry_stage or ""),
+        actual_effective_entry_threshold=float(actual_effective_entry_threshold),
+        actual_size_multiplier=float(actual_size_multiplier),
+    )
+    breakout_event_runtime_v1 = build_breakout_event_runtime_v1(
+        _clone_semantic_owner_bridge_seed_v1(
+            base_bridge_seed_v1,
+            forecast_state25_runtime_bridge_v1=forecast_state25_runtime_bridge_v1,
+        ),
+        forecast_state25_runtime_bridge_v1=forecast_state25_runtime_bridge_v1,
+    )
+    belief_state25_runtime_bridge_v1 = build_belief_state25_runtime_bridge_v1(
+        _clone_semantic_owner_bridge_seed_v1(
+            base_bridge_seed_v1,
+            forecast_state25_runtime_bridge_v1=forecast_state25_runtime_bridge_v1,
+        )
+    )
+    belief_action_hint_v1 = _safe_mapping(
+        _safe_mapping(belief_state25_runtime_bridge_v1).get("belief_action_hint_v1", {})
+    )
+    barrier_state25_runtime_bridge_v1 = build_barrier_state25_runtime_bridge_v1(
+        _build_semantic_owner_bridge_seed_v1(
+            runtime_snapshot_row=runtime_snapshot_row,
+            symbol=symbol,
+            action=action,
+            setup_id=setup_id,
+            setup_side=setup_side,
+            entry_session_name=entry_session_name,
+            wait_state=wait_state,
+            entry_wait_decision=entry_wait_decision,
+            score=score,
+            contra_score=contra_score,
+            prediction_bundle=prediction_bundle,
+            shadow_transition_forecast_v1=shadow_transition_forecast_v1,
+            shadow_trade_management_forecast_v1=shadow_trade_management_forecast_v1,
+            observe_confirm_runtime_payload=observe_confirm_runtime_payload,
+            state25_candidate_runtime_state=state25_candidate_runtime_state,
+            forecast_state25_runtime_bridge_v1=forecast_state25_runtime_bridge_v1,
+            belief_state25_runtime_bridge_v1=belief_state25_runtime_bridge_v1,
+        )
+    )
+    barrier_action_hint_v1 = _safe_mapping(
+        _safe_mapping(barrier_state25_runtime_bridge_v1).get("barrier_action_hint_v1", {})
+    )
+    countertrend_continuation_signal_v1 = _build_countertrend_continuation_signal_v1(
+        symbol=str(symbol),
+        action=str(action),
+        setup_id=str(setup_id),
+        setup_reason=str(setup_reason),
+        forecast_state25_log_only_overlay_trace_v1=forecast_state25_log_only_overlay_trace_v1,
+        belief_action_hint_v1=belief_action_hint_v1,
+        barrier_action_hint_v1=barrier_action_hint_v1,
+    )
+    state25_candidate_context_bridge_v1 = build_state25_candidate_context_bridge_v1(
+        _clone_semantic_owner_bridge_seed_v1(
+            base_bridge_seed_v1,
+            forecast_state25_runtime_bridge_v1=forecast_state25_runtime_bridge_v1,
+            belief_state25_runtime_bridge_v1=belief_state25_runtime_bridge_v1,
+            barrier_state25_runtime_bridge_v1=barrier_state25_runtime_bridge_v1,
+            countertrend_continuation_signal_v1=countertrend_continuation_signal_v1,
+        )
+    )
+    breakout_event_overlay_candidates_v1 = build_breakout_event_overlay_candidates_v1(
+        _clone_semantic_owner_bridge_seed_v1(
+            base_bridge_seed_v1,
+            forecast_state25_runtime_bridge_v1=forecast_state25_runtime_bridge_v1,
+            belief_state25_runtime_bridge_v1=belief_state25_runtime_bridge_v1,
+        ),
+        breakout_event_runtime_v1=breakout_event_runtime_v1,
+        forecast_state25_runtime_bridge_v1=forecast_state25_runtime_bridge_v1,
+        belief_state25_runtime_bridge_v1=belief_state25_runtime_bridge_v1,
+        barrier_state25_runtime_bridge_v1=barrier_state25_runtime_bridge_v1,
+    )
+    breakout_event_overlay_trace_v1 = build_breakout_event_overlay_trace_v1(
+        breakout_event_overlay_candidates_v1,
+        symbol=str(symbol),
+        entry_stage=str(entry_stage or ""),
+    )
+    detail_fields = {
+        "forecast_state25_runtime_bridge_v1": _safe_mapping(
+            forecast_state25_runtime_bridge_v1
+        ),
+        "breakout_event_runtime_v1": _safe_mapping(breakout_event_runtime_v1),
+        "belief_state25_runtime_bridge_v1": _safe_mapping(
+            belief_state25_runtime_bridge_v1
+        ),
+        "barrier_state25_runtime_bridge_v1": _safe_mapping(
+            barrier_state25_runtime_bridge_v1
+        ),
+        "state25_candidate_context_bridge_v1": _safe_mapping(
+            state25_candidate_context_bridge_v1
+        ),
+        "state25_candidate_log_only_trace_v1": _safe_mapping(
+            state25_candidate_log_only_trace_v1
+        ),
+        "forecast_state25_log_only_overlay_trace_v1": _safe_mapping(
+            forecast_state25_log_only_overlay_trace_v1
+        ),
+        "breakout_event_overlay_candidates_v1": _safe_mapping(
+            breakout_event_overlay_candidates_v1
+        ),
+        "breakout_event_overlay_trace_v1": _safe_mapping(
+            breakout_event_overlay_trace_v1
+        ),
+        "countertrend_continuation_signal_v1": _safe_mapping(
+            countertrend_continuation_signal_v1
+        ),
+    }
+    flat_fields = _build_semantic_owner_flat_fields_v1(
+        state25_candidate_log_only_trace_v1=state25_candidate_log_only_trace_v1,
+        forecast_state25_log_only_overlay_trace_v1=forecast_state25_log_only_overlay_trace_v1,
+        belief_action_hint_v1=belief_action_hint_v1,
+        barrier_action_hint_v1=barrier_action_hint_v1,
+        countertrend_continuation_signal_v1=countertrend_continuation_signal_v1,
+        actual_effective_entry_threshold=actual_effective_entry_threshold,
+        actual_size_multiplier=actual_size_multiplier,
+    )
+    flat_fields.update(
+        build_state25_candidate_context_bridge_flat_fields_v1(
+            state25_candidate_context_bridge_v1
+        )
+    )
+    return {
+        "state25_candidate_context_bridge_v1": _safe_mapping(
+            state25_candidate_context_bridge_v1
+        ),
+        "state25_candidate_log_only_trace_v1": _safe_mapping(
+            state25_candidate_log_only_trace_v1
+        ),
+        "observe_confirm_runtime_payload": _safe_mapping(observe_confirm_runtime_payload),
+        "forecast_state25_runtime_bridge_v1": _safe_mapping(
+            forecast_state25_runtime_bridge_v1
+        ),
+        "forecast_state25_log_only_overlay_trace_v1": _safe_mapping(
+            forecast_state25_log_only_overlay_trace_v1
+        ),
+        "breakout_event_runtime_v1": _safe_mapping(breakout_event_runtime_v1),
+        "breakout_event_overlay_candidates_v1": _safe_mapping(
+            breakout_event_overlay_candidates_v1
+        ),
+        "breakout_event_overlay_trace_v1": _safe_mapping(
+            breakout_event_overlay_trace_v1
+        ),
+        "belief_state25_runtime_bridge_v1": _safe_mapping(
+            belief_state25_runtime_bridge_v1
+        ),
+        "belief_action_hint_v1": _safe_mapping(belief_action_hint_v1),
+        "barrier_state25_runtime_bridge_v1": _safe_mapping(
+            barrier_state25_runtime_bridge_v1
+        ),
+        "barrier_action_hint_v1": _safe_mapping(barrier_action_hint_v1),
+        "countertrend_continuation_signal_v1": _safe_mapping(
+            countertrend_continuation_signal_v1
+        ),
+        "detail_fields": detail_fields,
+        "flat_fields": flat_fields,
+    }
+
+
+def _build_active_action_conflict_runtime_context_v1(
+    *,
+    runtime_snapshot_row: object | None,
+    symbol: str,
+    action: str,
+    setup_id: str,
+    setup_reason: str = "",
+    setup_side: str,
+    entry_session_name: str,
+    wait_state: object | None,
+    entry_wait_decision: str,
+    score: float,
+    contra_score: float,
+    prediction_bundle: object | None,
+    shadow_transition_forecast_v1: object | None,
+    shadow_trade_management_forecast_v1: object | None,
+    shadow_observe_confirm: dict | None,
+    entry_stage: str,
+    actual_effective_entry_threshold: float,
+    actual_size_multiplier: float,
+    state25_candidate_runtime_state: object | None,
+) -> dict[str, object]:
+    semantic_owner_bundle = _build_semantic_owner_runtime_bundle_v1(
+        runtime_snapshot_row=runtime_snapshot_row,
+        symbol=symbol,
+        action=action,
+        setup_id=setup_id,
+        setup_reason=setup_reason,
+        setup_side=setup_side,
+        entry_session_name=entry_session_name,
+        wait_state=wait_state,
+        entry_wait_decision=entry_wait_decision,
+        score=score,
+        contra_score=contra_score,
+        prediction_bundle=prediction_bundle,
+        shadow_transition_forecast_v1=shadow_transition_forecast_v1,
+        shadow_trade_management_forecast_v1=shadow_trade_management_forecast_v1,
+        shadow_observe_confirm=shadow_observe_confirm,
+        entry_stage=entry_stage,
+        actual_effective_entry_threshold=actual_effective_entry_threshold,
+        actual_size_multiplier=actual_size_multiplier,
+        state25_candidate_runtime_state=state25_candidate_runtime_state,
+    )
+    forecast_state25_log_only_overlay_trace_v1 = dict(
+        semantic_owner_bundle.get("forecast_state25_log_only_overlay_trace_v1", {}) or {}
+    )
+    belief_action_hint_v1 = dict(
+        semantic_owner_bundle.get("belief_action_hint_v1", {}) or {}
+    )
+    barrier_action_hint_v1 = dict(
+        semantic_owner_bundle.get("barrier_action_hint_v1", {}) or {}
+    )
+    countertrend_continuation_signal_v1 = dict(
+        semantic_owner_bundle.get("countertrend_continuation_signal_v1", {}) or {}
+    )
+    active_action_conflict_guard_v1 = _build_active_action_conflict_guard_v1(
+        symbol=str(symbol),
+        baseline_action=str(action or ""),
+        setup_id=str(setup_id or ""),
+        setup_reason=str(setup_reason or ""),
+        runtime_signal_row=_safe_mapping(runtime_snapshot_row),
+        forecast_state25_log_only_overlay_trace_v1=forecast_state25_log_only_overlay_trace_v1,
+        belief_action_hint_v1=belief_action_hint_v1,
+        barrier_action_hint_v1=barrier_action_hint_v1,
+        countertrend_continuation_signal_v1=countertrend_continuation_signal_v1,
+        breakout_event_runtime_v1=_safe_mapping(
+            semantic_owner_bundle.get("breakout_event_runtime_v1", {})
+        ),
+        breakout_event_overlay_candidates_v1=_safe_mapping(
+            semantic_owner_bundle.get("breakout_event_overlay_candidates_v1", {})
+        ),
+    )
+    return {
+        "semantic_owner_bundle": semantic_owner_bundle,
+        "forecast_state25_log_only_overlay_trace_v1": forecast_state25_log_only_overlay_trace_v1,
+        "belief_action_hint_v1": belief_action_hint_v1,
+        "barrier_action_hint_v1": barrier_action_hint_v1,
+        "countertrend_continuation_signal_v1": countertrend_continuation_signal_v1,
+        "active_action_conflict_guard_v1": active_action_conflict_guard_v1,
     }
 
 
@@ -391,6 +2141,1383 @@ def _resolve_semantic_live_threshold_trace(semantic_live_guard_v1: dict | None) 
     return "not_applied", (reason or "not_applied")
 
 
+def _resolve_directional_continuation_state_v1(
+    *,
+    anti_long_score: float,
+    anti_short_score: float,
+    pro_up_score: float,
+    pro_down_score: float,
+    owner_family: str = "",
+    allow_enter: bool = False,
+) -> dict[str, object]:
+    anti_long = max(0.0, min(1.0, float(anti_long_score or 0.0)))
+    anti_short = max(0.0, min(1.0, float(anti_short_score or 0.0)))
+    pro_up = max(0.0, min(1.0, float(pro_up_score or 0.0)))
+    pro_down = max(0.0, min(1.0, float(pro_down_score or 0.0)))
+    down_bias = round((anti_long * 0.55) + (pro_down * 0.45), 6)
+    up_bias = round((anti_short * 0.55) + (pro_up * 0.45), 6)
+    watch_threshold = 0.28
+    probe_threshold = 0.55
+    support_threshold = 0.24
+    probe_support_threshold = 0.42
+    enter_threshold = 0.82
+    enter_support_threshold = 0.78
+    bias_margin = 0.03
+
+    directional_bias = "NONE"
+    directional_action_state = "DO_NOTHING"
+    directional_candidate_action = ""
+    directional_execution_action = ""
+    directional_state_reason = "no_directional_edge"
+    directional_owner_family = ""
+    directional_state_rank = 0
+
+    down_enter_ready = bool(
+        allow_enter
+        and anti_long >= enter_threshold
+        and pro_down >= enter_support_threshold
+        and down_bias >= (up_bias + bias_margin)
+    )
+    up_enter_ready = bool(
+        allow_enter
+        and anti_short >= enter_threshold
+        and pro_up >= enter_support_threshold
+        and up_bias >= (down_bias + bias_margin)
+    )
+    down_probe_ready = bool(
+        anti_long >= probe_threshold
+        and pro_down >= probe_support_threshold
+        and down_bias >= (up_bias + bias_margin)
+    )
+    up_probe_ready = bool(
+        anti_short >= probe_threshold
+        and pro_up >= probe_support_threshold
+        and up_bias >= (down_bias + bias_margin)
+    )
+    down_watch_ready = bool(
+        (anti_long >= watch_threshold or pro_down >= support_threshold)
+        and down_bias >= up_bias
+    )
+    up_watch_ready = bool(
+        (anti_short >= watch_threshold or pro_up >= support_threshold)
+        and up_bias > down_bias
+    )
+
+    if down_enter_ready:
+        directional_bias = "DOWN"
+        directional_action_state = "DOWN_ENTER"
+        directional_candidate_action = "SELL"
+        directional_execution_action = "SELL"
+        directional_state_reason = "down_enter::anti_long_strong_plus_pro_down_confirmed"
+        directional_owner_family = owner_family
+        directional_state_rank = 3
+    elif up_enter_ready:
+        directional_bias = "UP"
+        directional_action_state = "UP_ENTER"
+        directional_candidate_action = "BUY"
+        directional_execution_action = "BUY"
+        directional_state_reason = "up_enter::anti_short_strong_plus_pro_up_confirmed"
+        directional_owner_family = owner_family
+        directional_state_rank = 3
+    elif down_probe_ready:
+        directional_bias = "DOWN"
+        directional_action_state = "DOWN_PROBE"
+        directional_candidate_action = "SELL"
+        directional_state_reason = "down_probe::anti_long_strong_plus_pro_down_supportive"
+        directional_owner_family = owner_family
+        directional_state_rank = 2
+    elif up_probe_ready:
+        directional_bias = "UP"
+        directional_action_state = "UP_PROBE"
+        directional_candidate_action = "BUY"
+        directional_state_reason = "up_probe::anti_short_strong_plus_pro_up_supportive"
+        directional_owner_family = owner_family
+        directional_state_rank = 2
+    elif down_watch_ready:
+        directional_bias = "DOWN"
+        directional_action_state = "DOWN_WATCH"
+        directional_state_reason = "down_watch::anti_long_supportive_or_pro_down_initial"
+        directional_owner_family = owner_family
+        directional_state_rank = 1
+    elif up_watch_ready:
+        directional_bias = "UP"
+        directional_action_state = "UP_WATCH"
+        directional_state_reason = "up_watch::anti_short_supportive_or_pro_up_initial"
+        directional_owner_family = owner_family
+        directional_state_rank = 1
+
+    return {
+        "directional_bias": directional_bias,
+        "directional_action_state": directional_action_state,
+        "directional_candidate_action": directional_candidate_action,
+        "directional_execution_action": directional_execution_action,
+        "directional_state_reason": directional_state_reason,
+        "directional_owner_family": directional_owner_family,
+        "directional_state_rank": int(directional_state_rank),
+        "down_bias_score": down_bias,
+        "up_bias_score": up_bias,
+    }
+
+
+def _build_countertrend_continuation_signal_v1(
+    *,
+    symbol: str,
+    action: str,
+    setup_id: str,
+    setup_reason: str,
+    forecast_state25_log_only_overlay_trace_v1: dict | None = None,
+    belief_action_hint_v1: dict | None = None,
+    barrier_action_hint_v1: dict | None = None,
+) -> dict[str, object]:
+    symbol_u = str(symbol or "").upper().strip()
+    action_u = str(action or "").upper().strip()
+    setup_id_u = str(setup_id or "").lower().strip()
+    setup_reason_u = str(setup_reason or "").lower().strip()
+    forecast_reason_u = str(
+        ((forecast_state25_log_only_overlay_trace_v1 or {}).get("reason_summary", "")) or ""
+    ).lower()
+    belief_reason_u = str(((belief_action_hint_v1 or {}).get("reason_summary", "")) or "").lower()
+    barrier_reason_u = str(((barrier_action_hint_v1 or {}).get("reason_summary", "")) or "").lower()
+
+    forecast_wait_bias = any(token in forecast_reason_u for token in ("wait_bias_hold", "wait_reinforce"))
+    belief_fragile_thesis = any(token in belief_reason_u for token in ("fragile_thesis", "reduce_risk"))
+    barrier_wait_block = any(token in barrier_reason_u for token in ("wait_block", "unstable"))
+    barrier_relief_watch = any(
+        token in barrier_reason_u for token in ("relief_watch", "relief_release_bias")
+    )
+
+    xau_countertrend_buy_family = bool(
+        symbol_u == "XAUUSD"
+        and action_u == "BUY"
+        and setup_id_u in {"range_lower_reversal_buy", "trend_pullback_buy"}
+        and setup_reason_u in {
+            "shadow_lower_rebound_confirm",
+            "shadow_failed_sell_reclaim_buy_confirm",
+            "shadow_lower_rebound_probe_observe",
+            "shadow_lower_rebound_probe_observe_bounded_probe_soft_edge",
+            "shadow_outer_band_reversal_support_required_observe",
+            "shadow_outer_band_reversal_support_required_observe_bounded_probe_soft_edge",
+        }
+    )
+    xau_countertrend_sell_family = bool(
+        symbol_u == "XAUUSD"
+        and action_u == "SELL"
+        and setup_id_u == "range_upper_reversal_sell"
+        and setup_reason_u in {
+            "shadow_upper_reject_probe_observe",
+            "shadow_upper_reject_confirm",
+            "shadow_upper_break_fail_confirm",
+            "upper_break_fail_confirm",
+        }
+    )
+    warning_tokens: list[str] = []
+    if xau_countertrend_buy_family:
+        if forecast_wait_bias:
+            warning_tokens.append("forecast_wait_bias")
+        if belief_fragile_thesis:
+            warning_tokens.append("belief_fragile_thesis")
+        if barrier_wait_block:
+            warning_tokens.append("barrier_wait_block")
+    elif xau_countertrend_sell_family:
+        if forecast_wait_bias:
+            warning_tokens.append("forecast_wait_bias")
+        if belief_fragile_thesis:
+            warning_tokens.append("belief_fragile_thesis")
+        if barrier_relief_watch:
+            warning_tokens.append("barrier_relief_watch")
+    else:
+        if forecast_wait_bias:
+            warning_tokens.append("forecast_wait_bias")
+        if belief_fragile_thesis:
+            warning_tokens.append("belief_fragile_thesis")
+        if barrier_wait_block:
+            warning_tokens.append("barrier_wait_block")
+        if barrier_relief_watch:
+            warning_tokens.append("barrier_relief_watch")
+
+    warning_count = len(warning_tokens)
+    enabled = bool(
+        (xau_countertrend_buy_family or xau_countertrend_sell_family) and warning_count >= 2
+    )
+    watch_only = bool(
+        (xau_countertrend_buy_family or xau_countertrend_sell_family) and warning_count == 1
+    )
+    action_hint = ""
+    state = ""
+    if xau_countertrend_buy_family:
+        action_hint = "SELL" if enabled else ""
+        if enabled:
+            state = "down_continuation_bias"
+        elif watch_only:
+            state = "down_continuation_watch"
+    elif xau_countertrend_sell_family:
+        action_hint = "BUY" if enabled else ""
+        if enabled:
+            state = "up_continuation_bias"
+        elif watch_only:
+            state = "up_continuation_watch"
+    confidence = 0.0
+    if enabled:
+        confidence = min(0.92, 0.52 + (0.14 * float(warning_count - 1)))
+        if xau_countertrend_buy_family and "forecast_wait_bias" in warning_tokens and "barrier_wait_block" in warning_tokens:
+            confidence = min(0.95, confidence + 0.08)
+        if xau_countertrend_sell_family and "forecast_wait_bias" in warning_tokens and "barrier_relief_watch" in warning_tokens:
+            confidence = min(0.95, confidence + 0.08)
+    elif watch_only:
+        confidence = 0.46
+    anti_long_score = 0.0
+    anti_short_score = 0.0
+    pro_up_score = 0.0
+    pro_down_score = 0.0
+    if xau_countertrend_buy_family and warning_tokens:
+        if forecast_wait_bias:
+            anti_long_score += 0.36
+            pro_down_score += 0.34
+        if belief_fragile_thesis:
+            anti_long_score += 0.32
+            pro_down_score += 0.18
+        if barrier_wait_block:
+            anti_long_score += 0.32
+            pro_down_score += 0.30
+        if warning_count >= 2:
+            pro_down_score += 0.12
+        if forecast_wait_bias and barrier_wait_block:
+            pro_down_score += 0.08
+        anti_long_score = min(1.0, anti_long_score)
+        pro_down_score = min(1.0, pro_down_score)
+    elif xau_countertrend_sell_family and warning_tokens:
+        if forecast_wait_bias:
+            anti_short_score += 0.34
+            pro_up_score += 0.28
+        if belief_fragile_thesis:
+            anti_short_score += 0.32
+            pro_up_score += 0.18
+        if barrier_relief_watch:
+            anti_short_score += 0.18
+            pro_up_score += 0.38
+        if warning_count >= 2:
+            pro_up_score += 0.12
+        if forecast_wait_bias and barrier_relief_watch:
+            pro_up_score += 0.08
+        anti_short_score = min(1.0, anti_short_score)
+        pro_up_score = min(1.0, pro_up_score)
+    directional_state = _resolve_directional_continuation_state_v1(
+        anti_long_score=anti_long_score,
+        anti_short_score=anti_short_score,
+        pro_up_score=pro_up_score,
+        pro_down_score=pro_down_score,
+        owner_family=(
+            "direction_agnostic_continuation"
+            if (xau_countertrend_buy_family or xau_countertrend_sell_family)
+            else ""
+        ),
+        allow_enter=False,
+    )
+    return {
+        "contract_version": "countertrend_continuation_signal_v1",
+        "enabled": bool(enabled),
+        "watch_only": bool(watch_only),
+        "signal_family": "countertrend_continuation",
+        "signal_state": state,
+        "signal_action": action_hint,
+        "signal_confidence": round(float(confidence), 6),
+        "warning_count": int(warning_count),
+        "warning_tokens": list(warning_tokens),
+        "reason_summary": "|".join(warning_tokens),
+        "surface_family": (
+            "follow_through_surface"
+            if (xau_countertrend_buy_family or xau_countertrend_sell_family)
+            else ""
+        ),
+        "surface_state": (
+            "continuation_follow"
+            if (xau_countertrend_buy_family or xau_countertrend_sell_family)
+            else ""
+        ),
+        "anti_long_score": round(float(anti_long_score), 6),
+        "anti_short_score": round(float(anti_short_score), 6),
+        "pro_up_score": round(float(pro_up_score), 6),
+        "pro_down_score": round(float(pro_down_score), 6),
+        "directional_bias": str(directional_state.get("directional_bias", "") or ""),
+        "directional_action_state": str(
+            directional_state.get("directional_action_state", "") or ""
+        ),
+        "directional_candidate_action": str(
+            directional_state.get("directional_candidate_action", "") or ""
+        ),
+        "directional_execution_action": str(
+            directional_state.get("directional_execution_action", "") or ""
+        ),
+        "directional_state_reason": str(
+            directional_state.get("directional_state_reason", "") or ""
+        ),
+        "directional_owner_family": str(
+            directional_state.get("directional_owner_family", "") or ""
+        ),
+        "directional_state_rank": int(directional_state.get("directional_state_rank", 0) or 0),
+        "directional_down_bias_score": float(
+            directional_state.get("down_bias_score", 0.0) or 0.0
+        ),
+        "directional_up_bias_score": float(
+            directional_state.get("up_bias_score", 0.0) or 0.0
+        ),
+    }
+
+
+def _build_active_action_conflict_guard_flat_fields(
+    guard: object | None,
+) -> dict[str, object]:
+    payload = _safe_mapping(guard)
+    return {
+        "active_action_conflict_detected": bool(payload.get("conflict_detected", False)),
+        "active_action_conflict_guard_eligible": bool(payload.get("guard_eligible", False)),
+        "active_action_conflict_guard_applied": bool(payload.get("guard_applied", False)),
+        "active_action_conflict_resolution_state": str(
+            payload.get("resolution_state", "") or ""
+        ),
+        "active_action_conflict_kind": str(payload.get("conflict_kind", "") or ""),
+        "active_action_conflict_baseline_action": str(
+            payload.get("baseline_action", "") or ""
+        ),
+        "active_action_conflict_directional_action": str(
+            payload.get("directional_candidate_action", "") or ""
+        ),
+        "active_action_conflict_directional_state": str(
+            payload.get("directional_action_state", "") or ""
+        ),
+        "active_action_conflict_directional_bias": str(
+            payload.get("directional_bias", "") or ""
+        ),
+        "active_action_conflict_directional_owner_family": str(
+            payload.get("directional_owner_family", "") or ""
+        ),
+        "active_action_conflict_precedence_owner": str(
+            payload.get("precedence_owner", "") or ""
+        ),
+        "active_action_conflict_up_bias_score": float(
+            payload.get("up_bias_score", 0.0) or 0.0
+        ),
+        "active_action_conflict_down_bias_score": float(
+            payload.get("down_bias_score", 0.0) or 0.0
+        ),
+        "active_action_conflict_bias_gap": float(payload.get("bias_gap", 0.0) or 0.0),
+        "active_action_conflict_warning_count": int(
+            payload.get("warning_count", 0) or 0
+        ),
+        "active_action_conflict_breakout_detected": bool(
+            payload.get("breakout_conflict_detected", False)
+        ),
+        "active_action_conflict_breakout_direction": str(
+            payload.get("breakout_direction", "") or ""
+        ),
+        "active_action_conflict_breakout_target": str(
+            payload.get("breakout_candidate_target", "") or ""
+        ),
+        "active_action_conflict_breakout_confidence": float(
+            payload.get("breakout_confidence", 0.0) or 0.0
+        ),
+        "active_action_conflict_breakout_failure_risk": float(
+            payload.get("breakout_failure_risk", 0.0) or 0.0
+        ),
+        "active_action_conflict_overlay_detected": bool(
+            payload.get("overlay_conflict_detected", False)
+        ),
+        "active_action_conflict_overlay_direction": str(
+            payload.get("overlay_direction", "") or ""
+        ),
+        "active_action_conflict_overlay_score": float(
+            payload.get("overlay_score", 0.0) or 0.0
+        ),
+        "active_action_conflict_overlay_selection_state": str(
+            payload.get("overlay_selection_state", "") or ""
+        ),
+        "active_action_conflict_htf_alignment_state": str(
+            payload.get("htf_alignment_state", "") or ""
+        ),
+        "active_action_conflict_context_conflict_state": str(
+            payload.get("context_conflict_state", "") or ""
+        ),
+        "active_action_conflict_failure_code": str(
+            payload.get("failure_code", "") or ""
+        ),
+        "active_action_conflict_failure_label": str(
+            payload.get("failure_label", "") or ""
+        ),
+        "active_action_conflict_reason_summary": str(
+            payload.get("reason_summary", "") or ""
+        ),
+    }
+
+
+def _build_flow_execution_veto_owner_flat_fields(
+    veto: object | None,
+) -> dict[str, object]:
+    payload = _safe_mapping(veto)
+    return {
+        "flow_execution_veto_detected": bool(payload.get("veto_detected", False)),
+        "flow_execution_veto_applied": bool(payload.get("veto_applied", False)),
+        "flow_execution_veto_resolution_state": str(
+            payload.get("resolution_state", "") or ""
+        ),
+        "flow_execution_veto_kind": str(payload.get("veto_kind", "") or ""),
+        "flow_execution_veto_baseline_action": str(
+            payload.get("baseline_action", "") or ""
+        ),
+        "flow_execution_veto_slot_core": str(payload.get("slot_core", "") or ""),
+        "flow_execution_veto_dominant_side": str(
+            payload.get("dominant_side", "") or ""
+        ),
+        "flow_execution_veto_overlay_direction": str(
+            payload.get("overlay_direction", "") or ""
+        ),
+        "flow_execution_veto_shadow_direction": str(
+            payload.get("shadow_direction", "") or ""
+        ),
+        "flow_execution_veto_gate_state": str(payload.get("gate_state", "") or ""),
+        "flow_execution_veto_flow_state": str(payload.get("flow_state", "") or ""),
+        "flow_execution_veto_chart_hint": str(payload.get("chart_hint", "") or ""),
+        "flow_execution_veto_consumer_side": str(
+            payload.get("consumer_side", "") or ""
+        ),
+        "flow_execution_veto_consumer_entry_ready": bool(
+            payload.get("consumer_entry_ready", False)
+        ),
+        "flow_execution_veto_bearish_evidence_count": int(
+            payload.get("bearish_evidence_count", 0) or 0
+        ),
+        "flow_execution_veto_reason_summary": str(
+            payload.get("reason_summary", "") or ""
+        ),
+    }
+
+
+def _build_flow_execution_veto_owner_v1(
+    *,
+    symbol: str,
+    baseline_action: str,
+    setup_id: str,
+    setup_reason: str,
+    runtime_signal_row: dict | None = None,
+) -> dict[str, object]:
+    symbol_u = str(symbol or "").upper().strip()
+    runtime_row = dict(runtime_signal_row or {})
+    baseline_action_u = _resolve_directional_baseline_action_side_v1(
+        baseline_action,
+        runtime_row.get("consumer_check_side", ""),
+        runtime_row.get("setup_side", ""),
+        runtime_row.get("action_selected", ""),
+        runtime_row.get("core_allowed_action", ""),
+    )
+    setup_id_u = str(setup_id or "").lower().strip()
+    setup_reason_u = str(setup_reason or "").lower().strip()
+    slot_core = str(runtime_row.get("common_state_slot_core_v1", "") or "").upper().strip()
+    dominant_side = str(
+        runtime_row.get("dominance_shadow_dominant_side_v1", "") or ""
+    ).upper().strip()
+    overlay_direction = str(
+        runtime_row.get("directional_continuation_overlay_direction", "") or ""
+    ).upper().strip()
+    shadow_direction = str(
+        runtime_row.get("flow_shadow_direction_v1", "") or ""
+    ).upper().strip()
+    gate_state = str(runtime_row.get("flow_structure_gate_v1", "") or "").upper().strip()
+    flow_state = str(runtime_row.get("flow_support_state_v1", "") or "").upper().strip()
+    chart_hint = str(runtime_row.get("chart_event_kind_hint", "") or "").upper().strip()
+    consumer_side = str(runtime_row.get("consumer_check_side", "") or "").upper().strip()
+    consumer_stage = str(runtime_row.get("consumer_check_stage", "") or "").upper().strip()
+    consumer_reason = str(runtime_row.get("consumer_check_reason", "") or "").lower().strip()
+    consumer_entry_ready = bool(runtime_row.get("consumer_check_entry_ready", False))
+
+    lower_reversal_buy_family = bool(
+        baseline_action_u == "BUY"
+        and setup_id_u in {"range_lower_reversal_buy", "trend_pullback_buy"}
+        and (
+            "lower_rebound" in setup_reason_u
+            or "lower" in setup_reason_u
+            or "reclaim_buy" in setup_reason_u
+            or setup_id_u == "range_lower_reversal_buy"
+        )
+    )
+    slot_is_bear_continuation = slot_core.startswith("BEAR_CONTINUATION")
+    dominance_is_bear = dominant_side == "BEAR"
+    overlay_is_down = overlay_direction == "DOWN"
+    shadow_is_sell = shadow_direction == "SELL"
+    chart_is_sell = chart_hint.startswith("SELL")
+    consumer_is_buy_lower_rebound = bool(
+        consumer_side == "BUY"
+        and (
+            "lower_rebound" in consumer_reason
+            or "rebound" in consumer_reason
+            or "reclaim" in consumer_reason
+        )
+    )
+    bearish_evidence_count = sum(
+        1
+        for flag in (
+            slot_is_bear_continuation,
+            dominance_is_bear,
+            overlay_is_down,
+            shadow_is_sell,
+            chart_is_sell,
+        )
+        if flag
+    )
+    veto_detected = bool(
+        symbol_u == "BTCUSD"
+        and lower_reversal_buy_family
+        and bearish_evidence_count >= 3
+    )
+    veto_applied = bool(
+        veto_detected
+        and consumer_is_buy_lower_rebound
+    )
+    veto_kind = "baseline_buy_vs_bear_flow_execution" if veto_detected else ""
+    reason_summary = "|".join(
+        token
+        for token in (
+            veto_kind,
+            slot_core.lower(),
+            dominant_side.lower(),
+            f"overlay::{overlay_direction.lower()}" if overlay_direction else "",
+            f"shadow::{shadow_direction.lower()}" if shadow_direction else "",
+            f"chart::{chart_hint.lower()}" if chart_hint else "",
+            (
+                f"consumer::{consumer_side.lower()}::{consumer_stage.lower()}::{consumer_reason}"
+                if consumer_side or consumer_stage or consumer_reason
+                else ""
+            ),
+            f"gate::{gate_state.lower()}" if gate_state else "",
+            f"flow::{flow_state.lower()}" if flow_state else "",
+            f"bear_count::{int(bearish_evidence_count)}",
+        )
+        if token
+    )
+    return {
+        "contract_version": "flow_execution_veto_owner_v1",
+        "veto_detected": bool(veto_detected),
+        "veto_applied": bool(veto_applied),
+        "resolution_state": "WAIT" if veto_applied else "KEEP",
+        "baseline_action": str(baseline_action_u),
+        "veto_kind": str(veto_kind),
+        "slot_core": str(slot_core),
+        "dominant_side": str(dominant_side),
+        "overlay_direction": str(overlay_direction),
+        "shadow_direction": str(shadow_direction),
+        "gate_state": str(gate_state),
+        "flow_state": str(flow_state),
+        "chart_hint": str(chart_hint),
+        "consumer_side": str(consumer_side),
+        "consumer_stage": str(consumer_stage),
+        "consumer_reason": str(consumer_reason),
+        "consumer_entry_ready": bool(consumer_entry_ready),
+        "bearish_evidence_count": int(bearish_evidence_count),
+        "failure_code": "flow_execution_veto_owner" if veto_applied else "",
+        "failure_label": "bear_continuation_buy_veto" if veto_applied else "",
+        "downgraded_observe_reason": "flow_execution_veto_wait" if veto_applied else "",
+        "reason_summary": str(reason_summary),
+    }
+
+
+def _build_flow_execution_selection_owner_flat_fields(
+    owner: object | None,
+) -> dict[str, object]:
+    payload = _safe_mapping(owner)
+    return {
+        "flow_execution_selection_detected": bool(payload.get("selection_detected", False)),
+        "flow_execution_selection_active": bool(payload.get("selection_active", False)),
+        "flow_execution_selection_apply_allowed": bool(
+            payload.get("execution_apply_allowed", False)
+        ),
+        "flow_execution_selection_resolution_state": str(
+            payload.get("resolution_state", "") or ""
+        ),
+        "flow_execution_selection_selected_action": str(
+            payload.get("selected_action", "") or ""
+        ),
+        "flow_execution_selection_legacy_action": str(
+            payload.get("legacy_action", "") or ""
+        ),
+        "flow_execution_selection_direction": str(
+            payload.get("shadow_direction", "") or ""
+        ),
+        "flow_execution_selection_chart_hint": str(
+            payload.get("chart_hint", "") or ""
+        ),
+        "flow_execution_selection_gate_state": str(
+            payload.get("gate_state", "") or ""
+        ),
+        "flow_execution_selection_flow_state": str(
+            payload.get("flow_state", "") or ""
+        ),
+        "flow_execution_selection_entry_quality": float(
+            payload.get("entry_quality_prob", 0.0) or 0.0
+        ),
+        "flow_execution_selection_persistence": float(
+            payload.get("continuation_persistence_prob", 0.0) or 0.0
+        ),
+        "flow_execution_selection_reversal_risk": float(
+            payload.get("reversal_risk_prob", 0.0) or 0.0
+        ),
+        "flow_execution_selection_reason_summary": str(
+            payload.get("reason_summary", "") or ""
+        ),
+    }
+
+
+def _build_flow_execution_selection_owner_v1(
+    *,
+    symbol: str,
+    legacy_action: str,
+    runtime_signal_row: dict | None = None,
+) -> dict[str, object]:
+    symbol_u = str(symbol or "").upper().strip()
+    runtime_row = dict(runtime_signal_row or {})
+    legacy_action_u = _resolve_directional_baseline_action_side_v1(
+        legacy_action,
+        runtime_row.get("consumer_check_side", ""),
+        runtime_row.get("setup_side", ""),
+        runtime_row.get("action_selected", ""),
+        runtime_row.get("core_allowed_action", ""),
+    )
+    shadow_direction = str(
+        runtime_row.get("flow_shadow_direction_v1", "") or ""
+    ).upper().strip()
+    chart_hint = str(runtime_row.get("chart_event_kind_hint", "") or "").upper().strip()
+    gate_state = str(runtime_row.get("flow_structure_gate_v1", "") or "").upper().strip()
+    flow_state = str(runtime_row.get("flow_support_state_v1", "") or "").upper().strip()
+    slot_core = str(runtime_row.get("common_state_slot_core_v1", "") or "").upper().strip()
+    dominant_side = str(
+        runtime_row.get("dominance_shadow_dominant_side_v1", "") or ""
+    ).upper().strip()
+    overlay_direction = str(
+        runtime_row.get("directional_continuation_overlay_direction", "") or ""
+    ).upper().strip()
+    try:
+        continuation_persistence_prob = max(
+            0.0,
+            min(
+                1.0,
+                float(
+                    runtime_row.get("flow_shadow_continuation_persistence_prob_v1", 0.0)
+                    or 0.0
+                ),
+            ),
+        )
+    except (TypeError, ValueError):
+        continuation_persistence_prob = 0.0
+    try:
+        entry_quality_prob = max(
+            0.0,
+            min(
+                1.0,
+                float(runtime_row.get("flow_shadow_entry_quality_prob_v1", 0.0) or 0.0),
+            ),
+        )
+    except (TypeError, ValueError):
+        entry_quality_prob = 0.0
+    try:
+        reversal_risk_prob = max(
+            0.0,
+            min(
+                1.0,
+                float(runtime_row.get("flow_shadow_reversal_risk_prob_v1", 0.0) or 0.0),
+            ),
+        )
+    except (TypeError, ValueError):
+        reversal_risk_prob = 0.0
+
+    selection_detected = False
+    selection_active = False
+    execution_apply_allowed = False
+    selected_action = ""
+    resolution_state = "KEEP"
+
+    direction_consistency_count = 0
+    if shadow_direction == "SELL":
+        direction_consistency_count = sum(
+            1
+            for flag in (
+                slot_core.startswith("BEAR_"),
+                dominant_side == "BEAR",
+                overlay_direction == "DOWN",
+            )
+            if flag
+        )
+        if chart_hint in {"SELL_PROBE", "SELL_READY", "SELL"}:
+            selection_detected = True
+            selected_action = "SELL"
+            execution_apply_allowed = bool(
+                symbol_u in {"BTCUSD", "XAUUSD", "NAS100"}
+                and direction_consistency_count >= 2
+                and gate_state in {"ELIGIBLE", "WEAK"}
+                and entry_quality_prob >= 0.42
+                and continuation_persistence_prob >= 0.55
+                and reversal_risk_prob <= 0.48
+            )
+            selection_active = bool(execution_apply_allowed)
+            resolution_state = "SELECT" if selection_active else "PENDING_HANDOFF"
+        elif chart_hint in {"SELL_WAIT", "SELL_WATCH"} or (
+            shadow_direction == "SELL"
+            and (
+                gate_state == "INELIGIBLE"
+                or flow_state in {"FLOW_UNCONFIRMED", "FLOW_OPPOSED"}
+                or entry_quality_prob < 0.42
+            )
+        ):
+            selection_detected = True
+            selection_active = True
+            execution_apply_allowed = True
+            selected_action = "WAIT"
+            resolution_state = "WAIT"
+    elif shadow_direction == "BUY":
+        direction_consistency_count = sum(
+            1
+            for flag in (
+                slot_core.startswith("BULL_"),
+                dominant_side == "BULL",
+                overlay_direction == "UP",
+            )
+            if flag
+        )
+        if chart_hint in {"BUY_PROBE", "BUY_READY", "BUY"}:
+            selection_detected = True
+            selected_action = "BUY"
+            execution_apply_allowed = bool(
+                symbol_u in {"BTCUSD", "XAUUSD", "NAS100"}
+                and direction_consistency_count >= 2
+                and gate_state in {"ELIGIBLE", "WEAK"}
+                and entry_quality_prob >= 0.42
+                and continuation_persistence_prob >= 0.55
+                and reversal_risk_prob <= 0.48
+            )
+            selection_active = bool(execution_apply_allowed)
+            resolution_state = "SELECT" if selection_active else "PENDING_HANDOFF"
+        elif chart_hint in {"BUY_WAIT", "BUY_WATCH"} or (
+            shadow_direction == "BUY"
+            and (
+                gate_state == "INELIGIBLE"
+                or flow_state in {"FLOW_UNCONFIRMED", "FLOW_OPPOSED"}
+                or entry_quality_prob < 0.42
+            )
+        ):
+            selection_detected = True
+            selection_active = True
+            execution_apply_allowed = True
+            selected_action = "WAIT"
+            resolution_state = "WAIT"
+
+    reason_summary = "|".join(
+        token
+        for token in (
+            f"legacy::{legacy_action_u.lower()}" if legacy_action_u else "",
+            f"shadow::{shadow_direction.lower()}" if shadow_direction else "",
+            f"chart::{chart_hint.lower()}" if chart_hint else "",
+            f"slot::{slot_core.lower()}" if slot_core else "",
+            f"dominant::{dominant_side.lower()}" if dominant_side else "",
+            f"overlay::{overlay_direction.lower()}" if overlay_direction else "",
+            f"gate::{gate_state.lower()}" if gate_state else "",
+            f"flow::{flow_state.lower()}" if flow_state else "",
+            f"entryq::{entry_quality_prob:.2f}",
+            f"persist::{continuation_persistence_prob:.2f}",
+            f"reversal::{reversal_risk_prob:.2f}",
+            f"consistent::{int(direction_consistency_count)}",
+            f"selected::{selected_action.lower()}" if selected_action else "",
+            f"state::{resolution_state.lower()}",
+        )
+        if token
+    )
+    return {
+        "contract_version": "flow_execution_selection_owner_v1",
+        "selection_detected": bool(selection_detected),
+        "selection_active": bool(selection_active),
+        "execution_apply_allowed": bool(execution_apply_allowed),
+        "resolution_state": str(resolution_state),
+        "selected_action": str(selected_action),
+        "legacy_action": str(legacy_action_u),
+        "shadow_direction": str(shadow_direction),
+        "chart_hint": str(chart_hint),
+        "gate_state": str(gate_state),
+        "flow_state": str(flow_state),
+        "slot_core": str(slot_core),
+        "dominant_side": str(dominant_side),
+        "overlay_direction": str(overlay_direction),
+        "continuation_persistence_prob": float(continuation_persistence_prob),
+        "entry_quality_prob": float(entry_quality_prob),
+        "reversal_risk_prob": float(reversal_risk_prob),
+        "failure_code": "flow_execution_selection_owner"
+        if selection_active and selected_action == "WAIT"
+        else "",
+        "failure_label": "flow_selection_wait"
+        if selection_active and selected_action == "WAIT"
+        else "",
+        "downgraded_observe_reason": "flow_selection_owner_wait"
+        if selection_active and selected_action == "WAIT"
+        else "",
+        "reason_summary": str(reason_summary),
+    }
+
+
+def _normalize_breakout_conflict_metrics(
+    *,
+    breakout_detected: bool,
+    breakout_target: str,
+    breakout_confidence: float,
+    breakout_failure_risk: float,
+    breakout_followthrough: float,
+) -> tuple[float, float, float]:
+    target_u = str(breakout_target or "").upper().strip()
+    confidence = float(breakout_confidence or 0.0)
+    failure_risk = float(breakout_failure_risk or 0.0)
+    followthrough = float(breakout_followthrough or 0.0)
+    if not breakout_detected or target_u not in {"WATCH_BREAKOUT", "PROBE_BREAKOUT", "ENTER_NOW"}:
+        return confidence, failure_risk, followthrough
+
+    if confidence <= 0.0:
+        confidence = (
+            0.30
+            if target_u == "WATCH_BREAKOUT"
+            else 0.34
+            if target_u == "PROBE_BREAKOUT"
+            else 0.56
+        )
+    if failure_risk <= 0.0:
+        failure_risk = (
+            0.36
+            if target_u == "WATCH_BREAKOUT"
+            else 0.30
+            if target_u == "PROBE_BREAKOUT"
+            else 0.22
+        )
+    if followthrough <= 0.0:
+        followthrough = (
+            0.10
+            if target_u == "WATCH_BREAKOUT"
+            else 0.16
+            if target_u in {"PROBE_BREAKOUT", "ENTER_NOW"}
+            else 0.0
+        )
+    return confidence, failure_risk, followthrough
+
+
+def _sync_blocked_by_into_wait_payloads_v1(
+    payload_row: Mapping[str, object] | None,
+    blocked_by_value: str,
+) -> dict[str, object]:
+    row_local = dict(payload_row or {})
+    blocked_text = str(blocked_by_value or "").strip()
+    if not blocked_text:
+        return row_local
+
+    wait_context_local = dict(row_local.get("entry_wait_context_v1", {}) or {})
+    wait_context_reasons = dict(wait_context_local.get("reasons", {}) or {})
+    wait_context_reasons["blocked_by"] = blocked_text
+    wait_context_local["reasons"] = wait_context_reasons
+    row_local["entry_wait_context_v1"] = wait_context_local
+
+    wait_policy_input_local = dict(row_local.get("entry_wait_state_policy_input_v1", {}) or {})
+    wait_policy_reasons = dict(wait_policy_input_local.get("reason_split_v1", {}) or {})
+    wait_policy_reasons["blocked_by"] = blocked_text
+    wait_policy_input_local["reason_split_v1"] = wait_policy_reasons
+    row_local["entry_wait_state_policy_input_v1"] = wait_policy_input_local
+    return row_local
+
+
+def _build_active_action_conflict_guard_v1(
+    *,
+    symbol: str,
+    baseline_action: str,
+    setup_id: str,
+    setup_reason: str,
+    runtime_signal_row: dict | None = None,
+    forecast_state25_log_only_overlay_trace_v1: dict | None = None,
+    belief_action_hint_v1: dict | None = None,
+    barrier_action_hint_v1: dict | None = None,
+    countertrend_continuation_signal_v1: dict | None = None,
+    breakout_event_runtime_v1: dict | None = None,
+    breakout_event_overlay_candidates_v1: dict | None = None,
+) -> dict[str, object]:
+    symbol_u = str(symbol or "").upper().strip()
+    runtime_row = dict(runtime_signal_row or {})
+    baseline_action_u = _resolve_directional_baseline_action_side_v1(
+        baseline_action,
+        runtime_row.get("consumer_check_side", ""),
+        runtime_row.get("setup_side", ""),
+        runtime_row.get("action_selected", ""),
+        runtime_row.get("core_allowed_action", ""),
+    )
+    setup_id_u = str(setup_id or "").lower().strip()
+    setup_reason_u = str(setup_reason or "").lower().strip()
+
+    conflict_signal = _safe_mapping(countertrend_continuation_signal_v1)
+    if not conflict_signal:
+        conflict_signal = _build_countertrend_continuation_signal_v1(
+            symbol=symbol_u,
+            action=baseline_action_u,
+            setup_id=setup_id_u,
+            setup_reason=setup_reason_u,
+            forecast_state25_log_only_overlay_trace_v1=(
+                forecast_state25_log_only_overlay_trace_v1
+                if forecast_state25_log_only_overlay_trace_v1 is not None
+                else {
+                    "reason_summary": runtime_row.get("forecast_state25_overlay_reason_summary", "")
+                }
+            ),
+            belief_action_hint_v1=(
+                belief_action_hint_v1
+                if belief_action_hint_v1 is not None
+                else {
+                    "reason_summary": runtime_row.get("belief_action_hint_reason_summary", "")
+                }
+            ),
+            barrier_action_hint_v1=(
+                barrier_action_hint_v1
+                if barrier_action_hint_v1 is not None
+                else {
+                    "reason_summary": runtime_row.get("barrier_action_hint_reason_summary", "")
+                }
+            ),
+        )
+    directional_action = str(
+        conflict_signal.get("directional_candidate_action", "") or ""
+    ).upper()
+    directional_state = str(
+        conflict_signal.get("directional_action_state", "") or ""
+    ).upper()
+    directional_bias = str(conflict_signal.get("directional_bias", "") or "").upper()
+    directional_owner_family = str(
+        conflict_signal.get("directional_owner_family", "") or ""
+    )
+    up_bias = float(conflict_signal.get("directional_up_bias_score", 0.0) or 0.0)
+    down_bias = float(conflict_signal.get("directional_down_bias_score", 0.0) or 0.0)
+    warning_count = int(conflict_signal.get("warning_count", 0) or 0)
+
+    overlay_payload = _safe_mapping(runtime_row.get("directional_continuation_overlay_v1", {}))
+    overlay_enabled = _safe_bool_flag(
+        overlay_payload.get(
+            "overlay_enabled",
+            runtime_row.get("directional_continuation_overlay_enabled", False),
+        )
+    )
+    overlay_direction = str(
+        overlay_payload.get(
+            "overlay_direction",
+            runtime_row.get("directional_continuation_overlay_direction", ""),
+        )
+        or ""
+    ).upper()
+    overlay_selection_state = str(
+        overlay_payload.get(
+            "overlay_selection_state",
+            runtime_row.get("directional_continuation_overlay_selection_state", ""),
+        )
+        or ""
+    ).upper()
+    overlay_event_kind = str(
+        overlay_payload.get(
+            "overlay_event_kind_hint",
+            runtime_row.get("directional_continuation_overlay_event_kind_hint", ""),
+        )
+        or ""
+    ).upper()
+    overlay_score = max(
+        0.0,
+        min(
+            1.0,
+            float(
+                overlay_payload.get(
+                    "overlay_score",
+                    runtime_row.get("directional_continuation_overlay_score", 0.0),
+                )
+                or 0.0
+            ),
+        ),
+    )
+    htf_alignment_state = str(runtime_row.get("htf_alignment_state", "") or "").upper()
+    context_conflict_state = str(runtime_row.get("context_conflict_state", "") or "").upper()
+    context_conflict_score = float(runtime_row.get("context_conflict_score", 0.0) or 0.0)
+    trend_alignment_count = 0
+    for field in ("trend_15m_direction", "trend_1h_direction", "trend_4h_direction", "trend_1d_direction"):
+        trend_direction = str(runtime_row.get(field, "") or "").upper().strip()
+        if overlay_direction == "UP" and trend_direction == "UPTREND":
+            trend_alignment_count += 1
+        elif overlay_direction == "DOWN" and trend_direction == "DOWNTREND":
+            trend_alignment_count += 1
+    structural_context = _build_directional_structural_context_v1(overlay_direction, runtime_row)
+    structural_continuation_confirmed = bool(structural_context.get("confirmed", False))
+    structural_support_score = float(structural_context.get("score", 0.0) or 0.0)
+
+    breakout_runtime = _safe_mapping(breakout_event_runtime_v1)
+    if not breakout_runtime:
+        breakout_target_seed = str(
+            runtime_row.get("breakout_candidate_action_target", "") or ""
+        ).upper()
+        breakout_direction_seed = str(
+            runtime_row.get("breakout_direction", runtime_row.get("breakout_candidate_direction", ""))
+            or ""
+        ).upper()
+        breakout_detected_seed = str(runtime_row.get("breakout_detected", "") or "").strip().lower()
+        inferred_breakout_detected = bool(
+            breakout_detected_seed in {"1", "true", "yes", "y", "on"}
+            or (
+                breakout_target_seed in {"WATCH_BREAKOUT", "PROBE_BREAKOUT", "ENTER_NOW"}
+                and breakout_direction_seed in {"UP", "DOWN"}
+            )
+        )
+        inferred_confidence = runtime_row.get(
+            "breakout_confidence",
+            runtime_row.get("breakout_candidate_confidence", 0.0),
+        )
+        try:
+            inferred_confidence_value = float(inferred_confidence or 0.0)
+        except (TypeError, ValueError):
+            inferred_confidence_value = 0.0
+        if inferred_confidence_value <= 0.0:
+            inferred_confidence_value = (
+                0.56
+                if breakout_target_seed == "ENTER_NOW"
+                else 0.34
+                if breakout_target_seed == "PROBE_BREAKOUT"
+                else 0.30
+                if breakout_target_seed == "WATCH_BREAKOUT"
+                else 0.0
+            )
+        inferred_failure_risk = runtime_row.get("breakout_failure_risk", None)
+        try:
+            inferred_failure_risk_value = float(inferred_failure_risk)
+        except (TypeError, ValueError):
+            inferred_failure_risk_value = (
+                0.22
+                if breakout_target_seed == "ENTER_NOW"
+                else 0.30
+                if breakout_target_seed == "PROBE_BREAKOUT"
+                else 0.36
+                if breakout_target_seed == "WATCH_BREAKOUT"
+                else 1.0
+            )
+        inferred_followthrough = runtime_row.get("breakout_followthrough_score", None)
+        try:
+            inferred_followthrough_value = float(inferred_followthrough)
+        except (TypeError, ValueError):
+            inferred_followthrough_value = (
+                0.16
+                if breakout_target_seed in {"ENTER_NOW", "PROBE_BREAKOUT"}
+                else 0.10
+                if breakout_target_seed == "WATCH_BREAKOUT"
+                else 0.0
+            )
+        breakout_runtime = {
+            "available": bool(inferred_breakout_detected),
+            "breakout_detected": bool(inferred_breakout_detected),
+            "breakout_direction": str(breakout_direction_seed),
+            "breakout_confidence": float(inferred_confidence_value),
+            "breakout_failure_risk": float(inferred_failure_risk_value),
+            "breakout_followthrough_score": float(inferred_followthrough_value),
+        }
+    breakout_overlay = _safe_mapping(breakout_event_overlay_candidates_v1)
+    if not breakout_overlay:
+        breakout_target_seed = str(
+            runtime_row.get("breakout_candidate_action_target", "") or ""
+        ).upper()
+        breakout_overlay = {
+            "enabled": breakout_target_seed in {"WATCH_BREAKOUT", "PROBE_BREAKOUT", "ENTER_NOW"},
+            "candidate_action_target": breakout_target_seed,
+            "reason_summary": str(runtime_row.get("breakout_candidate_reason", "") or ""),
+        }
+    breakout_direction = str(
+        breakout_runtime.get("breakout_direction", breakout_overlay.get("breakout_direction", "")) or ""
+    ).upper()
+    breakout_target = str(breakout_overlay.get("candidate_action_target", "") or "").upper()
+    breakout_confidence = float(
+        breakout_runtime.get("breakout_confidence", runtime_row.get("breakout_candidate_confidence", 0.0))
+        or 0.0
+    )
+    breakout_failure_risk = float(
+        breakout_runtime.get("breakout_failure_risk", runtime_row.get("breakout_failure_risk", 1.0))
+        or 0.0
+    )
+    breakout_followthrough = float(
+        breakout_runtime.get("breakout_followthrough_score", runtime_row.get("breakout_followthrough_score", 0.0))
+        or 0.0
+    )
+    breakout_detected = bool(breakout_runtime.get("breakout_detected", False))
+    breakout_enabled = bool(breakout_overlay.get("enabled", False))
+    breakout_confidence, breakout_failure_risk, breakout_followthrough = (
+        _normalize_breakout_conflict_metrics(
+            breakout_detected=breakout_detected,
+            breakout_target=breakout_target,
+            breakout_confidence=breakout_confidence,
+            breakout_failure_risk=breakout_failure_risk,
+            breakout_followthrough=breakout_followthrough,
+        )
+    )
+
+    upper_reversal_sell_family = bool(
+        symbol_u == "XAUUSD"
+        and baseline_action_u == "SELL"
+        and setup_id_u == "range_upper_reversal_sell"
+        and setup_reason_u
+        in {
+            "shadow_upper_reject_probe_observe",
+            "shadow_upper_reject_confirm",
+            "shadow_upper_break_fail_confirm",
+            "upper_break_fail_confirm",
+        }
+    )
+    lower_reversal_buy_family = bool(
+        symbol_u == "XAUUSD"
+        and baseline_action_u == "BUY"
+        and setup_id_u in {"range_lower_reversal_buy", "trend_pullback_buy"}
+        and setup_reason_u
+        in {
+            "shadow_lower_rebound_confirm",
+            "shadow_failed_sell_reclaim_buy_confirm",
+            "shadow_lower_rebound_probe_observe",
+            "shadow_lower_rebound_probe_observe_bounded_probe_soft_edge",
+            "shadow_outer_band_reversal_support_required_observe",
+            "shadow_outer_band_reversal_support_required_observe_bounded_probe_soft_edge",
+        }
+    )
+    directional_is_up = directional_action == "BUY" and directional_state in {
+        "UP_WATCH",
+        "UP_PROBE",
+        "UP_ENTER",
+    }
+    directional_is_down = directional_action == "SELL" and directional_state in {
+        "DOWN_WATCH",
+        "DOWN_PROBE",
+        "DOWN_ENTER",
+    }
+    breakout_is_up = bool(
+        breakout_enabled
+        and breakout_detected
+        and breakout_direction == "UP"
+        and breakout_target in {"WATCH_BREAKOUT", "PROBE_BREAKOUT", "ENTER_NOW"}
+    )
+    breakout_is_down = bool(
+        breakout_enabled
+        and breakout_detected
+        and breakout_direction == "DOWN"
+        and breakout_target in {"WATCH_BREAKOUT", "PROBE_BREAKOUT", "ENTER_NOW"}
+    )
+    overlay_is_up = bool(
+        overlay_enabled
+        and overlay_direction == "UP"
+        and overlay_selection_state in {"UP_SELECTED", "UP_CONFIRM", "UP"}
+        and overlay_event_kind in {"BUY_WATCH", "BUY_READY", "BUY"}
+    )
+    overlay_is_down = bool(
+        overlay_enabled
+        and overlay_direction == "DOWN"
+        and overlay_selection_state in {"DOWN_SELECTED", "DOWN_CONFIRM", "DOWN"}
+        and overlay_event_kind in {"SELL_WATCH", "SELL_READY", "SELL"}
+    )
+    overlay_conflict_detected = bool(
+        (baseline_action_u == "SELL" and overlay_is_up)
+        or (baseline_action_u == "BUY" and overlay_is_down)
+    )
+    overlay_context_confirmed = bool(
+        htf_alignment_state == "WITH_HTF"
+        and (
+            context_conflict_state in {"AGAINST_HTF", "AGAINST_PREV_BOX", "AGAINST_PREV_BOX_AND_HTF"}
+            or context_conflict_score >= 0.65
+        )
+    )
+
+    conflict_detected = bool(
+        (upper_reversal_sell_family and directional_is_up)
+        or (lower_reversal_buy_family and directional_is_down)
+        or (baseline_action_u == "SELL" and breakout_is_up)
+        or (baseline_action_u == "BUY" and breakout_is_down)
+        or overlay_conflict_detected
+    )
+    bias_gap = 0.0
+    conflict_kind = ""
+    failure_label = ""
+    precedence_owner = ""
+    breakout_conflict_detected = False
+    breakout_guard_eligible = False
+    breakout_reason_summary = str(breakout_overlay.get("reason_summary", "") or "")
+    breakout_signal_gap = round(max(0.0, breakout_confidence - breakout_failure_risk), 6)
+    breakout_watch_ready = bool(
+        breakout_target == "WATCH_BREAKOUT"
+        and breakout_confidence >= 0.28
+        and breakout_failure_risk <= 0.40
+        and breakout_followthrough >= 0.08
+    )
+    breakout_probe_ready = bool(
+        breakout_target in {"PROBE_BREAKOUT", "ENTER_NOW"}
+        and breakout_confidence >= 0.18
+        and breakout_failure_risk <= 0.50
+        and breakout_followthrough >= 0.08
+    )
+    if upper_reversal_sell_family and directional_is_up:
+        bias_gap = round(max(0.0, up_bias - down_bias), 6)
+        conflict_kind = "baseline_sell_vs_up_directional"
+        failure_label = "wrong_side_sell_pressure"
+    elif lower_reversal_buy_family and directional_is_down:
+        bias_gap = round(max(0.0, down_bias - up_bias), 6)
+        conflict_kind = "baseline_buy_vs_down_directional"
+        failure_label = "wrong_side_buy_pressure"
+    elif baseline_action_u == "SELL" and breakout_is_up:
+        breakout_conflict_detected = True
+        bias_gap = float(breakout_signal_gap)
+        conflict_kind = "baseline_sell_vs_up_breakout"
+        failure_label = "wrong_side_sell_pressure"
+    elif baseline_action_u == "BUY" and breakout_is_down:
+        breakout_conflict_detected = True
+        bias_gap = float(breakout_signal_gap)
+        conflict_kind = "baseline_buy_vs_down_breakout"
+        failure_label = "wrong_side_buy_pressure"
+    elif baseline_action_u == "SELL" and overlay_is_up:
+        bias_gap = float(overlay_score)
+        conflict_kind = "baseline_sell_vs_up_continuation_overlay"
+        failure_label = "wrong_side_sell_pressure"
+    elif baseline_action_u == "BUY" and overlay_is_down:
+        bias_gap = float(overlay_score)
+        conflict_kind = "baseline_buy_vs_down_continuation_overlay"
+        failure_label = "wrong_side_buy_pressure"
+
+    if baseline_action_u == "SELL" and breakout_is_up:
+        breakout_conflict_detected = True
+    elif baseline_action_u == "BUY" and breakout_is_down:
+        breakout_conflict_detected = True
+
+    directional_guard_eligible = bool(
+        conflict_detected
+        and warning_count >= 2
+        and (
+            (upper_reversal_sell_family and up_bias >= 0.60 and bias_gap >= 0.10)
+            or (lower_reversal_buy_family and down_bias >= 0.60 and bias_gap >= 0.10)
+        )
+    )
+    breakout_guard_eligible = bool(
+        breakout_conflict_detected
+        and (
+            breakout_probe_ready
+            or breakout_watch_ready
+        )
+    )
+    overlay_guard_eligible = bool(
+        overlay_conflict_detected
+        and (
+            (
+                overlay_context_confirmed
+                and overlay_score >= 0.72
+            )
+            or (
+                overlay_score >= 0.60
+                and htf_alignment_state == "WITH_HTF"
+                and context_conflict_score >= 0.75
+                and trend_alignment_count >= 3
+            )
+            or (
+                structural_continuation_confirmed
+                and overlay_score >= 0.56
+            )
+            or (
+                structural_support_score >= 0.58
+                and overlay_score >= 0.50
+                and htf_alignment_state == "WITH_HTF"
+                and trend_alignment_count >= 2
+            )
+        )
+    )
+    guard_eligible = bool(directional_guard_eligible or breakout_guard_eligible or overlay_guard_eligible)
+    if directional_guard_eligible and breakout_guard_eligible and overlay_guard_eligible:
+        precedence_owner = "directional_breakout_overlay"
+    elif directional_guard_eligible and breakout_guard_eligible:
+        precedence_owner = "directional_breakout"
+    elif breakout_guard_eligible and overlay_guard_eligible:
+        precedence_owner = "breakout_overlay"
+    elif directional_guard_eligible and overlay_guard_eligible:
+        precedence_owner = "directional_overlay"
+    elif directional_guard_eligible:
+        precedence_owner = "directional"
+    elif breakout_guard_eligible:
+        precedence_owner = "breakout"
+    elif overlay_guard_eligible:
+        precedence_owner = "overlay"
+    resolution_state = "KEEP"
+    if guard_eligible:
+        resolution_state = (
+            "PROBE"
+            if precedence_owner in {"breakout", "directional_breakout", "breakout_overlay", "directional_breakout_overlay"}
+            and breakout_target in {"PROBE_BREAKOUT", "ENTER_NOW"}
+            else "WATCH"
+        )
+    guard_applied = bool(guard_eligible)
+    failure_code = "active_action_conflict_guard" if guard_applied else ""
+    directional_state_reason = str(
+        conflict_signal.get("directional_state_reason", "") or ""
+    )
+    reason_summary = "|".join(
+        token
+        for token in (
+            conflict_kind,
+            str(conflict_signal.get("reason_summary", "") or ""),
+            directional_state_reason,
+            breakout_reason_summary,
+            (
+                f"overlay::{overlay_direction.lower()}::{overlay_selection_state.lower()}::{overlay_score:.2f}"
+                if overlay_conflict_detected
+                else ""
+            ),
+        )
+        if token
+    )
+    return {
+        "contract_version": "active_action_conflict_guard_v1",
+        "conflict_detected": bool(conflict_detected),
+        "guard_eligible": bool(guard_eligible),
+        "guard_applied": bool(guard_applied),
+        "resolution_state": str(resolution_state),
+        "baseline_action": str(baseline_action_u),
+        "directional_candidate_action": str(directional_action),
+        "directional_action_state": str(directional_state),
+        "directional_bias": str(directional_bias),
+        "directional_owner_family": str(directional_owner_family),
+        "precedence_owner": str(precedence_owner),
+        "up_bias_score": float(up_bias),
+        "down_bias_score": float(down_bias),
+        "bias_gap": float(bias_gap),
+        "warning_count": int(warning_count),
+        "warning_tokens": list(conflict_signal.get("warning_tokens", []) or []),
+        "breakout_conflict_detected": bool(breakout_conflict_detected),
+        "breakout_direction": str(breakout_direction),
+        "breakout_candidate_target": str(breakout_target),
+        "breakout_confidence": float(breakout_confidence),
+        "breakout_failure_risk": float(breakout_failure_risk),
+        "overlay_conflict_detected": bool(overlay_conflict_detected),
+        "overlay_direction": str(overlay_direction),
+        "overlay_selection_state": str(overlay_selection_state),
+        "overlay_event_kind_hint": str(overlay_event_kind),
+        "overlay_score": float(overlay_score),
+        "overlay_guard_eligible": bool(overlay_guard_eligible),
+        "structural_continuation_confirmed": bool(structural_continuation_confirmed),
+        "structural_support_score": float(structural_support_score),
+        "htf_alignment_state": str(htf_alignment_state),
+        "context_conflict_state": str(context_conflict_state),
+        "context_conflict_score": float(context_conflict_score),
+        "trend_alignment_count": int(trend_alignment_count),
+        "conflict_kind": str(conflict_kind),
+        "failure_code": str(failure_code),
+        "failure_label": str(failure_label),
+        "downgraded_observe_reason": (
+            (
+                "breakout_conflict_probe"
+                if guard_applied and precedence_owner == "breakout" and resolution_state == "PROBE"
+                else "breakout_conflict_watch"
+                if guard_applied and precedence_owner == "breakout"
+                else "directional_conflict_watch"
+                if guard_applied
+                else ""
+            )
+        ),
+        "reason_summary": str(reason_summary),
+        "countertrend_continuation_signal_v1": _safe_mapping(conflict_signal),
+    }
+
+
 def _resolve_range_lower_buy_shadow_relief(
     *,
     symbol: str,
@@ -404,6 +3531,8 @@ def _resolve_range_lower_buy_shadow_relief(
     preflight_allowed_action: str,
     compatibility_mode: str = "",
     semantic_shadow_prediction_v1: dict | None = None,
+    entry_probe_plan_v1: dict | None = None,
+    runtime_signal_row: dict | None = None,
 ) -> tuple[bool, str]:
     symbol_u = str(symbol or "").upper().strip()
     core_reason_u = str(core_reason or "").lower().strip()
@@ -412,6 +3541,25 @@ def _resolve_range_lower_buy_shadow_relief(
     bb_state_u = str(bb_state or "").upper().strip()
     preflight_u = str(preflight_allowed_action or "").upper().strip()
     compatibility_mode_u = str(compatibility_mode or "").strip().lower()
+    plan = dict(entry_probe_plan_v1 or {})
+    runtime_row = dict(runtime_signal_row or {})
+
+    countertrend_signal_v1 = _build_countertrend_continuation_signal_v1(
+        symbol=symbol_u,
+        action="BUY",
+        setup_id="range_lower_reversal_buy",
+        setup_reason=setup_reason_u,
+        forecast_state25_log_only_overlay_trace_v1={
+            "reason_summary": runtime_row.get("forecast_state25_overlay_reason_summary", "")
+        },
+        belief_action_hint_v1={
+            "reason_summary": runtime_row.get("belief_action_hint_reason_summary", "")
+        },
+        barrier_action_hint_v1={
+            "reason_summary": runtime_row.get("barrier_action_hint_reason_summary", "")
+        },
+    )
+    xau_countertrend_warning_veto = bool(countertrend_signal_v1.get("enabled", False))
 
     confirm_allow = bool(
         core_reason_u == "core_shadow_confirm_action"
@@ -429,6 +3577,160 @@ def _resolve_range_lower_buy_shadow_relief(
     )
     if confirm_allow:
         return True, "soft_edge"
+
+    native_probe_allow = bool(
+        symbol_u == "BTCUSD"
+        and core_reason_u in {"core_shadow_observe_wait", "core_shadow_probe_action", "energy_soft_block"}
+        and setup_reason_u == "shadow_lower_rebound_probe_observe"
+        and box_state_u in {"LOWER", "MIDDLE", "BELOW"}
+        and bb_state_u in {"MID", "UNKNOWN", "LOWER_EDGE", "BREAKDOWN"}
+        and float(wait_conflict) <= 20.0
+        and float(wait_noise) <= 16.0
+        and float(wait_score) <= 48.0
+        and preflight_u in {"BOTH", "BUY_ONLY"}
+        and compatibility_mode_u == "native_v2"
+    )
+    if native_probe_allow:
+        return True, "native_probe"
+
+    nas_native_probe_allow = bool(
+        symbol_u == "NAS100"
+        and core_reason_u in {"core_shadow_probe_action", "core_shadow_observe_wait"}
+        and setup_reason_u in {
+            "shadow_lower_rebound_probe_observe",
+            "shadow_middle_sr_anchor_required_observe",
+            "shadow_outer_band_reversal_support_required_observe",
+        }
+        and box_state_u in {"LOWER", "MIDDLE"}
+        and bb_state_u in {"MID", "UNKNOWN", "LOWER_EDGE"}
+        and float(wait_conflict) <= 18.0
+        and float(wait_noise) <= 16.0
+        and float(wait_score) <= 52.0
+        and preflight_u in {"BOTH", "BUY_ONLY"}
+        and compatibility_mode_u == "native_v2"
+    )
+    if nas_native_probe_allow:
+        return True, "nas_native_probe"
+
+    nas_lower_breakdown_probe_allow = bool(
+        symbol_u == "NAS100"
+        and core_reason_u in {"core_shadow_probe_action", "core_shadow_observe_wait"}
+        and setup_reason_u == "shadow_lower_rebound_probe_observe"
+        and box_state_u in {"LOWER", "BELOW", "MIDDLE"}
+        and bb_state_u in {"LOWER_EDGE", "BREAKDOWN"}
+        and float(wait_conflict) <= 18.0
+        and float(wait_noise) <= 18.0
+        and float(wait_score) <= 54.0
+        and preflight_u in {"BOTH", "BUY_ONLY"}
+        and compatibility_mode_u == "native_v2"
+    )
+    if nas_lower_breakdown_probe_allow:
+        return True, "nas_lower_breakdown_probe"
+
+    xau_outer_band_follow_through_allow = bool(
+        (not xau_countertrend_warning_veto)
+        and symbol_u == "XAUUSD"
+        and core_reason_u in {"core_shadow_observe_wait", "core_shadow_probe_action", "energy_soft_block"}
+        and setup_reason_u == "shadow_outer_band_reversal_support_required_observe"
+        and box_state_u in {"LOWER", "MIDDLE"}
+        and bb_state_u in {"MID", "UNKNOWN", "LOWER_EDGE"}
+        and float(wait_conflict) <= 22.0
+        and float(wait_noise) <= 18.0
+        and float(wait_score) <= 58.0
+        and preflight_u in {"BOTH", "BUY_ONLY"}
+        and compatibility_mode_u == "native_v2"
+        and bool(plan.get("active", False))
+        and str(plan.get("intended_action", "") or "").strip().upper() == "BUY"
+        and bool(plan.get("default_side_aligned", False))
+        and (
+            bool(plan.get("structural_relief_applied", False))
+            or bool(plan.get("near_confirm", False))
+            or float(pd.to_numeric(plan.get("pair_gap"), errors="coerce") or 0.0) >= 0.18
+        )
+        and float(pd.to_numeric(plan.get("candidate_support"), errors="coerce") or 0.0) >= 0.14
+        and float(pd.to_numeric(plan.get("action_confirm_score"), errors="coerce") or 0.0) >= 0.10
+        and float(pd.to_numeric(plan.get("confirm_fake_gap"), errors="coerce") or 0.0) >= -0.18
+        and float(pd.to_numeric(plan.get("wait_confirm_gap"), errors="coerce") or 0.0) >= -0.05
+        and float(pd.to_numeric(plan.get("continue_fail_gap"), errors="coerce") or 0.0) >= -0.22
+        and float(pd.to_numeric(plan.get("same_side_barrier"), errors="coerce") or 1.0) <= 0.66
+    )
+    if xau_outer_band_follow_through_allow:
+        return True, "xau_outer_band_follow_through"
+
+    xau_lower_rebound_follow_through_allow = bool(
+        (not xau_countertrend_warning_veto)
+        and symbol_u == "XAUUSD"
+        and core_reason_u in {"core_shadow_observe_wait", "core_shadow_probe_action", "energy_soft_block"}
+        and setup_reason_u in {
+            "shadow_lower_rebound_probe_observe",
+            "shadow_lower_rebound_probe_observe_bounded_probe_soft_edge",
+            "shadow_outer_band_reversal_support_required_observe",
+        }
+        and box_state_u in {"LOWER", "MIDDLE", "BELOW"}
+        and bb_state_u in {"MID", "UNKNOWN", "LOWER_EDGE", "BREAKDOWN"}
+        and float(wait_conflict) <= 24.0
+        and float(wait_noise) <= 18.0
+        and float(wait_score) <= 62.0
+        and preflight_u in {"BOTH", "BUY_ONLY"}
+        and compatibility_mode_u == "native_v2"
+        and bool(plan.get("active", False))
+        and str(plan.get("intended_action", "") or "").strip().upper() == "BUY"
+        and bool(plan.get("default_side_aligned", False))
+        and (
+            bool(plan.get("structural_relief_applied", False))
+            or bool(plan.get("near_confirm", False))
+            or float(pd.to_numeric(plan.get("pair_gap"), errors="coerce") or 0.0) >= 0.16
+        )
+        and float(pd.to_numeric(plan.get("candidate_support"), errors="coerce") or 0.0) >= 0.13
+        and float(pd.to_numeric(plan.get("action_confirm_score"), errors="coerce") or 0.0) >= 0.09
+        and float(pd.to_numeric(plan.get("confirm_fake_gap"), errors="coerce") or 0.0) >= -0.20
+        and float(pd.to_numeric(plan.get("wait_confirm_gap"), errors="coerce") or 0.0) >= -0.10
+        and float(pd.to_numeric(plan.get("continue_fail_gap"), errors="coerce") or 0.0) >= -0.24
+        and float(pd.to_numeric(plan.get("same_side_barrier"), errors="coerce") or 1.0) <= 0.74
+    )
+    if xau_lower_rebound_follow_through_allow:
+        return True, "xau_lower_rebound_follow_through"
+
+    if (
+        xau_countertrend_warning_veto
+        and setup_reason_u in {
+            "shadow_lower_rebound_probe_observe",
+            "shadow_lower_rebound_probe_observe_bounded_probe_soft_edge",
+            "shadow_outer_band_reversal_support_required_observe",
+        }
+    ):
+        return False, "xau_countertrend_warning_veto"
+
+    bounded_probe_soft_edge_allow = bool(
+        symbol_u in {"BTCUSD", "NAS100", "XAUUSD"}
+        and core_reason_u in {"core_shadow_observe_wait", "core_shadow_probe_action", "energy_soft_block"}
+        and setup_reason_u in {
+            "shadow_lower_rebound_probe_observe",
+            "shadow_middle_sr_anchor_required_observe",
+            "shadow_outer_band_reversal_support_required_observe",
+        }
+        and box_state_u in {"LOWER", "MIDDLE", "BELOW"}
+        and bb_state_u in {"MID", "UNKNOWN", "LOWER_EDGE", "BREAKDOWN"}
+        and float(wait_conflict) <= 24.0
+        and float(wait_noise) <= 18.0
+        and float(wait_score) <= 60.0
+        and preflight_u in {"BOTH", "BUY_ONLY"}
+        and bool(plan.get("active", False))
+        and str(plan.get("intended_action", "") or "").strip().upper() == "BUY"
+        and bool(plan.get("default_side_aligned", False))
+        and (
+            bool(plan.get("near_confirm", False))
+            or float(pd.to_numeric(plan.get("pair_gap"), errors="coerce") or 0.0) >= 0.15
+        )
+        and float(pd.to_numeric(plan.get("candidate_support"), errors="coerce") or 0.0) >= 0.10
+        and float(pd.to_numeric(plan.get("action_confirm_score"), errors="coerce") or 0.0) >= 0.08
+        and float(pd.to_numeric(plan.get("confirm_fake_gap"), errors="coerce") or 0.0) >= -0.26
+        and float(pd.to_numeric(plan.get("wait_confirm_gap"), errors="coerce") or 0.0) >= -0.21
+        and float(pd.to_numeric(plan.get("continue_fail_gap"), errors="coerce") or 0.0) >= -0.30
+        and float(pd.to_numeric(plan.get("same_side_barrier"), errors="coerce") or 1.0) <= 0.60
+    )
+    if bounded_probe_soft_edge_allow:
+        return True, "bounded_probe_soft_edge"
 
     timing_prob = 0.0
     entry_prob = 0.0
@@ -556,6 +3858,84 @@ def _resolve_semantic_probe_bridge_action(
     if allow_btc_lower_probe_bridge:
         return "BUY", "btc_lower_rebound_semantic_probe_bridge"
 
+    allow_btc_lower_native_probe_bridge = bool(
+        symbol_u == "BTCUSD"
+        and core_reason_u in {"core_shadow_observe_wait", "energy_soft_block"}
+        and observe_reason_u == "lower_rebound_probe_observe"
+        and none_reason_u == "probe_not_promoted"
+        and probe_action == "BUY"
+        and plan_active
+        and not plan_ready
+        and default_side_aligned
+        and plan_reason_u in {
+            "probe_pair_gap_not_ready",
+            "probe_forecast_not_ready",
+            "probe_belief_not_ready",
+            "probe_barrier_blocked",
+        }
+        and blocked_by_u in {"", "forecast_guard", "middle_sr_anchor_guard"}
+        and compatibility_mode_u == "native_v2"
+        and _float_value("candidate_support") >= 0.14
+        and _float_value("pair_gap") >= 0.18
+        and _float_value("action_confirm_score") >= 0.08
+        and _float_value("confirm_fake_gap") >= -0.26
+        and _float_value("wait_confirm_gap") >= -0.21
+        and _float_value("continue_fail_gap") >= -0.30
+        and _float_value("same_side_barrier") <= 0.62
+        and (bool(plan.get("near_confirm", False)) or _float_value("pair_gap") >= 0.22)
+    )
+    if allow_btc_lower_native_probe_bridge:
+        return "BUY", "btc_lower_rebound_native_probe_bridge"
+
+    allow_nas_clean_confirm_native_probe_bridge = bool(
+        symbol_u == "NAS100"
+        and core_reason_u == "core_shadow_observe_wait"
+        and observe_reason_u == "middle_sr_anchor_required_observe"
+        and none_reason_u == "probe_not_promoted"
+        and blocked_by_u == "middle_sr_anchor_guard"
+        and probe_action in {"BUY", "SELL"}
+        and plan_active
+        and not plan_ready
+        and default_side_aligned
+        and plan_reason_u == "probe_forecast_not_ready"
+        and str(plan.get("symbol_scene_relief", "") or "").strip().lower() == "nas_clean_confirm_probe"
+        and compatibility_mode_u == "native_v2"
+        and bool(plan.get("near_confirm", False))
+        and _float_value("candidate_support") >= 0.11
+        and _float_value("pair_gap") >= 0.17
+        and _float_value("action_confirm_score") >= 0.08
+        and _float_value("confirm_fake_gap") >= -0.26
+        and _float_value("wait_confirm_gap") >= -0.21
+        and _float_value("continue_fail_gap") >= -0.28
+        and _float_value("same_side_barrier") <= 0.56
+    )
+    if allow_nas_clean_confirm_native_probe_bridge:
+        return probe_action, "nas_clean_confirm_native_probe_bridge"
+
+    allow_nas_clean_confirm_lower_rebound_ready_bridge = bool(
+        symbol_u == "NAS100"
+        and core_reason_u in {"core_shadow_observe_wait", "energy_soft_block"}
+        and observe_reason_u == "lower_rebound_probe_observe"
+        and none_reason_u in {"probe_not_promoted", "execution_soft_blocked"}
+        and blocked_by_u in {"forecast_guard", "energy_soft_block"}
+        and probe_action == "BUY"
+        and plan_active
+        and plan_ready
+        and default_side_aligned
+        and str(plan.get("symbol_scene_relief", "") or "").strip().lower() == "nas_clean_confirm_probe"
+        and compatibility_mode_u == "native_v2"
+        and bool(plan.get("near_confirm", False))
+        and _float_value("candidate_support") >= 0.60
+        and _float_value("pair_gap") >= 0.15
+        and _float_value("action_confirm_score") >= 0.13
+        and _float_value("confirm_fake_gap") >= -0.18
+        and _float_value("wait_confirm_gap") >= -0.13
+        and _float_value("continue_fail_gap") >= -0.27
+        and _float_value("same_side_barrier") <= 0.60
+    )
+    if allow_nas_clean_confirm_lower_rebound_ready_bridge:
+        return "BUY", "nas_clean_confirm_lower_rebound_ready_bridge"
+
     gate = dict(default_side_gate_v1 or {})
     try:
         probe_candidate_support = float(
@@ -587,6 +3967,101 @@ def _resolve_semantic_probe_bridge_action(
     return "", ""
 
 
+def _should_attempt_semantic_probe_bridge(
+    *,
+    symbol: str,
+    core_reason: str,
+    observe_reason: str,
+    action_none_reason: str,
+    blocked_by: str,
+    compatibility_mode: str = "",
+    entry_probe_plan_v1: dict | None = None,
+    default_side_gate_v1: dict | None = None,
+) -> bool:
+    symbol_u = str(symbol or "").upper().strip()
+    core_reason_u = str(core_reason or "").lower().strip()
+    observe_reason_u = str(observe_reason or "").lower().strip()
+    none_reason_u = str(action_none_reason or "").lower().strip()
+    blocked_by_u = str(blocked_by or "").lower().strip()
+    compatibility_mode_u = str(compatibility_mode or "").lower().strip()
+    plan = dict(entry_probe_plan_v1 or {})
+    gate = dict(default_side_gate_v1 or {})
+    probe_action = str(
+        plan.get("intended_action", "") or plan.get("candidate_side_hint", "") or ""
+    ).upper().strip()
+    plan_reason_u = str(plan.get("reason", "") or "").lower().strip()
+    plan_active = bool(plan.get("active", False))
+    plan_ready = bool(plan.get("ready_for_entry", False))
+    default_side_aligned = bool(plan.get("default_side_aligned", False))
+    scene_relief_u = str(plan.get("symbol_scene_relief", "") or "").strip().lower()
+    gate_reason_u = str(gate.get("reason", "") or "").lower().strip()
+    gate_side_u = str(gate.get("winner_side", "") or "").upper().strip()
+    gate_clear = bool(gate.get("winner_clear", False))
+
+    if (
+        symbol_u == "BTCUSD"
+        and core_reason_u in {"core_shadow_observe_wait", "energy_soft_block"}
+        and observe_reason_u == "lower_rebound_probe_observe"
+        and none_reason_u == "probe_not_promoted"
+        and probe_action == "BUY"
+        and plan_active
+        and default_side_aligned
+        and plan_reason_u in {
+            "probe_pair_gap_not_ready",
+            "probe_forecast_not_ready",
+            "probe_belief_not_ready",
+            "probe_barrier_blocked",
+        }
+        and blocked_by_u in {"", "forecast_guard", "middle_sr_anchor_guard"}
+        and compatibility_mode_u in {"", "observe_confirm_v1_fallback", "native_v2"}
+    ):
+        return True
+
+    if (
+        symbol_u == "NAS100"
+        and core_reason_u in {"core_shadow_observe_wait", "energy_soft_block"}
+        and observe_reason_u in {"middle_sr_anchor_required_observe", "lower_rebound_probe_observe"}
+        and none_reason_u in {"probe_not_promoted", "execution_soft_blocked"}
+        and probe_action in {"BUY", "SELL"}
+        and plan_active
+        and default_side_aligned
+        and scene_relief_u == "nas_clean_confirm_probe"
+        and compatibility_mode_u == "native_v2"
+        and (
+            (
+                observe_reason_u == "middle_sr_anchor_required_observe"
+                and blocked_by_u == "middle_sr_anchor_guard"
+                and not plan_ready
+                and plan_reason_u == "probe_forecast_not_ready"
+            )
+            or (
+                observe_reason_u == "lower_rebound_probe_observe"
+                and blocked_by_u in {"forecast_guard", "energy_soft_block"}
+                and probe_action == "BUY"
+                and plan_ready
+            )
+        )
+    ):
+        return True
+
+    if (
+        symbol_u == "BTCUSD"
+        and core_reason_u == "core_shadow_observe_wait"
+        and observe_reason_u == "upper_reject_probe_observe"
+        and none_reason_u == "probe_not_promoted"
+        and probe_action == "SELL"
+        and not plan_active
+        and not plan_ready
+        and gate_reason_u == "lower_edge_sell_requires_break_override"
+        and gate_side_u == "SELL"
+        and gate_clear
+        and compatibility_mode_u in {"", "observe_confirm_v1_fallback"}
+    ):
+        return True
+
+    return False
+
+
 def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, scorer, buy_s, sell_s, entry_threshold):
     regime = result.get("regime", {}) if isinstance(result, dict) else {}
     spread_now = abs(float(getattr(tick, "ask", 0.0) or 0.0) - float(getattr(tick, "bid", 0.0) or 0.0))
@@ -595,8 +4070,14 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
         int(float(Config.ENTRY_COOLDOWN) - (time.time() - float(self.runtime.last_entry_time.get(symbol, 0.0)))),
     )
     action = None
+    original_action_side_v1 = ""
     action_none_reason = ""
     observe_reason = ""
+    semantic_probe_bridge_candidate_action = ""
+    semantic_probe_bridge_candidate_reason = ""
+    directional_continuation_promotion_v1: dict[str, object] = {}
+    execution_action_diff_v1: dict[str, object] = {}
+    directional_continuation_promotion_lot_applied_v1 = False
     # Initialize early so nested helpers and AI metadata can safely reference
     # the current stage before adaptive routing chooses the final stage later.
     entry_stage = "balanced"
@@ -619,6 +4100,8 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
     core_min_raw = 0.0
     core_margin_raw = 0.0
     core_tie_band_raw = 0.0
+    score = 0.0
+    contra_score = 0.0
     wait_score = 0.0
     wait_conflict = 0.0
     wait_noise = 0.0
@@ -631,6 +4114,16 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
     preflight_approach_mode = "MIX"
     preflight_reason = ""
     preflight_direction_penalty_applied = 0.0
+    entry_session_name = ""
+    entry_weekday = 0
+    entry_session_threshold_mult = 1.0
+    entry_atr_ratio = 1.0
+    entry_atr_threshold_mult = 1.0
+    topdown_ok = False
+    topdown_reason = ""
+    topdown_stat = {"align": 0, "conflict": 0, "seen": 0}
+    gate_ok = False
+    gate_reason = ""
     setup_id = ""
     setup_side = ""
     setup_status = "pending"
@@ -648,19 +4141,30 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
     utility_losses_n = 0
     entry_wait_selected = 0
     entry_wait_decision = ""
+    wait_state = None
     entry_enter_value = 0.0
     entry_wait_value = 0.0
     entry_wait_energy_usage_trace_v1 = {}
     entry_wait_decision_energy_usage_trace_v1 = {}
     prediction_bundle = {"entry": {}, "wait": {}, "exit": {}, "reverse": {}, "metadata": {}}
-    shadow_entry_context_v1 = {}
+    shadow_bundle = None
+    shadow_context_metadata_v1 = {}
+    shadow_position_snapshot_obj = None
+    shadow_response_raw_obj = None
+    shadow_response_v2_obj = None
+    shadow_state_raw_obj = None
+    shadow_state_v2_obj = None
+    shadow_evidence_obj = None
+    shadow_belief_obj = None
+    shadow_barrier_obj = None
+    shadow_forecast_features_obj = None
+    shadow_transition_forecast_obj = None
+    shadow_trade_management_forecast_obj = None
+    shadow_energy_obj = None
     shadow_position_snapshot_v2 = {}
-    shadow_position_vector = {}
     shadow_response_raw_snapshot_v1 = {}
-    shadow_response_vector = {}
     shadow_response_vector_v2 = {}
     shadow_state_raw_snapshot_v1 = {}
-    shadow_state_vector = {}
     shadow_state_vector_v2 = {}
     shadow_evidence_vector_v1 = {}
     shadow_belief_state_v1 = {}
@@ -670,10 +4174,22 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
     shadow_trade_management_forecast_v1 = {}
     shadow_energy_snapshot = {}
     shadow_observe_confirm = {}
+    shadow_runtime_maps_materialized = False
     core_dec = {}
     entry_probe_plan_v1 = {}
     semantic_shadow_prediction_v1 = None
     semantic_live_guard_v1 = None
+    state25_candidate_log_only_trace_v1 = {}
+    forecast_state25_runtime_bridge_v1 = {}
+    forecast_state25_log_only_overlay_trace_v1 = {}
+    belief_state25_runtime_bridge_v1 = {}
+    belief_action_hint_v1 = {}
+    barrier_state25_runtime_bridge_v1 = {}
+    barrier_action_hint_v1 = {}
+    observe_confirm_runtime_payload = {}
+    countertrend_continuation_signal_v1 = {}
+    breakout_event_runtime_v1 = {}
+    breakout_event_overlay_candidates_v1 = {}
     consumer_layer_mode_hard_block_active = False
     consumer_layer_mode_suppressed = False
     consumer_policy_live_gate_applied = False
@@ -684,6 +4200,39 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
     consumer_energy_soft_block_active = False
     consumer_energy_soft_block_reason = ""
     consumer_energy_soft_block_strength = 0.0
+    active_action_conflict_guard_v1: dict[str, object] = {}
+    flow_execution_veto_owner_v1: dict[str, object] = {}
+    flow_execution_selection_owner_v1: dict[str, object] = {}
+
+    def _materialize_shadow_runtime_maps() -> None:
+        nonlocal shadow_runtime_maps_materialized
+        nonlocal shadow_position_snapshot_v2
+        nonlocal shadow_response_raw_snapshot_v1
+        nonlocal shadow_response_vector_v2
+        nonlocal shadow_state_raw_snapshot_v1
+        nonlocal shadow_state_vector_v2
+        nonlocal shadow_evidence_vector_v1
+        nonlocal shadow_belief_state_v1
+        nonlocal shadow_barrier_state_v1
+        nonlocal shadow_forecast_features_v1
+        nonlocal shadow_transition_forecast_v1
+        nonlocal shadow_trade_management_forecast_v1
+        nonlocal shadow_energy_snapshot
+        if shadow_runtime_maps_materialized:
+            return
+        shadow_position_snapshot_v2 = _safe_mapping(shadow_position_snapshot_obj)
+        shadow_response_raw_snapshot_v1 = _safe_mapping(shadow_response_raw_obj)
+        shadow_response_vector_v2 = _safe_mapping(shadow_response_v2_obj)
+        shadow_state_raw_snapshot_v1 = _safe_mapping(shadow_state_raw_obj)
+        shadow_state_vector_v2 = _safe_mapping(shadow_state_v2_obj)
+        shadow_evidence_vector_v1 = _safe_mapping(shadow_evidence_obj)
+        shadow_belief_state_v1 = _safe_mapping(shadow_belief_obj)
+        shadow_barrier_state_v1 = _safe_mapping(shadow_barrier_obj)
+        shadow_forecast_features_v1 = _safe_mapping(shadow_forecast_features_obj)
+        shadow_transition_forecast_v1 = _safe_mapping(shadow_transition_forecast_obj)
+        shadow_trade_management_forecast_v1 = _safe_mapping(shadow_trade_management_forecast_obj)
+        shadow_energy_snapshot = _safe_mapping(shadow_energy_obj)
+        shadow_runtime_maps_materialized = True
     consumer_energy_live_gate_applied = False
     consumer_archetype_id = ""
     consumer_invalidation_id = ""
@@ -699,11 +4248,28 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
     consumer_check_display_score = 0.0
     consumer_check_display_repeat_count = 0
     p7_guarded_size_overlay_v1 = {}
+    teacher_label_exploration_entry_v1 = {}
+    teacher_label_exploration_lot_applied_v1 = False
+
+    def _debug_breadcrumb(stage: str, detail: str = "") -> None:
+        debug_writer = getattr(self.runtime, "_write_loop_debug", None)
+        if not callable(debug_writer):
+            return
+        try:
+            debug_loop_count = int((((getattr(self.runtime, "loop_debug_state", {}) or {}).get("loop_count", 0)) or 0))
+            debug_writer(
+                loop_count=debug_loop_count,
+                stage=f"entry_try:{str(stage or '').strip()}",
+                symbol=str(symbol or ""),
+                detail=str(detail or "")[:240],
+            )
+        except Exception:
+            return
 
     def _json_field(payload: dict) -> str:
         if not isinstance(payload, dict) or not payload:
             return ""
-        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
     def _current_runtime_snapshot_row() -> dict:
         rows = getattr(self.runtime, "latest_signal_by_symbol", None)
@@ -713,6 +4279,233 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
         if not isinstance(candidate, dict):
             return {}
         return dict(candidate)
+
+    _cached_entry_runtime_signal_row_v1: dict | None = None
+
+    def _current_entry_runtime_signal_row(*, refresh_current_cycle: bool = False) -> dict:
+        nonlocal _cached_entry_runtime_signal_row_v1
+        if not refresh_current_cycle and isinstance(_cached_entry_runtime_signal_row_v1, dict):
+            return dict(_cached_entry_runtime_signal_row_v1)
+
+        row = _current_runtime_snapshot_row()
+        if refresh_current_cycle:
+            builder = getattr(self.runtime, "build_entry_runtime_signal_row", None)
+            if callable(builder):
+                try:
+                    enriched_row = builder(str(symbol), row)
+                    if isinstance(enriched_row, dict):
+                        row = dict(enriched_row)
+                except Exception:
+                    pass
+        _cached_entry_runtime_signal_row_v1 = dict(row)
+        return dict(row)
+
+    entry_prefront_started_at = time.perf_counter()
+    entry_prefront_stage_started_at = entry_prefront_started_at
+    entry_prefront_stage_timings_ms: dict[str, float] = {}
+    entry_prefront_profile_state = {
+        "current_stage": "initial_limits",
+        "last_completed_stage": "",
+        "exit_state": "in_progress",
+    }
+
+    def _record_entry_prefront_stage(stage_name: str, started_at: float) -> None:
+        entry_prefront_stage_timings_ms[str(stage_name)] = round(
+            (time.perf_counter() - float(started_at)) * 1000.0,
+            3,
+        )
+        entry_prefront_profile_state["last_completed_stage"] = str(stage_name)
+
+    def _set_entry_prefront_stage(stage_name: str) -> None:
+        nonlocal entry_prefront_stage_started_at
+        entry_prefront_profile_state["current_stage"] = str(stage_name)
+        entry_prefront_stage_started_at = time.perf_counter()
+
+    def _store_entry_prefront_profile(
+        exit_state: str | None = None,
+        *,
+        blocked_by_value: str = "",
+        observe_reason_value: str = "",
+        action_none_reason_value: str = "",
+        action_value: str = "",
+    ) -> None:
+        if exit_state is not None:
+            entry_prefront_profile_state["exit_state"] = str(exit_state)
+        runtime_snapshot_row = _current_runtime_snapshot_row()
+        try:
+            self._store_runtime_snapshot(
+                runtime=self.runtime,
+                symbol=str(symbol),
+                key="entry_helper_prefront_profile_v1",
+                payload={
+                    "contract_version": "entry_helper_prefront_profile_v1",
+                    "total_ms": round((time.perf_counter() - entry_prefront_started_at) * 1000.0, 3),
+                    "stage_timings_ms": dict(entry_prefront_stage_timings_ms),
+                    "current_stage": str(entry_prefront_profile_state.get("current_stage", "") or ""),
+                    "last_completed_stage": str(entry_prefront_profile_state.get("last_completed_stage", "") or ""),
+                    "exit_state": str(entry_prefront_profile_state.get("exit_state", "") or ""),
+                    "action": str(action_value or action or ""),
+                    "observe_reason": str(observe_reason_value or observe_reason or ""),
+                    "blocked_by": str(blocked_by_value or ""),
+                    "action_none_reason": str(action_none_reason_value or action_none_reason or ""),
+                    "quick_trace_state": str(runtime_snapshot_row.get("quick_trace_state", "") or ""),
+                    "core_reason": str(core_reason or ""),
+                    "core_allowed_action": str(core_allowed_action or ""),
+                },
+            )
+        except Exception:
+            pass
+
+    def _ensure_semantic_shadow_prediction(
+        *,
+        runtime_snapshot_row: dict | None = None,
+        action_hint: str = "",
+        setup_id_value: str = "",
+        setup_side_value: str = "",
+        entry_stage_value: str = "",
+    ) -> dict:
+        nonlocal semantic_shadow_prediction_v1
+        if semantic_shadow_prediction_v1 is not None:
+            return dict(semantic_shadow_prediction_v1 or {})
+        runtime_snapshot_row = dict(runtime_snapshot_row or _current_runtime_snapshot_row() or {})
+        prediction_cache = getattr(self.runtime, "_semantic_shadow_prediction_cache", None)
+        if not isinstance(prediction_cache, dict):
+            prediction_cache = {}
+            try:
+                setattr(self.runtime, "_semantic_shadow_prediction_cache", prediction_cache)
+            except Exception:
+                prediction_cache = {}
+        cache_key = _build_semantic_shadow_prediction_cache_key(
+            symbol=str(symbol),
+            runtime_snapshot_row=runtime_snapshot_row,
+            action_hint=str(action_hint or shadow_observe_confirm.get("action", "") or ""),
+            setup_id=str(setup_id_value or ""),
+            setup_side=str(setup_side_value or ""),
+            entry_stage=str(entry_stage_value or ""),
+        )
+        if cache_key:
+            cached_prediction = prediction_cache.get(cache_key)
+            if isinstance(cached_prediction, Mapping):
+                semantic_shadow_prediction_v1 = dict(cached_prediction)
+                return dict(semantic_shadow_prediction_v1 or {})
+        _materialize_shadow_runtime_maps()
+        semantic_runtime = None
+        refresh_runtime = getattr(self.runtime, "_refresh_semantic_shadow_runtime_if_needed", None)
+        if callable(refresh_runtime):
+            try:
+                refresh_runtime()
+            except Exception:
+                semantic_runtime = None
+        semantic_runtime = semantic_runtime or getattr(self.runtime, "semantic_shadow_runtime", None)
+        if semantic_runtime is not None:
+            semantic_feature_row = build_semantic_shadow_feature_row(
+                runtime_snapshot_row=runtime_snapshot_row,
+                position_snapshot_v2=shadow_position_snapshot_v2,
+                response_vector_v2=shadow_response_vector_v2,
+                state_vector_v2=shadow_state_vector_v2,
+                evidence_vector_v1=shadow_evidence_vector_v1,
+                forecast_features_v1=shadow_forecast_features_v1,
+                signal_timeframe=str(
+                    runtime_snapshot_row.get("signal_timeframe", "")
+                    or runtime_snapshot_row.get("timeframe", "")
+                    or ""
+                ),
+                setup_id=str(setup_id_value or ""),
+                setup_side=str(setup_side_value or ""),
+                entry_stage=str(entry_stage_value or ""),
+                preflight_regime=str(preflight_regime or ""),
+                preflight_liquidity=str(preflight_liquidity or ""),
+            )
+            try:
+                semantic_shadow_prediction_v1 = semantic_runtime.predict_shadow(
+                    semantic_feature_row,
+                    action_hint=str(action_hint or shadow_observe_confirm.get("action", "") or ""),
+                    timing_threshold=float(getattr(Config, "SEMANTIC_TIMING_THRESHOLD", 0.55)),
+                    entry_quality_threshold=float(
+                        getattr(Config, "SEMANTIC_ENTRY_QUALITY_THRESHOLD", 0.55)
+                    ),
+                    exit_management_threshold=float(
+                        getattr(Config, "SEMANTIC_EXIT_MANAGEMENT_THRESHOLD", 0.55)
+                    ),
+                )
+                try:
+                    self._store_runtime_snapshot(
+                        runtime=self.runtime,
+                        symbol=str(symbol),
+                        key="semantic_shadow_prediction_v1",
+                        payload=dict(semantic_shadow_prediction_v1),
+                    )
+                except Exception:
+                    pass
+            except Exception:
+                semantic_shadow_prediction_v1 = SemanticShadowRuntime.unavailable_prediction(
+                    reason="semantic_prediction_failed",
+                    action_hint=str(action_hint or ""),
+                )
+        else:
+            semantic_shadow_prediction_v1 = SemanticShadowRuntime.unavailable_prediction(
+                reason="semantic_runtime_unavailable",
+                action_hint=str(action_hint or ""),
+            )
+        if cache_key:
+            prediction_cache[str(cache_key)] = dict(semantic_shadow_prediction_v1 or {})
+            max_cache_size = 128
+            while len(prediction_cache) > max_cache_size:
+                try:
+                    oldest_key = next(iter(prediction_cache))
+                except StopIteration:
+                    break
+                prediction_cache.pop(oldest_key, None)
+        return dict(semantic_shadow_prediction_v1 or {})
+
+    def _resolve_semantic_shadow_fast_skip_reason(
+        *,
+        runtime_snapshot_row: dict | None = None,
+        action_value: str = "",
+        outcome_value: str = "",
+        blocked_by_value: str = "",
+        observe_reason_value: str = "",
+        action_none_reason_value: str = "",
+    ) -> str:
+        if semantic_shadow_prediction_v1 is not None:
+            return ""
+        action_u = str(action_value or "").upper().strip()
+        outcome_u = str(outcome_value or "").lower().strip()
+        if outcome_u not in {"wait", "skipped"}:
+            return ""
+        semantic_rollout_mode_u = str(
+            getattr(Config, "SEMANTIC_LIVE_ROLLOUT_MODE", "disabled") or "disabled"
+        ).lower().strip()
+        if semantic_rollout_mode_u in {"disabled", "log_only", "alert_only"}:
+            return "semantic_non_enter_logonly_fast_path"
+        if action_u in {"BUY", "SELL"}:
+            return ""
+        runtime_snapshot_row = dict(runtime_snapshot_row or {})
+        quick_trace_state_u = str(runtime_snapshot_row.get("quick_trace_state", "") or "").upper().strip()
+        blocked_by_u = str(blocked_by_value or "").lower().strip()
+        observe_reason_u = str(observe_reason_value or "").lower().strip()
+        action_none_u = str(action_none_reason_value or "").lower().strip()
+        bridge_watch_reasons = {
+            "forecast_guard",
+            "energy_soft_block",
+            "probe_promotion_gate",
+            "middle_sr_anchor_guard",
+            "outer_band_guard",
+            "box_middle_buy_without_bb_support",
+        }
+        bridge_observe_reasons = {
+            "lower_rebound_probe_observe",
+            "upper_reject_probe_observe",
+            "middle_sr_anchor_required_observe",
+        }
+        if (
+            quick_trace_state_u.startswith("PROBE")
+            or blocked_by_u in bridge_watch_reasons
+            or observe_reason_u in bridge_observe_reasons
+            or action_none_u in {"probe_not_promoted", "execution_soft_blocked"}
+        ):
+            return ""
+        return "semantic_non_action_fast_path"
 
     def _wait_input_row(
         *,
@@ -727,7 +4520,7 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
         setup_reason_value: str | None = None,
         setup_trigger_state_value: str | None = None,
     ) -> dict:
-        return {
+        payload = {
             "symbol": str(symbol),
             "action": str(action_value or ""),
             "observe_reason": str(
@@ -829,8 +4622,49 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
         trade_link_key: str = "",
         order_submit_latency_ms: int | None = None,
     ) -> dict:
+        _debug_breadcrumb(
+            "decision_payload_begin",
+            f"{str(action or '')}|{str(outcome or '')}|{str(blocked_by or '')}",
+        )
+        payload_started_at = time.perf_counter()
+        payload_stage_timings_ms: dict[str, float] = {}
+
+        def _record_payload_stage(stage_name: str, started_at: float) -> None:
+            payload_stage_timings_ms[str(stage_name)] = round(
+                (time.perf_counter() - float(started_at)) * 1000.0,
+                3,
+            )
+
         nonlocal semantic_shadow_prediction_v1
         nonlocal semantic_live_guard_v1
+        nonlocal active_action_conflict_guard_v1
+        nonlocal flow_execution_veto_owner_v1
+        nonlocal flow_execution_selection_owner_v1
+        nonlocal directional_continuation_promotion_v1
+        flow_execution_selection_owner_flat_fields = (
+            _build_flow_execution_selection_owner_flat_fields(
+                flow_execution_selection_owner_v1
+            )
+        )
+        flow_execution_veto_owner_flat_fields = _build_flow_execution_veto_owner_flat_fields(
+            flow_execution_veto_owner_v1
+        )
+        veto_applied = bool(flow_execution_veto_owner_v1.get("veto_applied", False))
+        selection_active = bool(flow_execution_selection_owner_v1.get("selection_active", False))
+        selection_action = str(
+            flow_execution_selection_owner_v1.get("selected_action", "") or ""
+        ).upper().strip()
+        semantic_context_action = str(
+            selection_action
+            if selection_active and selection_action in {"BUY", "SELL"}
+            else ""
+            if veto_applied or (selection_active and selection_action == "WAIT")
+            else (active_action_conflict_guard_v1 or {}).get("baseline_action", "") or action or ""
+        )
+        active_action_conflict_guard_flat_fields = _build_active_action_conflict_guard_flat_fields(
+            active_action_conflict_guard_v1
+        )
+        stage_started_at = time.perf_counter()
         (
             effective_consumer_check_candidate,
             effective_consumer_check_display_ready,
@@ -844,67 +4678,36 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
             blocked_by_value=str(blocked_by or ""),
             action_value=str(action or ""),
         )
+        _record_payload_stage("consumer_check_state", stage_started_at)
         runtime_snapshot_row = _current_runtime_snapshot_row()
-        if semantic_shadow_prediction_v1 is None:
-            semantic_runtime = None
-            refresh_runtime = getattr(self.runtime, "_refresh_semantic_shadow_runtime_if_needed", None)
-            if callable(refresh_runtime):
-                try:
-                    refresh_runtime()
-                except Exception:
-                    semantic_runtime = None
-            semantic_runtime = semantic_runtime or getattr(self.runtime, "semantic_shadow_runtime", None)
-            if semantic_runtime is not None:
-                semantic_feature_row = build_semantic_shadow_feature_row(
-                    runtime_snapshot_row=runtime_snapshot_row,
-                    position_snapshot_v2=shadow_position_snapshot_v2,
-                    response_vector_v2=shadow_response_vector_v2,
-                    state_vector_v2=shadow_state_vector_v2,
-                    evidence_vector_v1=shadow_evidence_vector_v1,
-                    forecast_features_v1=shadow_forecast_features_v1,
-                    signal_timeframe=str(
-                        runtime_snapshot_row.get("signal_timeframe", "")
-                        or runtime_snapshot_row.get("timeframe", "")
-                        or ""
-                    ),
-                    setup_id=str(setup_id if setup_id_v is None else setup_id_v or ""),
-                    setup_side=str(setup_side if setup_side_v is None else setup_side_v or ""),
-                    entry_stage=str(entry_stage or ""),
-                    preflight_regime=str(preflight_regime or ""),
-                    preflight_liquidity=str(preflight_liquidity or ""),
-                )
-                try:
-                    semantic_shadow_prediction_v1 = semantic_runtime.predict_shadow(
-                        semantic_feature_row,
-                        action_hint=str(action or shadow_observe_confirm.get("action", "") or ""),
-                        timing_threshold=float(getattr(Config, "SEMANTIC_TIMING_THRESHOLD", 0.55)),
-                        entry_quality_threshold=float(
-                            getattr(Config, "SEMANTIC_ENTRY_QUALITY_THRESHOLD", 0.55)
-                        ),
-                        exit_management_threshold=float(
-                            getattr(Config, "SEMANTIC_EXIT_MANAGEMENT_THRESHOLD", 0.55)
-                        ),
-                    )
-                    try:
-                        self._store_runtime_snapshot(
-                            runtime=self.runtime,
-                            symbol=str(symbol),
-                            key="semantic_shadow_prediction_v1",
-                            payload=dict(semantic_shadow_prediction_v1),
-                        )
-                    except Exception:
-                        pass
-                except Exception:
-                    semantic_shadow_prediction_v1 = SemanticShadowRuntime.unavailable_prediction(
-                        reason="semantic_prediction_failed",
-                        action_hint=str(action or ""),
-                    )
-            else:
-                semantic_shadow_prediction_v1 = SemanticShadowRuntime.unavailable_prediction(
-                    reason="semantic_runtime_unavailable",
-                    action_hint=str(action or ""),
-                )
+        stage_started_at = time.perf_counter()
+        _materialize_shadow_runtime_maps()
+        _record_payload_stage("shadow_runtime_maps", stage_started_at)
+        stage_started_at = time.perf_counter()
+        semantic_fast_skip_reason = _resolve_semantic_shadow_fast_skip_reason(
+            runtime_snapshot_row=runtime_snapshot_row,
+            action_value=str(semantic_context_action),
+            outcome_value=str(outcome or ""),
+            blocked_by_value=str(blocked_by or ""),
+            observe_reason_value=str(observe_reason or ""),
+            action_none_reason_value=str(action_none_reason or ""),
+        )
+        if semantic_fast_skip_reason:
+            semantic_shadow_prediction_v1 = SemanticShadowRuntime.unavailable_prediction(
+                reason=str(semantic_fast_skip_reason),
+                action_hint=str(semantic_context_action or shadow_observe_confirm.get("action", "") or ""),
+            )
+        else:
+            _ensure_semantic_shadow_prediction(
+                runtime_snapshot_row=runtime_snapshot_row,
+                action_hint=str(semantic_context_action or shadow_observe_confirm.get("action", "") or ""),
+                setup_id_value=str(setup_id if setup_id_v is None else setup_id_v or ""),
+                setup_side_value=str(setup_side if setup_side_v is None else setup_side_v or ""),
+                entry_stage_value=str(entry_stage or ""),
+            )
+        _record_payload_stage("semantic_shadow", stage_started_at)
 
+        stage_started_at = time.perf_counter()
         if semantic_live_guard_v1 is None:
             semantic_live_guard = getattr(self.runtime, "semantic_promotion_guard", None)
             if semantic_live_guard is None:
@@ -913,7 +4716,7 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
             try:
                 semantic_live_guard_v1 = semantic_live_guard.evaluate_entry_rollout(
                     symbol=str(symbol),
-                    baseline_action=str(action),
+                    baseline_action=str(semantic_context_action),
                     entry_stage=str(entry_stage),
                     current_threshold=int(current_threshold),
                     semantic_prediction=semantic_shadow_prediction_v1,
@@ -968,6 +4771,8 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
                     "symbol_allowed": False,
                     "entry_stage_allowed": False,
                 }
+        _record_payload_stage("semantic_live_guard", stage_started_at)
+        stage_started_at = time.perf_counter()
         wait_state = self._wait_engine.build_entry_wait_state_from_row(
             symbol=str(symbol),
             row=_wait_input_row(
@@ -985,7 +4790,11 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
                 ),
             ),
         )
-        wait_metadata = dict(wait_state.metadata or {})
+        _record_payload_stage("wait_state", stage_started_at)
+        wait_metadata = _sync_blocked_by_into_wait_payloads_v1(
+            dict(wait_state.metadata or {}),
+            str(blocked_by or ""),
+        )
         vol_ratio = float((regime or {}).get("volatility_ratio", 1.0) or 1.0)
         semantic_timing = (
             semantic_shadow_prediction_v1.get("timing", {})
@@ -1014,13 +4823,216 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
         semantic_compare_label = resolve_semantic_shadow_compare_label(
             semantic_shadow_prediction_v1,
             baseline_outcome=str(outcome or ""),
-            baseline_action=str(action or ""),
+            baseline_action=str(semantic_context_action),
             blocked_by=str(blocked_by or ""),
         )
-        observe_confirm_runtime_payload = _build_runtime_observe_confirm_dual_write(
-            shadow_observe_confirm=shadow_observe_confirm,
+        actual_effective_entry_threshold = (
+            float(effective_threshold)
+            if effective_threshold is not None
+            else float(entry_threshold)
         )
-        return {
+        _debug_breadcrumb(
+            "decision_payload_bridge_begin",
+            f"{str(action or '')}|{str(outcome or '')}|{str(blocked_by or '')}",
+        )
+        stage_started_at = time.perf_counter()
+        semantic_owner_bundle = _build_semantic_owner_runtime_bundle_v1(
+            runtime_snapshot_row=runtime_snapshot_row,
+            symbol=str(symbol),
+            action=str(semantic_context_action),
+            setup_id=str(setup_id or ""),
+            setup_reason=str(setup_reason or ""),
+            setup_side=str(setup_side or semantic_context_action or ""),
+            entry_session_name=str(entry_session_name or ""),
+            wait_state=wait_state,
+            entry_wait_decision=str(entry_wait_decision or ""),
+            score=float(score),
+            contra_score=float(contra_score),
+            prediction_bundle=prediction_bundle,
+            shadow_transition_forecast_v1=shadow_transition_forecast_v1,
+            shadow_trade_management_forecast_v1=shadow_trade_management_forecast_v1,
+            shadow_observe_confirm=shadow_observe_confirm,
+            entry_stage=str(entry_stage or ""),
+            actual_effective_entry_threshold=float(actual_effective_entry_threshold),
+            actual_size_multiplier=float(size_multiplier),
+            state25_candidate_runtime_state=getattr(
+                self.runtime, "state25_candidate_runtime_state", {}
+            ),
+        )
+        _record_payload_stage("semantic_owner_bundle", stage_started_at)
+        state25_candidate_log_only_trace_v1 = dict(
+            semantic_owner_bundle.get("state25_candidate_log_only_trace_v1", {}) or {}
+        )
+        observe_confirm_runtime_payload = dict(
+            semantic_owner_bundle.get("observe_confirm_runtime_payload", {}) or {}
+        )
+        forecast_state25_runtime_bridge_v1 = dict(
+            semantic_owner_bundle.get("forecast_state25_runtime_bridge_v1", {}) or {}
+        )
+        forecast_state25_log_only_overlay_trace_v1 = dict(
+            semantic_owner_bundle.get("forecast_state25_log_only_overlay_trace_v1", {}) or {}
+        )
+        belief_state25_runtime_bridge_v1 = dict(
+            semantic_owner_bundle.get("belief_state25_runtime_bridge_v1", {}) or {}
+        )
+        belief_action_hint_v1 = dict(
+            semantic_owner_bundle.get("belief_action_hint_v1", {}) or {}
+        )
+        barrier_state25_runtime_bridge_v1 = dict(
+            semantic_owner_bundle.get("barrier_state25_runtime_bridge_v1", {}) or {}
+        )
+        barrier_action_hint_v1 = dict(
+            semantic_owner_bundle.get("barrier_action_hint_v1", {}) or {}
+        )
+        semantic_owner_flat_fields = dict(
+            semantic_owner_bundle.get("flat_fields", {}) or {}
+        )
+        semantic_owner_detail_fields = dict(
+            semantic_owner_bundle.get("detail_fields", {}) or {}
+        )
+        stage_started_at = time.perf_counter()
+        entry_candidate_surface_v1 = build_entry_candidate_bridge_v1(
+            symbol=str(symbol),
+            action=str(action or ""),
+            entry_stage=str(entry_stage or ""),
+            core_reason=str(core_reason if core_reason_v is None else core_reason_v),
+            observe_reason=str(observe_reason or ""),
+            action_none_reason=str(action_none_reason or ""),
+            blocked_by=str(blocked_by or ""),
+            compatibility_mode=str(runtime_snapshot_row.get("compatibility_mode", "") or ""),
+            semantic_probe_bridge_action=str(semantic_probe_bridge_candidate_action or ""),
+            semantic_probe_bridge_reason=str(semantic_probe_bridge_candidate_reason or ""),
+            entry_probe_plan_v1=dict(entry_probe_plan_v1 or {}),
+            entry_default_side_gate_v1=dict(core_dec.get("entry_default_side_gate_v1", {}) or {})
+            if isinstance(core_dec.get("entry_default_side_gate_v1", {}), dict)
+            else {},
+            probe_candidate_v1=_safe_mapping(
+                _safe_mapping(
+                    _safe_mapping(shadow_observe_confirm).get("metadata", {})
+                ).get("probe_candidate_v1", {})
+            ),
+            semantic_shadow_prediction_v1=dict(semantic_shadow_prediction_v1 or {}),
+            state25_candidate_log_only_trace_v1=state25_candidate_log_only_trace_v1,
+            forecast_state25_runtime_bridge_v1=forecast_state25_runtime_bridge_v1,
+            forecast_state25_log_only_overlay_trace_v1=forecast_state25_log_only_overlay_trace_v1,
+            breakout_event_runtime_v1=dict(
+                semantic_owner_bundle.get("breakout_event_runtime_v1", {}) or {}
+            ),
+            breakout_event_overlay_candidates_v1=dict(
+                semantic_owner_bundle.get("breakout_event_overlay_candidates_v1", {}) or {}
+            ),
+            countertrend_continuation_signal_v1=dict(
+                semantic_owner_bundle.get("countertrend_continuation_signal_v1", {}) or {}
+            ),
+            active_action_conflict_guard_v1=dict(active_action_conflict_guard_v1 or {}),
+        )
+        entry_candidate_bridge_fields = build_entry_candidate_bridge_flat_fields(
+            entry_candidate_surface_v1
+        )
+        _record_payload_stage("entry_candidate_bridge", stage_started_at)
+        _debug_breadcrumb(
+            "decision_payload_bridge_done",
+            f"{str(action or '')}|{str(outcome or '')}|{str(blocked_by or '')}",
+        )
+        stage_started_at = time.perf_counter()
+        prediction_bundle_json = (
+            json.dumps(prediction_bundle, ensure_ascii=False, separators=(",", ":"))
+            if any(bool(prediction_bundle.get(k)) for k in ("entry", "wait", "exit", "reverse", "metadata"))
+            else ""
+        )
+        position_snapshot_v2_json = _json_field(shadow_position_snapshot_v2)
+        response_raw_snapshot_v1_json = _json_field(shadow_response_raw_snapshot_v1)
+        response_vector_v2_json = _json_field(shadow_response_vector_v2)
+        state_raw_snapshot_v1_json = _json_field(shadow_state_raw_snapshot_v1)
+        state_vector_v2_json = _json_field(shadow_state_vector_v2)
+        evidence_vector_v1_json = _json_field(shadow_evidence_vector_v1)
+        belief_state_v1_json = _json_field(shadow_belief_state_v1)
+        barrier_state_v1_json = _json_field(shadow_barrier_state_v1)
+        forecast_features_v1_json = _json_field(shadow_forecast_features_v1)
+        transition_forecast_v1_json = _json_field(shadow_transition_forecast_v1)
+        trade_management_forecast_v1_json = _json_field(shadow_trade_management_forecast_v1)
+        forecast_gap_metrics_v1_json = _json_field({
+            "transition_side_separation": float((((shadow_transition_forecast_v1.get("metadata", {}) or {}).get("side_separation", 0.0)) or 0.0)),
+            "transition_confirm_fake_gap": float((((shadow_transition_forecast_v1.get("metadata", {}) or {}).get("confirm_fake_gap", 0.0)) or 0.0)),
+            "transition_reversal_continuation_gap": float((((shadow_transition_forecast_v1.get("metadata", {}) or {}).get("reversal_continuation_gap", 0.0)) or 0.0)),
+            "management_continue_fail_gap": float((((shadow_trade_management_forecast_v1.get("metadata", {}) or {}).get("continue_fail_gap", 0.0)) or 0.0)),
+            "management_recover_reentry_gap": float((((shadow_trade_management_forecast_v1.get("metadata", {}) or {}).get("recover_reentry_gap", 0.0)) or 0.0)),
+        })
+        observe_confirm_v2_json = _json_field(observe_confirm_runtime_payload.get("observe_confirm_v2", {}))
+        observe_confirm_v1_json = _json_field(observe_confirm_runtime_payload.get("observe_confirm_v1", {}))
+        _record_payload_stage("json_serialize", stage_started_at)
+        _debug_breadcrumb(
+            "decision_payload_json_done",
+            f"{str(action or '')}|{str(outcome or '')}|json",
+        )
+        helper_payload_profile_v1 = {
+            "contract_version": "entry_helper_payload_profile_v1",
+            "action": str(action or ""),
+            "outcome": str(outcome or ""),
+            "blocked_by": str(blocked_by or ""),
+            "total_ms": round((time.perf_counter() - payload_started_at) * 1000.0, 3),
+            "stage_timings_ms": dict(payload_stage_timings_ms),
+        }
+        try:
+            self._store_runtime_snapshot(
+                runtime=self.runtime,
+                symbol=str(symbol),
+                key="entry_helper_payload_profile_v1",
+                payload=helper_payload_profile_v1,
+            )
+        except Exception:
+            pass
+        directional_runtime_surface_v1 = _refresh_directional_runtime_execution_surface_v1(
+            runtime_owner=getattr(self, "runtime", None),
+            symbol=str(symbol),
+            runtime_row=runtime_snapshot_row,
+            baseline_action=str(original_action_side_v1 or ""),
+            current_action=str(action or ""),
+            blocked_by=str(blocked_by or ""),
+            observe_reason=str(observe_reason or ""),
+            action_none_reason=str(action_none_reason or ""),
+            setup_id=str(setup_id or ""),
+            setup_reason=str(setup_reason or observe_reason or ""),
+            forecast_state25_log_only_overlay_trace_v1=dict(
+                forecast_state25_log_only_overlay_trace_v1 or {}
+            ),
+            belief_action_hint_v1=dict(belief_action_hint_v1 or {}),
+            barrier_action_hint_v1=dict(barrier_action_hint_v1 or {}),
+            countertrend_continuation_signal_v1=dict(
+                countertrend_continuation_signal_v1 or {}
+            ),
+            breakout_event_runtime_v1=dict(breakout_event_runtime_v1 or {}),
+            breakout_event_overlay_candidates_v1=dict(
+                breakout_event_overlay_candidates_v1 or {}
+            ),
+        )
+        runtime_snapshot_row = dict(
+            directional_runtime_surface_v1.get("runtime_row", runtime_snapshot_row) or {}
+        )
+        active_action_conflict_guard_v1 = dict(
+            directional_runtime_surface_v1.get(
+                "active_action_conflict_guard_v1",
+                active_action_conflict_guard_v1,
+            )
+            or {}
+        )
+        directional_continuation_promotion_v1 = dict(
+            directional_runtime_surface_v1.get(
+                "directional_continuation_promotion_v1",
+                directional_continuation_promotion_v1,
+            )
+            or {}
+        )
+        execution_action_diff_v1 = dict(
+            directional_runtime_surface_v1.get("execution_action_diff_v1", {}) or {}
+        )
+        decision_metrics_v1 = {
+            "observe_reason": str(observe_reason or ""),
+            "action_none_reason": str(action_none_reason or ""),
+            **_build_execution_action_diff_flat_fields_v1(execution_action_diff_v1),
+        }
+        stage_started_at = time.perf_counter()
+        payload = {
             "time": datetime.now().isoformat(timespec="seconds"),
             "_decision_generated_ts": time.time(),
             "_runtime_snapshot_generated_ts": runtime_snapshot_row.get("runtime_snapshot_generated_ts", ""),
@@ -1032,6 +5044,7 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
             "blocked_by": str(blocked_by),
             "runtime_snapshot_key": str(runtime_snapshot_row.get("runtime_snapshot_key", "") or ""),
             "trade_link_key": str(trade_link_key or ""),
+            "execution_action_diff_v1": dict(execution_action_diff_v1),
             "signal_age_sec": float(runtime_snapshot_row.get("signal_age_sec", 0.0) or 0.0),
             "bar_age_sec": float(runtime_snapshot_row.get("bar_age_sec", 0.0) or 0.0),
             "decision_latency_ms": int(runtime_snapshot_row.get("decision_latency_ms", 0) or 0),
@@ -1089,9 +5102,8 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
             "entry_wait_decision_energy_usage_trace_v1": dict(
                 entry_wait_decision_energy_usage_trace_v1 or {}
             ),
-            "prediction_bundle": json.dumps(prediction_bundle, ensure_ascii=False, separators=(",", ":"))
-            if any(bool(prediction_bundle.get(k)) for k in ("entry", "wait", "exit", "reverse", "metadata"))
-            else "",
+            "metrics": dict(decision_metrics_v1),
+            "prediction_bundle": prediction_bundle_json,
             "prs_contract_version": "v2",
             "prs_canonical_position_field": "position_snapshot_v2",
             "prs_canonical_response_field": "response_vector_v2",
@@ -1109,31 +5121,25 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
             "prs_compatibility_observe_confirm_field": str(
                 observe_confirm_runtime_payload.get("prs_compatibility_observe_confirm_field", "") or "observe_confirm_v1"
             ),
-            "position_snapshot_v2": _json_field(shadow_position_snapshot_v2),
-            "response_raw_snapshot_v1": _json_field(shadow_response_raw_snapshot_v1),
-            "response_vector_v2": _json_field(shadow_response_vector_v2),
-            "state_raw_snapshot_v1": _json_field(shadow_state_raw_snapshot_v1),
-            "state_vector_v2": _json_field(shadow_state_vector_v2),
-            "evidence_vector_v1": _json_field(shadow_evidence_vector_v1),
-            "belief_state_v1": _json_field(shadow_belief_state_v1),
-            "barrier_state_v1": _json_field(shadow_barrier_state_v1),
-            "forecast_features_v1": _json_field(shadow_forecast_features_v1),
-            "transition_forecast_v1": _json_field(shadow_transition_forecast_v1),
-            "trade_management_forecast_v1": _json_field(shadow_trade_management_forecast_v1),
-            "forecast_gap_metrics_v1": _json_field({
-                "transition_side_separation": float((((shadow_transition_forecast_v1.get("metadata", {}) or {}).get("side_separation", 0.0)) or 0.0)),
-                "transition_confirm_fake_gap": float((((shadow_transition_forecast_v1.get("metadata", {}) or {}).get("confirm_fake_gap", 0.0)) or 0.0)),
-                "transition_reversal_continuation_gap": float((((shadow_transition_forecast_v1.get("metadata", {}) or {}).get("reversal_continuation_gap", 0.0)) or 0.0)),
-                "management_continue_fail_gap": float((((shadow_trade_management_forecast_v1.get("metadata", {}) or {}).get("continue_fail_gap", 0.0)) or 0.0)),
-                "management_recover_reentry_gap": float((((shadow_trade_management_forecast_v1.get("metadata", {}) or {}).get("recover_reentry_gap", 0.0)) or 0.0)),
-            }),
+            "position_snapshot_v2": position_snapshot_v2_json,
+            "response_raw_snapshot_v1": response_raw_snapshot_v1_json,
+            "response_vector_v2": response_vector_v2_json,
+            "state_raw_snapshot_v1": state_raw_snapshot_v1_json,
+            "state_vector_v2": state_vector_v2_json,
+            "evidence_vector_v1": evidence_vector_v1_json,
+            "belief_state_v1": belief_state_v1_json,
+            "barrier_state_v1": barrier_state_v1_json,
+            "forecast_features_v1": forecast_features_v1_json,
+            "transition_forecast_v1": transition_forecast_v1_json,
+            "trade_management_forecast_v1": trade_management_forecast_v1_json,
+            "forecast_gap_metrics_v1": forecast_gap_metrics_v1_json,
             "transition_side_separation": float((((shadow_transition_forecast_v1.get("metadata", {}) or {}).get("side_separation", 0.0)) or 0.0)),
             "transition_confirm_fake_gap": float((((shadow_transition_forecast_v1.get("metadata", {}) or {}).get("confirm_fake_gap", 0.0)) or 0.0)),
             "transition_reversal_continuation_gap": float((((shadow_transition_forecast_v1.get("metadata", {}) or {}).get("reversal_continuation_gap", 0.0)) or 0.0)),
             "management_continue_fail_gap": float((((shadow_trade_management_forecast_v1.get("metadata", {}) or {}).get("continue_fail_gap", 0.0)) or 0.0)),
             "management_recover_reentry_gap": float((((shadow_trade_management_forecast_v1.get("metadata", {}) or {}).get("recover_reentry_gap", 0.0)) or 0.0)),
-            "observe_confirm_v2": _json_field(observe_confirm_runtime_payload.get("observe_confirm_v2", {})),
-            "observe_confirm_v1": _json_field(observe_confirm_runtime_payload.get("observe_confirm_v1", {})),
+            "observe_confirm_v2": observe_confirm_v2_json,
+            "observe_confirm_v1": observe_confirm_v1_json,
             "observe_confirm_input_contract_v2": dict(
                 observe_confirm_runtime_payload.get("observe_confirm_input_contract_v2", {})
             ),
@@ -1292,6 +5298,17 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
             ),
             "base_entry_threshold": float(entry_threshold),
             "size_multiplier": float(size_multiplier),
+            "flow_execution_selection_owner_v1": dict(
+                flow_execution_selection_owner_v1 or {}
+            ),
+            **flow_execution_selection_owner_flat_fields,
+            "flow_execution_veto_owner_v1": dict(flow_execution_veto_owner_v1 or {}),
+            **flow_execution_veto_owner_flat_fields,
+            "active_action_conflict_guard_v1": dict(active_action_conflict_guard_v1 or {}),
+            **active_action_conflict_guard_flat_fields,
+            **semantic_owner_flat_fields,
+            **semantic_owner_detail_fields,
+            **entry_candidate_bridge_fields,
             "cooldown_sec": int(cooldown_remaining),
             "entry_stage": str(entry_stage or ""),
             "ai_probability": ("" if ai_probability is None else float(ai_probability)),
@@ -1344,7 +5361,131 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
             "ai_used": int(ai_used),
             "ai_missing_reason": str(ai_missing_reason or ""),
             "p7_guarded_size_overlay_v1": dict(p7_guarded_size_overlay_v1 or {}),
+            "teacher_label_exploration_active": bool(
+                (teacher_label_exploration_entry_v1 or {}).get("active", False)
+            ),
+            "teacher_label_exploration_enabled": bool(
+                (teacher_label_exploration_entry_v1 or {}).get("enabled", False)
+            ),
+            "teacher_label_exploration_family": str(
+                (teacher_label_exploration_entry_v1 or {}).get("family", "") or ""
+            ),
+            "teacher_label_exploration_reason": str(
+                (teacher_label_exploration_entry_v1 or {}).get("activation_reason", "") or ""
+            ),
+            "teacher_label_exploration_guard_failure_code": str(
+                (teacher_label_exploration_entry_v1 or {}).get("guard_failure_code", "") or ""
+            ),
+            "teacher_label_exploration_soft_block_reason": str(
+                (teacher_label_exploration_entry_v1 or {}).get("soft_block_reason", "") or ""
+            ),
+            "teacher_label_exploration_check_side": str(
+                (teacher_label_exploration_entry_v1 or {}).get("check_side", "") or ""
+            ),
+            "teacher_label_exploration_check_stage": str(
+                (teacher_label_exploration_entry_v1 or {}).get("check_stage", "") or ""
+            ),
+            "teacher_label_exploration_same_dir_count": int(
+                (teacher_label_exploration_entry_v1 or {}).get("same_dir_count", 0) or 0
+            ),
+            "teacher_label_exploration_score_ratio": (
+                ""
+                if not teacher_label_exploration_entry_v1
+                else float((teacher_label_exploration_entry_v1 or {}).get("score_ratio", 0.0) or 0.0)
+            ),
+            "teacher_label_exploration_threshold_gap": (
+                ""
+                if not teacher_label_exploration_entry_v1
+                else float((teacher_label_exploration_entry_v1 or {}).get("threshold_gap", 0.0) or 0.0)
+            ),
+            "teacher_label_exploration_size_multiplier": (
+                ""
+                if not teacher_label_exploration_entry_v1
+                else float((teacher_label_exploration_entry_v1 or {}).get("size_multiplier", 0.0) or 0.0)
+            ),
+            "teacher_label_exploration_entry_v1": dict(teacher_label_exploration_entry_v1 or {}),
         }
+        _record_payload_stage("decision_payload_build", stage_started_at)
+        _debug_breadcrumb(
+            "decision_payload_built",
+            f"{str(action or '')}|{str(outcome or '')}|payload",
+        )
+        stage_started_at = time.perf_counter()
+        path_leg_state_by_symbol = getattr(self.runtime, "path_leg_state_by_symbol", None)
+        if not isinstance(path_leg_state_by_symbol, dict):
+            path_leg_state_by_symbol = {}
+            setattr(self.runtime, "path_leg_state_by_symbol", path_leg_state_by_symbol)
+        prior_leg_state = path_leg_state_by_symbol.get(str(symbol), runtime_snapshot_row)
+        leg_assignment = assign_leg_id(
+            str(symbol),
+            payload,
+            prior_leg_state if isinstance(prior_leg_state, Mapping) else runtime_snapshot_row,
+        )
+        payload.update(extract_leg_runtime_fields(leg_assignment))
+        path_leg_state_by_symbol[str(symbol)] = dict(leg_assignment.get("symbol_state", {}) or {})
+        _record_payload_stage("path_leg_assignment", stage_started_at)
+        _debug_breadcrumb(
+            "decision_payload_leg_done",
+            str(payload.get("leg_transition_reason", "") or ""),
+        )
+        stage_started_at = time.perf_counter()
+        path_checkpoint_state_by_symbol = getattr(self.runtime, "path_checkpoint_state_by_symbol", None)
+        if not isinstance(path_checkpoint_state_by_symbol, dict):
+            path_checkpoint_state_by_symbol = {}
+            setattr(self.runtime, "path_checkpoint_state_by_symbol", path_checkpoint_state_by_symbol)
+        prior_checkpoint_state = path_checkpoint_state_by_symbol.get(
+            str(symbol),
+            path_leg_state_by_symbol.get(str(symbol), payload),
+        )
+        checkpoint_assignment = assign_checkpoint_context(
+            str(symbol),
+            payload,
+            prior_checkpoint_state if isinstance(prior_checkpoint_state, Mapping) else payload,
+        )
+        payload.update(extract_checkpoint_fields(checkpoint_assignment))
+        path_checkpoint_state_by_symbol[str(symbol)] = dict(
+            checkpoint_assignment.get("symbol_state", {}) or {}
+        )
+        _record_payload_stage("path_checkpoint_assignment", stage_started_at)
+        _debug_breadcrumb(
+            "decision_payload_checkpoint_done",
+            str(payload.get("checkpoint_transition_reason", "") or ""),
+        )
+        stage_started_at = time.perf_counter()
+        try:
+            record_checkpoint_context(
+                runtime=self.runtime,
+                symbol=str(symbol),
+                runtime_row=payload,
+                symbol_state=checkpoint_assignment.get("symbol_state", {}) or {},
+                position_state=build_flat_position_state(),
+                source="entry_runtime",
+                refresh_analysis=False,
+            )
+        except Exception:
+            pass
+        _record_payload_stage("path_checkpoint_context_store", stage_started_at)
+        _debug_breadcrumb(
+            "decision_payload_checkpoint_store_done",
+            str(payload.get("checkpoint_type", "") or ""),
+        )
+        stage_started_at = time.perf_counter()
+        payload = _sync_blocked_by_into_wait_payloads_v1(payload, str(blocked_by or ""))
+        if isinstance(self.runtime.latest_signal_by_symbol, dict):
+            existing_runtime_row = self.runtime.latest_signal_by_symbol.get(str(symbol), {})
+            merged_runtime_row = (
+                dict(existing_runtime_row)
+                if isinstance(existing_runtime_row, dict)
+                else {}
+            )
+            merged_runtime_row.update(payload)
+            self.runtime.latest_signal_by_symbol[str(symbol)] = merged_runtime_row
+        _record_payload_stage("runtime_row_merge", stage_started_at)
+        _debug_breadcrumb(
+            "decision_payload_return_ready",
+            f"{str(action or '')}|{str(outcome or '')}|return",
+        )
+        return payload
 
     def _mark_skip(
         reason: str,
@@ -1401,7 +5542,10 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
                 symbol=str(symbol),
                 row=wait_input_row,
             )
-            wait_metadata = dict(wait_state.metadata or {})
+            wait_metadata = _sync_blocked_by_into_wait_payloads_v1(
+                dict(wait_state.metadata or {}),
+                str(effective_blocked_by_value or ""),
+            )
             normalized_wait_decision = str(entry_wait_decision or ("skip" if int(entry_wait_selected) <= 0 else ""))
             if normalized_wait_decision:
                 entry_wait_decision = normalized_wait_decision
@@ -1428,6 +5572,7 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
             row["entry_wait_decision_energy_usage_trace_v1"] = dict(
                 entry_wait_decision_energy_usage_trace_v1 or {}
             )
+            row = _sync_blocked_by_into_wait_payloads_v1(row, str(effective_blocked_by_value or ""))
             for k, v in (extra or {}).items():
                 row[k] = v
             (
@@ -1460,6 +5605,41 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
             row["consumer_check_state_v1"] = dict(effective_consumer_check_state_v1 or {})
             if isinstance(self.runtime.latest_signal_by_symbol, dict):
                 self.runtime.latest_signal_by_symbol[symbol] = row
+            if str(reason or "").strip().lower() != "entered":
+                side = str(action_v or action or "").strip().upper()
+                current_price = 0.0
+                try:
+                    if side == "BUY":
+                        current_price = float(getattr(tick, "ask", 0.0) or 0.0)
+                    elif side == "SELL":
+                        current_price = float(getattr(tick, "bid", 0.0) or 0.0)
+                except Exception:
+                    current_price = 0.0
+                wait_reason_text = str(
+                    row.get("entry_wait_reason")
+                    or row.get("entry_skip_reason")
+                    or row.get("blocked_by")
+                    or reason
+                    or ""
+                )
+                wait_signature = self.runtime.build_wait_message_signature(
+                    str(symbol),
+                    side,
+                    reason=wait_reason_text,
+                    row=row,
+                )
+                if self.runtime.should_notify_wait_message(str(symbol), wait_signature):
+                    wait_message = self.runtime.format_wait_message(
+                        str(symbol),
+                        side,
+                        float(current_price),
+                        int(pos_count),
+                        int(Config.MAX_POSITIONS),
+                        reason=wait_reason_text,
+                        row=row,
+                    )
+                    if wait_message:
+                        self.runtime.notify(wait_message)
         except Exception:
             return
 
@@ -1606,7 +5786,12 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
 
     max_positions_for_symbol = int(Config.get_max_positions(symbol))
     if pos_count >= max_positions_for_symbol:
+        _record_entry_prefront_stage("initial_limits", entry_prefront_stage_started_at)
         _mark_skip("max_positions_reached", pos_count=int(pos_count), max_positions=max_positions_for_symbol)
+        _store_entry_prefront_profile(
+            exit_state="max_positions_reached",
+            blocked_by_value="max_positions_reached",
+        )
         self._append_entry_decision_log(
             _decision_payload(
                 considered=1,
@@ -1620,7 +5805,12 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
 
     cooldown_ok = (time.time() - self.runtime.last_entry_time.get(symbol, 0)) > Config.ENTRY_COOLDOWN
     if not cooldown_ok:
+        _record_entry_prefront_stage("initial_limits", entry_prefront_stage_started_at)
         _mark_skip("entry_cooldown", cooldown_sec_remaining=max(0, int(Config.ENTRY_COOLDOWN - (time.time() - self.runtime.last_entry_time.get(symbol, 0)))))
+        _store_entry_prefront_profile(
+            exit_state="entry_cooldown",
+            blocked_by_value="entry_cooldown",
+        )
         self._append_entry_decision_log(
             _decision_payload(
                 considered=1,
@@ -1632,7 +5822,18 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
         )
         return
 
+    _set_entry_prefront_stage("build_entry_context")
+    entry_front_started_at = time.perf_counter()
+    entry_front_stage_timings_ms: dict[str, float] = {}
+
+    def _record_entry_front_stage(stage_name: str, started_at: float) -> None:
+        entry_front_stage_timings_ms[str(stage_name)] = round(
+            (time.perf_counter() - float(started_at)) * 1000.0,
+            3,
+        )
+
     try:
+        stage_started_at = time.perf_counter()
         shadow_bundle = self._context_classifier.build_entry_context(
             symbol=symbol,
             tick=tick,
@@ -1642,76 +5843,67 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
             buy_s=buy_s,
             sell_s=sell_s,
         )
+        _record_entry_front_stage("build_entry_context", stage_started_at)
         shadow_context = shadow_bundle.get("context")
-        shadow_entry_context_v1 = shadow_context.to_dict() if shadow_context is not None else {}
-        shadow_position_snapshot = shadow_bundle.get("position_snapshot")
-        shadow_position = shadow_bundle.get("position_vector")
-        shadow_response_raw = shadow_bundle.get("response_raw_snapshot")
-        shadow_response = shadow_bundle.get("response_vector")
-        shadow_response_v2 = shadow_bundle.get("response_vector_v2")
-        shadow_state_raw = shadow_bundle.get("state_raw_snapshot")
-        shadow_state = shadow_bundle.get("state_vector")
-        shadow_state_v2 = shadow_bundle.get("state_vector_v2")
-        shadow_evidence = shadow_bundle.get("evidence_vector")
-        shadow_belief = shadow_bundle.get("belief_state")
-        shadow_barrier = shadow_bundle.get("barrier_state")
-        shadow_forecast_features = shadow_bundle.get("forecast_features")
-        shadow_transition_forecast = shadow_bundle.get("transition_forecast")
-        shadow_trade_management_forecast = shadow_bundle.get("trade_management_forecast")
-        shadow_energy = shadow_bundle.get("energy_snapshot")
+        shadow_position_snapshot_obj = shadow_bundle.get("position_snapshot")
+        shadow_response_raw_obj = shadow_bundle.get("response_raw_snapshot")
+        shadow_response_v2_obj = shadow_bundle.get("response_vector_v2")
+        shadow_state_raw_obj = shadow_bundle.get("state_raw_snapshot")
+        shadow_state_v2_obj = shadow_bundle.get("state_vector_v2")
+        shadow_evidence_obj = shadow_bundle.get("evidence_vector")
+        shadow_belief_obj = shadow_bundle.get("belief_state")
+        shadow_barrier_obj = shadow_bundle.get("barrier_state")
+        shadow_forecast_features_obj = shadow_bundle.get("forecast_features")
+        shadow_transition_forecast_obj = shadow_bundle.get("transition_forecast")
+        shadow_trade_management_forecast_obj = shadow_bundle.get("trade_management_forecast")
+        shadow_energy_obj = shadow_bundle.get("energy_snapshot")
         shadow_observe = shadow_bundle.get("observe_confirm")
-        shadow_position_snapshot_v2 = shadow_position_snapshot.to_dict() if shadow_position_snapshot is not None else {}
-        shadow_position_vector = shadow_position.to_dict() if shadow_position is not None else {}
-        shadow_response_raw_snapshot_v1 = shadow_response_raw.to_dict() if shadow_response_raw is not None else {}
-        shadow_response_vector = shadow_response.to_dict() if shadow_response is not None else {}
-        shadow_response_vector_v2 = shadow_response_v2.to_dict() if shadow_response_v2 is not None else {}
-        shadow_state_raw_snapshot_v1 = shadow_state_raw.to_dict() if shadow_state_raw is not None else {}
-        shadow_state_vector = shadow_state.to_dict() if shadow_state is not None else {}
-        shadow_state_vector_v2 = shadow_state_v2.to_dict() if shadow_state_v2 is not None else {}
-        shadow_evidence_vector_v1 = shadow_evidence.to_dict() if shadow_evidence is not None else {}
-        shadow_belief_state_v1 = shadow_belief.to_dict() if shadow_belief is not None else {}
-        shadow_barrier_state_v1 = shadow_barrier.to_dict() if shadow_barrier is not None else {}
-        shadow_forecast_features_v1 = shadow_forecast_features.to_dict() if shadow_forecast_features is not None else {}
-        shadow_transition_forecast_v1 = shadow_transition_forecast.to_dict() if shadow_transition_forecast is not None else {}
-        shadow_trade_management_forecast_v1 = shadow_trade_management_forecast.to_dict() if shadow_trade_management_forecast is not None else {}
-        shadow_energy_snapshot = shadow_energy.to_dict() if shadow_energy is not None else {}
-        shadow_observe_confirm = shadow_observe.to_dict() if shadow_observe is not None else {}
+        stage_started_at = time.perf_counter()
+        _record_entry_prefront_stage("build_entry_context", entry_prefront_stage_started_at)
+        _set_entry_prefront_stage("extract_shadow_handoff")
+        shadow_context_metadata_v1 = _safe_mapping(getattr(shadow_context, "metadata", {}))
+        shadow_observe_confirm = _safe_mapping(shadow_observe)
+        _record_entry_front_stage("extract_shadow_handoff", stage_started_at)
+        _record_entry_prefront_stage("extract_shadow_handoff", entry_prefront_stage_started_at)
         try:
             self._store_runtime_snapshot(
                 runtime=self.runtime,
                 symbol=str(symbol),
                 key="entry_shadow_compare_v1",
                 payload={
-                    "context": dict(shadow_entry_context_v1),
-                    "position_snapshot_v2": dict(shadow_position_snapshot_v2),
-                    "response_raw_snapshot_v1": dict(shadow_response_raw_snapshot_v1),
-                    "response_vector_v2": dict(shadow_response_vector_v2),
-                    "state_raw_snapshot_v1": dict(shadow_state_raw_snapshot_v1),
-                    "state_vector_v2": dict(shadow_state_vector_v2),
-                    "evidence_vector_v1": dict(shadow_evidence_vector_v1),
-                    "belief_state_v1": dict(shadow_belief_state_v1),
-                    "barrier_state_v1": dict(shadow_barrier_state_v1),
-                    "forecast_features_v1": dict(shadow_forecast_features_v1),
-                    "transition_forecast_v1": dict(shadow_transition_forecast_v1),
-                    "trade_management_forecast_v1": dict(shadow_trade_management_forecast_v1),
-                    "position": dict(shadow_position_vector),
-                    "response": dict(shadow_response_vector),
-                    "state": dict(shadow_state_vector),
-                    "energy": dict(shadow_energy_snapshot),
-                    "observe_confirm": dict(shadow_observe_confirm),
+                    "contract_version": "entry_shadow_compare_v1",
+                    "symbol": str(symbol),
+                    "observe_state": str(shadow_observe_confirm.get("state", "") or ""),
+                    "observe_action": str(shadow_observe_confirm.get("action", "") or ""),
+                    "observe_reason": str(shadow_observe_confirm.get("reason", "") or ""),
+                    "context_metadata_keys": int(len(shadow_context_metadata_v1)),
+                    "has_position_snapshot": bool(shadow_position_snapshot_obj is not None),
+                    "has_response_snapshot": bool(shadow_response_v2_obj is not None),
+                    "has_state_snapshot": bool(shadow_state_v2_obj is not None),
+                    "has_evidence_snapshot": bool(shadow_evidence_obj is not None),
+                    "has_forecast_snapshot": bool(shadow_forecast_features_obj is not None),
                 },
             )
         except Exception:
             pass
     except Exception:
-        shadow_entry_context_v1 = {}
+        shadow_context_metadata_v1 = {}
+        shadow_position_snapshot_obj = None
+        shadow_response_raw_obj = None
+        shadow_response_v2_obj = None
+        shadow_state_raw_obj = None
+        shadow_state_v2_obj = None
+        shadow_evidence_obj = None
+        shadow_belief_obj = None
+        shadow_barrier_obj = None
+        shadow_forecast_features_obj = None
+        shadow_transition_forecast_obj = None
+        shadow_trade_management_forecast_obj = None
+        shadow_energy_obj = None
         shadow_position_snapshot_v2 = {}
-        shadow_position_vector = {}
         shadow_response_raw_snapshot_v1 = {}
-        shadow_response_vector = {}
         shadow_response_vector_v2 = {}
         shadow_state_raw_snapshot_v1 = {}
-        shadow_state_vector = {}
         shadow_state_vector_v2 = {}
         shadow_evidence_vector_v1 = {}
         shadow_belief_state_v1 = {}
@@ -1721,17 +5913,24 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
         shadow_trade_management_forecast_v1 = {}
         shadow_energy_snapshot = {}
         shadow_observe_confirm = {}
+        shadow_runtime_maps_materialized = True
 
+    stage_started_at = time.perf_counter()
+    _set_entry_prefront_stage("resolve_entry_handoff_ids")
     management_profile_id, invalidation_id = _resolve_entry_handoff_ids(
         shadow_observe_confirm=shadow_observe_confirm,
-        shadow_entry_context_v1=shadow_entry_context_v1,
+        shadow_context_metadata_v1=shadow_context_metadata_v1,
     )
+    _record_entry_front_stage("resolve_entry_handoff_ids", stage_started_at)
+    _record_entry_prefront_stage("resolve_entry_handoff_ids", entry_prefront_stage_started_at)
 
     action = None
     score = 0
     reasons = []
     has_sell = any(int(p.type) == int(ORDER_TYPE_SELL) for p in my_positions)
     has_buy = any(int(p.type) == int(ORDER_TYPE_BUY) for p in my_positions)
+    stage_started_at = time.perf_counter()
+    _set_entry_prefront_stage("core_action_decision")
     core_dec = self._core_action_decision(
         symbol=str(symbol),
         tick=tick,
@@ -1742,7 +5941,10 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
         sell_s=float(sell_s),
         has_buy=bool(has_buy),
         has_sell=bool(has_sell),
+        entry_context_bundle=shadow_bundle if isinstance(shadow_bundle, dict) else None,
     )
+    _record_entry_front_stage("core_action_decision", stage_started_at)
+    _record_entry_prefront_stage("core_action_decision", entry_prefront_stage_started_at)
     core_pass = int(core_dec.get("core_pass", 0) or 0)
     core_reason = str(core_dec.get("core_reason", "") or "")
     core_allowed_action = str(core_dec.get("core_allowed_action", "NONE") or "NONE")
@@ -1820,6 +6022,13 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
         core_dec.get("consumer_check_display_repeat_count", 0) or 0
     )
     action = core_dec.get("action")
+    baseline_action_side_v1 = _resolve_directional_baseline_action_side_v1(
+        action,
+        consumer_check_side,
+        setup_side,
+        core_allowed_action,
+    )
+    original_action_side_v1 = str(baseline_action_side_v1 or "")
     observe_reason = str(
         core_dec.get("observe_reason", "")
         or shadow_observe_confirm.get("reason", "")
@@ -1827,16 +6036,223 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
     )
     action_none_reason = str(core_dec.get("action_none_reason", "") or "")
     core_blocked_reason = str(core_dec.get("blocked_by", "") or "")
+    blocked_reason = str(core_blocked_reason or "")
     symbol_u = str(symbol or "").upper().strip()
-    if not action:
-        if semantic_shadow_prediction_v1 is None:
+    _set_entry_prefront_stage("active_action_conflict_guard")
+    current_cycle_runtime_row_v1 = _current_entry_runtime_signal_row(refresh_current_cycle=True)
+    active_action_conflict_guard_v1 = _build_active_action_conflict_guard_v1(
+        symbol=str(symbol),
+        baseline_action=str(baseline_action_side_v1 or ""),
+        setup_id=str(setup_id or ""),
+        setup_reason=str(setup_reason or ""),
+        runtime_signal_row=current_cycle_runtime_row_v1,
+        forecast_state25_log_only_overlay_trace_v1=forecast_state25_log_only_overlay_trace_v1,
+        belief_action_hint_v1=belief_action_hint_v1,
+        barrier_action_hint_v1=barrier_action_hint_v1,
+        countertrend_continuation_signal_v1=countertrend_continuation_signal_v1,
+    )
+    flow_execution_veto_owner_v1 = _build_flow_execution_veto_owner_v1(
+        symbol=str(symbol),
+        baseline_action=str(
+            active_action_conflict_guard_v1.get("baseline_action", "") or baseline_action_side_v1 or ""
+        ),
+        setup_id=str(setup_id or ""),
+        setup_reason=str(setup_reason or ""),
+        runtime_signal_row=current_cycle_runtime_row_v1,
+    )
+    directional_continuation_promotion_v1 = _build_directional_continuation_promotion_v1(
+        symbol=str(symbol),
+        baseline_action=str(
+            active_action_conflict_guard_v1.get("baseline_action", "") or baseline_action_side_v1 or ""
+        ),
+        runtime_signal_row=current_cycle_runtime_row_v1,
+        active_action_conflict_guard_v1=active_action_conflict_guard_v1,
+    )
+    flow_execution_selection_owner_v1 = _build_flow_execution_selection_owner_v1(
+        symbol=str(symbol),
+        legacy_action=str(
+            active_action_conflict_guard_v1.get("baseline_action", "") or baseline_action_side_v1 or ""
+        ),
+        runtime_signal_row=current_cycle_runtime_row_v1,
+    )
+    if bool(active_action_conflict_guard_v1.get("guard_applied", False)):
+        action = None
+        observe_reason = str(
+            active_action_conflict_guard_v1.get("downgraded_observe_reason", "")
+            or observe_reason
+            or "directional_conflict_watch"
+        )
+        action_none_reason = str(
+            active_action_conflict_guard_v1.get("failure_label", "")
+            or action_none_reason
+            or "wrong_side_conflict_pressure"
+        )
+        core_blocked_reason = str(
+            active_action_conflict_guard_v1.get("failure_code", "")
+            or "active_action_conflict_guard"
+        )
+        blocked_reason = str(core_blocked_reason or "")
+    if bool(flow_execution_veto_owner_v1.get("veto_applied", False)):
+        action = None
+        observe_reason = str(
+            flow_execution_veto_owner_v1.get("downgraded_observe_reason", "")
+            or observe_reason
+            or "flow_execution_veto_wait"
+        )
+        action_none_reason = str(
+            flow_execution_veto_owner_v1.get("failure_label", "")
+            or action_none_reason
+            or "bear_continuation_buy_veto"
+        )
+        core_blocked_reason = str(
+            flow_execution_veto_owner_v1.get("failure_code", "")
+            or "flow_execution_veto_owner"
+        )
+        blocked_reason = str(core_blocked_reason or "")
+    if bool(directional_continuation_promotion_v1.get("active", False)) and not bool(
+        flow_execution_selection_owner_v1.get("selection_active", False)
+    ):
+        promoted_action_v1 = str(directional_continuation_promotion_v1.get("promoted_action", "") or "")
+        if promoted_action_v1 in {"BUY", "SELL"} and not bool(
+            flow_execution_veto_owner_v1.get("veto_applied", False)
+        ):
+            action = str(promoted_action_v1)
+            core_pass = max(1, int(core_pass))
+            core_reason = str(
+                directional_continuation_promotion_v1.get("promotion_reason", "")
+                or "directional_continuation_overlay_promotion"
+            )
+            core_allowed_action = str(action)
+            action_none_reason = ""
+            core_blocked_reason = ""
+            blocked_reason = ""
+            entry_stage = str(
+                directional_continuation_promotion_v1.get("recommended_entry_stage", entry_stage)
+                or entry_stage
+            )
+    if bool(flow_execution_selection_owner_v1.get("selection_active", False)):
+        selection_action_v1 = str(
+            flow_execution_selection_owner_v1.get("selected_action", "") or ""
+        ).upper().strip()
+        if selection_action_v1 in {"BUY", "SELL"} and bool(
+            flow_execution_selection_owner_v1.get("execution_apply_allowed", False)
+        ):
+            action = str(selection_action_v1)
+            setup_side = str(selection_action_v1)
+            core_pass = max(1, int(core_pass))
+            core_reason = "flow_execution_selection_owner"
+            core_allowed_action = str(selection_action_v1)
+            action_none_reason = ""
+            core_blocked_reason = ""
+            blocked_reason = ""
+        elif selection_action_v1 == "WAIT":
+            action = None
+            observe_reason = str(
+                flow_execution_selection_owner_v1.get("downgraded_observe_reason", "")
+                or observe_reason
+                or "flow_selection_owner_wait"
+            )
+            action_none_reason = str(
+                flow_execution_selection_owner_v1.get("failure_label", "")
+                or action_none_reason
+                or "flow_selection_wait"
+            )
+            core_blocked_reason = str(
+                flow_execution_selection_owner_v1.get("failure_code", "")
+                or "flow_execution_selection_owner"
+            )
+            blocked_reason = str(core_blocked_reason or "")
+    _record_entry_prefront_stage("active_action_conflict_guard", entry_prefront_stage_started_at)
+    if (
+        not action
+        and not bool(active_action_conflict_guard_v1.get("guard_applied", False))
+        and not bool(flow_execution_veto_owner_v1.get("veto_applied", False))
+        and not bool(flow_execution_selection_owner_v1.get("selection_active", False))
+    ):
+        _set_entry_prefront_stage("teacher_label_exploration")
+        teacher_label_side_hint_v1 = str(consumer_check_side or "").upper().strip()
+        if teacher_label_side_hint_v1 in {"BUY", "SELL"}:
+            teacher_label_runtime_row_v1 = _current_entry_runtime_signal_row()
             try:
-                _decision_payload(
-                    considered=1,
-                    raw_score=float(max(buy_s, sell_s)),
-                    contra_score=float(min(buy_s, sell_s)),
-                    effective_threshold=float(entry_threshold),
-                    entry_stage=str(entry_stage or ""),
+                teacher_label_score_v1 = max(
+                    float(teacher_label_runtime_row_v1.get("buy_score", 0.0) or 0.0),
+                    float(teacher_label_runtime_row_v1.get("sell_score", 0.0) or 0.0),
+                    float(max(buy_s, sell_s)),
+                )
+            except (TypeError, ValueError):
+                teacher_label_score_v1 = float(max(buy_s, sell_s))
+            try:
+                teacher_label_threshold_v1 = float(
+                    teacher_label_runtime_row_v1.get("entry_threshold", 0.0)
+                    or teacher_label_runtime_row_v1.get("base_entry_threshold", 0.0)
+                    or entry_threshold
+                    or 0.0
+                )
+            except (TypeError, ValueError):
+                teacher_label_threshold_v1 = float(entry_threshold or 0.0)
+            teacher_label_same_dir_count_v1 = sum(
+                1
+                for p in (my_positions or [])
+                if (
+                    int(getattr(p, "type", -1)) == int(ORDER_TYPE_BUY)
+                    and teacher_label_side_hint_v1 == "BUY"
+                )
+                or (
+                    int(getattr(p, "type", -1)) == int(ORDER_TYPE_SELL)
+                    and teacher_label_side_hint_v1 == "SELL"
+                )
+            )
+            teacher_label_exploration_action_hint_v1 = _build_teacher_label_exploration_entry_v1(
+                symbol=str(symbol),
+                action=str(teacher_label_side_hint_v1),
+                observe_reason=str(observe_reason or ""),
+                action_none_reason=str(action_none_reason or ""),
+                blocked_by=str(core_blocked_reason or ""),
+                probe_scene_id=str(
+                    entry_probe_plan_v1.get("symbol_scene_relief", "")
+                    or consumer_check_state_v1.get("probe_scene_id", "")
+                    or ""
+                ),
+                consumer_check_state_v1=consumer_check_state_v1,
+                guard_failure_code=str(core_blocked_reason or action_none_reason or ""),
+                score=float(teacher_label_score_v1),
+                effective_threshold=float(teacher_label_threshold_v1),
+                same_dir_count=int(teacher_label_same_dir_count_v1),
+            )
+            teacher_label_exploration_entry_v1 = dict(teacher_label_exploration_action_hint_v1)
+            if bool(teacher_label_exploration_action_hint_v1.get("active")):
+                action = str(teacher_label_side_hint_v1)
+                core_pass = max(1, int(core_pass))
+                if not str(core_allowed_action or "").strip() or str(core_allowed_action).upper() == "NONE":
+                    core_allowed_action = str(teacher_label_side_hint_v1)
+                if not str(core_reason or "").strip():
+                    core_reason = "teacher_label_exploration_action_hint"
+        _record_entry_prefront_stage("teacher_label_exploration", entry_prefront_stage_started_at)
+    if (
+        not action
+        and not bool(active_action_conflict_guard_v1.get("guard_applied", False))
+        and not bool(flow_execution_veto_owner_v1.get("veto_applied", False))
+        and not bool(flow_execution_selection_owner_v1.get("selection_active", False))
+    ):
+        _set_entry_prefront_stage("semantic_probe_bridge")
+        should_attempt_semantic_probe_bridge = _should_attempt_semantic_probe_bridge(
+            symbol=str(symbol),
+            core_reason=str(core_reason),
+            observe_reason=str(observe_reason),
+            action_none_reason=str(action_none_reason),
+            blocked_by=str(core_blocked_reason),
+            compatibility_mode=str(core_dec.get("compatibility_mode", "") or ""),
+            entry_probe_plan_v1=entry_probe_plan_v1,
+            default_side_gate_v1=entry_default_side_gate_v1,
+        )
+        if semantic_shadow_prediction_v1 is None and should_attempt_semantic_probe_bridge:
+            try:
+                _ensure_semantic_shadow_prediction(
+                    runtime_snapshot_row=_current_runtime_snapshot_row(),
+                    action_hint=str(action or shadow_observe_confirm.get("action", "") or ""),
+                    setup_id_value=str(setup_id or ""),
+                    setup_side_value=str(setup_side or ""),
+                    entry_stage_value=str(entry_stage or ""),
                 )
             except Exception:
                 pass
@@ -1854,6 +6270,8 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
             probe_candidate_v1=probe_candidate_v1,
             semantic_shadow_prediction_v1=semantic_shadow_prediction_v1,
         )
+        semantic_probe_bridge_candidate_action = str(bridge_action or "")
+        semantic_probe_bridge_candidate_reason = str(bridge_reason or "")
         if bridge_action in {"BUY", "SELL"}:
             action = str(bridge_action)
             core_pass = 1
@@ -1861,8 +6279,10 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
             core_allowed_action = str(action)
             action_none_reason = ""
             core_blocked_reason = ""
+        _record_entry_prefront_stage("semantic_probe_bridge", entry_prefront_stage_started_at)
         blocked_reason = str(core_blocked_reason or "")
     if not action:
+        _set_entry_prefront_stage("wait_routing")
         routing_reason = str(blocked_reason or observe_reason or action_none_reason or "") or "core_not_passed"
         if routing_reason in {"WAIT", "NONE"}:
             routing_reason = "core_not_passed"
@@ -1880,6 +6300,7 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
             raw_score_value=float(max(buy_s, sell_s)),
             effective_threshold_value=float(entry_threshold),
         )
+        _record_entry_prefront_stage("wait_routing", entry_prefront_stage_started_at)
         _mark_skip(
             skip_reason,
             blocked_by_value=str(blocked_reason or ""),
@@ -1901,6 +6322,12 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
             preflight_approach_mode=str(preflight_approach_mode),
             preflight_reason=str(preflight_reason),
         )
+        _store_entry_prefront_profile(
+            exit_state="observe_return",
+            blocked_by_value=str(blocked_reason or ""),
+            observe_reason_value=str(observe_reason or ""),
+            action_none_reason_value=str(action_none_reason or "core_not_passed"),
+        )
         self._append_entry_decision_log(
             _decision_payload(
                 considered=1,
@@ -1911,6 +6338,13 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
             )
         )
         return
+    _store_entry_prefront_profile(
+        exit_state="action_selected",
+        blocked_by_value=str(core_blocked_reason or ""),
+        observe_reason_value=str(observe_reason or ""),
+        action_none_reason_value=str(action_none_reason or ""),
+        action_value=str(action or ""),
+    )
     entry_blocked_guard_v1 = _build_entry_blocked_guard_v1(
         action=str(action),
         observe_reason=str(observe_reason or ""),
@@ -1919,27 +6353,60 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
     )
     if bool(entry_blocked_guard_v1.get("guard_active")) and not bool(entry_blocked_guard_v1.get("allows_open")):
         fail_reason = str(entry_blocked_guard_v1.get("failure_code", "") or "entry_blocked_guard")
-        _mark_skip(
-            fail_reason,
-            blocked_by_value=str(core_blocked_reason or fail_reason),
-            observe_reason_value=str(observe_reason or ""),
-            action_none_reason_value=str(action_none_reason or fail_reason),
-            action=str(action),
-            entry_blocked_guard_v1=dict(entry_blocked_guard_v1),
-        )
-        skip_row = _decision_payload(
-            action=str(action),
-            considered=1,
-            outcome="skipped",
-            blocked_by=str(core_blocked_reason or fail_reason),
-            raw_score=float(max(buy_s, sell_s)),
-            contra_score=float(min(buy_s, sell_s)),
-            effective_threshold=float(entry_threshold),
-            entry_stage=str(entry_stage),
-        )
-        skip_row["entry_blocked_guard_v1"] = dict(entry_blocked_guard_v1)
-        self._append_entry_decision_log(skip_row)
-        return
+        if not bool(teacher_label_exploration_entry_v1.get("active")):
+            entry_blocked_same_dir_count_v1 = sum(
+                1
+                for p in (my_positions or [])
+                if (
+                    int(getattr(p, "type", -1)) == int(ORDER_TYPE_BUY)
+                    and str(action).upper() == "BUY"
+                )
+                or (
+                    int(getattr(p, "type", -1)) == int(ORDER_TYPE_SELL)
+                    and str(action).upper() == "SELL"
+                )
+            )
+            teacher_label_exploration_entry_v1 = _build_teacher_label_exploration_entry_v1(
+                symbol=str(symbol),
+                action=str(action),
+                observe_reason=str(observe_reason or ""),
+                action_none_reason=str(action_none_reason or fail_reason),
+                blocked_by=str(core_blocked_reason or fail_reason),
+                probe_scene_id=str(
+                    entry_probe_plan_v1.get("symbol_scene_relief", "")
+                    or consumer_check_state_v1.get("probe_scene_id", "")
+                    or ""
+                ),
+                consumer_check_state_v1=consumer_check_state_v1,
+                guard_failure_code=str(fail_reason),
+                score=float(max(buy_s, sell_s)),
+                effective_threshold=float(entry_threshold),
+                same_dir_count=int(entry_blocked_same_dir_count_v1),
+            )
+        if bool(teacher_label_exploration_entry_v1.get("active")):
+            pass
+        else:
+            _mark_skip(
+                fail_reason,
+                blocked_by_value=str(core_blocked_reason or fail_reason),
+                observe_reason_value=str(observe_reason or ""),
+                action_none_reason_value=str(action_none_reason or fail_reason),
+                action=str(action),
+                entry_blocked_guard_v1=dict(entry_blocked_guard_v1),
+            )
+            skip_row = _decision_payload(
+                action=str(action),
+                considered=1,
+                outcome="skipped",
+                blocked_by=str(core_blocked_reason or fail_reason),
+                raw_score=float(max(buy_s, sell_s)),
+                contra_score=float(min(buy_s, sell_s)),
+                effective_threshold=float(entry_threshold),
+                entry_stage=str(entry_stage),
+            )
+            skip_row["entry_blocked_guard_v1"] = dict(entry_blocked_guard_v1)
+            self._append_entry_decision_log(skip_row)
+            return
     score = float(buy_s) if str(action).upper() == "BUY" else float(sell_s)
     reasons = list((result or {}).get("buy" if str(action).upper() == "BUY" else "sell", {}).get("reasons", []) or [])
 
@@ -2021,9 +6488,12 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
     entry_h1_context_opposite = int(component_snapshot.entry_h1_context_opposite)
     entry_m1_trigger_score = int(component_snapshot.entry_m1_trigger_score)
     entry_m1_trigger_opposite = int(component_snapshot.entry_m1_trigger_opposite)
+    stage_started_at = time.perf_counter()
     observe_confirm_runtime_metadata = _build_runtime_observe_confirm_dual_write(
         shadow_observe_confirm=shadow_observe_confirm,
     )
+    _record_entry_front_stage("observe_confirm_runtime_metadata", stage_started_at)
+    stage_started_at = time.perf_counter()
     setup_context = DecisionContext(
         symbol=str(symbol),
         phase="entry",
@@ -2038,43 +6508,19 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
         metadata={
             "preflight_approach_mode": str(preflight_approach_mode or "MIX"),
             "core_allowed_action": str(core_allowed_action or "UNKNOWN"),
-            "position_snapshot_v2": dict(shadow_position_snapshot_v2 or {}),
-            "response_raw_snapshot_v1": dict(shadow_response_raw_snapshot_v1 or {}),
-            "response_vector_v2": dict(shadow_response_vector_v2 or {}),
-            "state_raw_snapshot_v1": dict(shadow_state_raw_snapshot_v1 or {}),
-            "state_vector_v2": dict(shadow_state_vector_v2 or {}),
-            "evidence_vector_v1": dict(shadow_evidence_vector_v1 or {}),
-            "belief_state_v1": dict(shadow_belief_state_v1 or {}),
-            "barrier_state_v1": dict(shadow_barrier_state_v1 or {}),
-            "forecast_features_v1": dict(shadow_forecast_features_v1 or {}),
-            "transition_forecast_v1": dict(shadow_transition_forecast_v1 or {}),
-            "trade_management_forecast_v1": dict(shadow_trade_management_forecast_v1 or {}),
-            "observe_confirm_v1": dict(observe_confirm_runtime_metadata.get("observe_confirm_v1", {}) or {}),
-            "observe_confirm_v2": dict(observe_confirm_runtime_metadata.get("observe_confirm_v2", {}) or {}),
+            "observe_confirm_v1": observe_confirm_runtime_metadata.get("observe_confirm_v1", {}) or {},
+            "observe_confirm_v2": observe_confirm_runtime_metadata.get("observe_confirm_v2", {}) or {},
             "prs_canonical_observe_confirm_field": str(
                 observe_confirm_runtime_metadata.get("prs_canonical_observe_confirm_field", "") or "observe_confirm_v2"
             ),
             "prs_compatibility_observe_confirm_field": str(
                 observe_confirm_runtime_metadata.get("prs_compatibility_observe_confirm_field", "") or "observe_confirm_v1"
             ),
-            "prs_log_contract_v2": dict(observe_confirm_runtime_metadata.get("prs_log_contract_v2", {}) or {}),
-            "observe_confirm_input_contract_v2": dict(
-                observe_confirm_runtime_metadata.get("observe_confirm_input_contract_v2", {}) or {}
-            ),
-            "observe_confirm_migration_dual_write_v1": dict(
-                observe_confirm_runtime_metadata.get("observe_confirm_migration_dual_write_v1", {}) or {}
-            ),
-            "observe_confirm_output_contract_v2": dict(
-                observe_confirm_runtime_metadata.get("observe_confirm_output_contract_v2", {}) or {}
-            ),
-            "observe_confirm_scope_contract_v1": dict(
-                observe_confirm_runtime_metadata.get("observe_confirm_scope_contract_v1", {}) or {}
-            ),
-            "consumer_input_contract_v1": dict(
-                observe_confirm_runtime_metadata.get("consumer_input_contract_v1", {}) or {}
-            ),
+            "prs_log_contract_v2": observe_confirm_runtime_metadata.get("prs_log_contract_v2", {}) or {},
         },
     )
+    _record_entry_front_stage("setup_context_build", stage_started_at)
+    stage_started_at = time.perf_counter()
     setup_candidate = self._setup_detector.detect_entry_setup(
         context=setup_context,
         action=str(action),
@@ -2082,6 +6528,33 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
         m1_gap=float(entry_m1_trigger_score - entry_m1_trigger_opposite),
         score_gap=float(score - contra_score),
     )
+    _record_entry_front_stage("detect_entry_setup", stage_started_at)
+    try:
+        self._store_runtime_snapshot(
+            runtime=self.runtime,
+            symbol=str(symbol),
+            key="entry_helper_front_profile_v1",
+            payload={
+                "contract_version": "entry_helper_front_profile_v1",
+                "total_ms": round((time.perf_counter() - entry_front_started_at) * 1000.0, 3),
+                "stage_timings_ms": dict(entry_front_stage_timings_ms),
+                "observe_state": str(shadow_observe_confirm.get("state", "") or ""),
+                "observe_action": str(shadow_observe_confirm.get("action", "") or ""),
+                "observe_reason": str(shadow_observe_confirm.get("reason", "") or ""),
+                "context_metadata_keys": int(len(shadow_context_metadata_v1)),
+                "setup_id": str(getattr(setup_candidate, "setup_id", "") or ""),
+                "setup_status": str(getattr(setup_candidate, "status", "") or ""),
+                "setup_trigger_state": str(getattr(setup_candidate, "trigger_state", "") or ""),
+                "build_entry_context_profile": dict(
+                    shadow_context_metadata_v1.get("build_entry_context_profile_v1", {}) or {}
+                ),
+                "engine_context_snapshot_profile": dict(
+                    shadow_context_metadata_v1.get("engine_context_snapshot_profile_v1", {}) or {}
+                ),
+            },
+        )
+    except Exception:
+        pass
     setup_id = str(setup_candidate.setup_id or "")
     setup_side = str(setup_candidate.side or str(action or ""))
     setup_status = str(setup_candidate.status or "pending")
@@ -2089,6 +6562,52 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
     setup_score = float(setup_candidate.score or 0.0)
     setup_entry_quality = float(setup_candidate.entry_quality or 0.0)
     setup_reason = str((setup_candidate.metadata or {}).get("reason", "") or "")
+    entry_back_started_at = time.perf_counter()
+    entry_back_stage_started_at = entry_back_started_at
+    entry_back_stage_timings_ms: dict[str, float] = {}
+    entry_back_profile_state = {
+        "current_stage": "setup_post_filter",
+        "last_completed_stage": "",
+        "exit_state": "in_progress",
+    }
+
+    def _record_entry_back_stage(stage_name: str, started_at: float) -> None:
+        entry_back_stage_timings_ms[str(stage_name)] = round(
+            (time.perf_counter() - float(started_at)) * 1000.0,
+            3,
+        )
+        entry_back_profile_state["last_completed_stage"] = str(stage_name)
+
+    def _set_entry_back_stage(stage_name: str) -> None:
+        nonlocal entry_back_stage_started_at
+        entry_back_profile_state["current_stage"] = str(stage_name)
+        entry_back_stage_started_at = time.perf_counter()
+
+    def _store_entry_back_profile(exit_state: str | None = None) -> None:
+        if exit_state is not None:
+            entry_back_profile_state["exit_state"] = str(exit_state)
+        try:
+            self._store_runtime_snapshot(
+                runtime=self.runtime,
+                symbol=str(symbol),
+                key="entry_helper_back_profile_v1",
+                payload={
+                    "contract_version": "entry_helper_back_profile_v1",
+                    "total_ms": round((time.perf_counter() - entry_back_started_at) * 1000.0, 3),
+                    "stage_timings_ms": dict(entry_back_stage_timings_ms),
+                    "current_stage": str(entry_back_profile_state.get("current_stage", "") or ""),
+                    "last_completed_stage": str(entry_back_profile_state.get("last_completed_stage", "") or ""),
+                    "exit_state": str(entry_back_profile_state.get("exit_state", "") or ""),
+                    "action": str(action or ""),
+                    "setup_id": str(setup_id or ""),
+                    "setup_status": str(setup_status or ""),
+                    "setup_reason": str(setup_reason or ""),
+                },
+            )
+        except Exception:
+            pass
+
+    _store_entry_back_profile()
     _refresh_prediction_bundle(float(score), float(contra_score), float(entry_threshold))
     if setup_status != "matched" or not setup_id:
         observe_reason = "setup_rejected"
@@ -2130,8 +6649,9 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
         return
     if str(setup_id).lower() == "range_lower_reversal_buy":
         bb_state_u = str(bb_state or "").upper()
+        runtime_snapshot_row = _current_entry_runtime_signal_row(refresh_current_cycle=True)
         setup_reason_u = str(setup_reason or "").lower().strip()
-        compatibility_mode_u = str(_current_runtime_snapshot_row().get("compatibility_mode", "") or "")
+        compatibility_mode_u = str(runtime_snapshot_row.get("compatibility_mode", "") or "")
         range_lower_soft_edge_allow, range_lower_soft_edge_reason = _resolve_range_lower_buy_shadow_relief(
             symbol=str(symbol),
             core_reason=str(core_reason),
@@ -2144,6 +6664,8 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
             preflight_allowed_action=str(preflight_allowed_action),
             compatibility_mode=compatibility_mode_u,
             semantic_shadow_prediction_v1=semantic_shadow_prediction_v1,
+            entry_probe_plan_v1=entry_probe_plan_v1,
+            runtime_signal_row=runtime_snapshot_row,
         )
         if bb_state_u != "LOWER_EDGE" and not range_lower_soft_edge_allow:
             _mark_skip(
@@ -2245,6 +6767,146 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
                 )
             )
             return
+    _record_entry_back_stage("setup_post_filter", entry_back_stage_started_at)
+    _set_entry_back_stage("policy_sync_and_hard_gates")
+    _store_entry_back_profile()
+    if str(action or "").upper() in {"BUY", "SELL"} and str(setup_id or "").strip():
+        current_cycle_runtime_context_row_v1 = _current_entry_runtime_signal_row(
+            refresh_current_cycle=True
+        )
+        active_action_conflict_runtime_context_v1 = (
+            _build_active_action_conflict_runtime_context_v1(
+                runtime_snapshot_row=current_cycle_runtime_context_row_v1,
+                symbol=str(symbol),
+                action=str(action or ""),
+                setup_id=str(setup_id or ""),
+                setup_reason=str(setup_reason or ""),
+                setup_side=str(setup_side or action or ""),
+                entry_session_name=str(entry_session_name or ""),
+                wait_state=wait_state,
+                entry_wait_decision=str(entry_wait_decision or ""),
+                score=float(score),
+                contra_score=float(contra_score),
+                prediction_bundle=prediction_bundle,
+                shadow_transition_forecast_v1=shadow_transition_forecast_v1,
+                shadow_trade_management_forecast_v1=shadow_trade_management_forecast_v1,
+                shadow_observe_confirm=shadow_observe_confirm,
+                entry_stage=str(entry_stage or ""),
+                actual_effective_entry_threshold=float(entry_threshold),
+                actual_size_multiplier=1.0,
+                state25_candidate_runtime_state=getattr(
+                    self.runtime, "state25_candidate_runtime_state", {}
+                ),
+            )
+        )
+        forecast_state25_log_only_overlay_trace_v1 = dict(
+            active_action_conflict_runtime_context_v1.get(
+                "forecast_state25_log_only_overlay_trace_v1", {}
+            )
+            or {}
+        )
+        belief_action_hint_v1 = dict(
+            active_action_conflict_runtime_context_v1.get("belief_action_hint_v1", {})
+            or {}
+        )
+        barrier_action_hint_v1 = dict(
+            active_action_conflict_runtime_context_v1.get("barrier_action_hint_v1", {})
+            or {}
+        )
+        countertrend_continuation_signal_v1 = dict(
+            active_action_conflict_runtime_context_v1.get(
+                "countertrend_continuation_signal_v1", {}
+            )
+            or {}
+        )
+        active_action_conflict_guard_v1 = dict(
+            active_action_conflict_runtime_context_v1.get(
+                "active_action_conflict_guard_v1", {}
+            )
+            or {}
+        )
+        directional_continuation_promotion_v1 = _build_directional_continuation_promotion_v1(
+            symbol=str(symbol),
+            baseline_action=str(
+                active_action_conflict_guard_v1.get("baseline_action", "")
+                or baseline_action_side_v1
+                or ""
+            ),
+            runtime_signal_row=current_cycle_runtime_context_row_v1,
+            active_action_conflict_guard_v1=active_action_conflict_guard_v1,
+        )
+        promotion_active_v1 = bool(directional_continuation_promotion_v1.get("active", False))
+        if bool(active_action_conflict_guard_v1.get("guard_applied", False)) and not promotion_active_v1:
+            baseline_action_value = str(
+                active_action_conflict_guard_v1.get("baseline_action", "") or action or ""
+            )
+            action = None
+            observe_reason = str(
+                active_action_conflict_guard_v1.get("downgraded_observe_reason", "")
+                or observe_reason
+                or "directional_conflict_watch"
+            )
+            action_none_reason = str(
+                active_action_conflict_guard_v1.get("failure_label", "")
+                or action_none_reason
+                or "wrong_side_conflict_pressure"
+            )
+            blocked_reason = str(
+                active_action_conflict_guard_v1.get("failure_code", "")
+                or "active_action_conflict_guard"
+            )
+            core_blocked_reason = str(blocked_reason)
+            skip_outcome, skip_reason = _apply_wait_routing(
+                blocked_reason,
+                blocked_by_value=str(blocked_reason),
+                observe_reason_value=str(observe_reason),
+                action_none_reason_value=str(action_none_reason),
+                action_value=str(baseline_action_value),
+                raw_score_value=float(score),
+                effective_threshold_value=float(entry_threshold),
+            )
+            _record_entry_back_stage("policy_sync_and_hard_gates", entry_back_stage_started_at)
+            _mark_skip(
+                skip_reason,
+                action=str(baseline_action_value),
+                setup_id=str(setup_id),
+                setup_side=str(setup_side),
+                setup_status=str(setup_status),
+                setup_trigger_state=str(setup_trigger_state),
+                setup_score=float(setup_score),
+                setup_entry_quality=float(setup_entry_quality),
+                setup_reason=str(setup_reason),
+            )
+            _store_entry_back_profile(exit_state="active_action_conflict_guard")
+            self._append_entry_decision_log(
+                _decision_payload(
+                    action="",
+                    considered=1,
+                    outcome=str(skip_outcome),
+                    blocked_by=str(skip_reason),
+                    raw_score=float(score),
+                    contra_score=float(contra_score),
+                    effective_threshold=float(entry_threshold),
+                )
+            )
+            return
+        if promotion_active_v1:
+            promoted_action_v1 = str(directional_continuation_promotion_v1.get("promoted_action", "") or "")
+            if promoted_action_v1 in {"BUY", "SELL"}:
+                action = str(promoted_action_v1)
+                core_pass = max(1, int(core_pass))
+                core_reason = str(
+                    directional_continuation_promotion_v1.get("promotion_reason", "")
+                    or "directional_continuation_overlay_promotion"
+                )
+                core_allowed_action = str(action)
+                action_none_reason = ""
+                blocked_reason = ""
+                core_blocked_reason = ""
+                entry_stage = str(
+                    directional_continuation_promotion_v1.get("recommended_entry_stage", entry_stage)
+                    or entry_stage
+                )
     session_dec = self._session_policy.get_threshold_mult(symbol=symbol)
     atr_dec = self._atr_policy.get_threshold_mult(df_all=df_all)
     entry_session_name = str(session_dec.session_name)
@@ -2263,6 +6925,41 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
     )
     gate_ok = bool(h1_dec.ok)
     gate_reason = str(h1_dec.reason)
+    flow_execution_veto_owner_runtime_v1 = _build_flow_execution_veto_owner_v1(
+        symbol=str(symbol),
+        baseline_action=str(action or ""),
+        setup_id=str(setup_id),
+        setup_reason=str(setup_reason),
+        runtime_signal_row=_current_entry_runtime_signal_row(refresh_current_cycle=True),
+    )
+    if bool(flow_execution_veto_owner_runtime_v1.get("veto_applied", False)):
+        flow_execution_veto_owner_v1 = dict(flow_execution_veto_owner_runtime_v1 or {})
+        _mark_skip(
+            "flow_execution_veto_owner_blocked",
+            action=str(action),
+            setup_id=str(setup_id),
+            flow_execution_veto_applied=True,
+            flow_execution_veto_kind=str(
+                flow_execution_veto_owner_runtime_v1.get("veto_kind", "") or ""
+            ),
+            flow_execution_veto_reason_summary=str(
+                flow_execution_veto_owner_runtime_v1.get("reason_summary", "") or ""
+            ),
+            flow_execution_veto_bearish_evidence_count=int(
+                flow_execution_veto_owner_runtime_v1.get("bearish_evidence_count", 0) or 0
+            ),
+        )
+        self._append_entry_decision_log(
+            _decision_payload(
+                action=str(action),
+                considered=1,
+                outcome="skipped",
+                blocked_by="flow_execution_veto_owner_blocked",
+                raw_score=float(score),
+                contra_score=float(contra_score),
+            )
+        )
+        return
     if _should_block_range_lower_buy_dual_bear_context(
         symbol=str(symbol),
         action=str(action),
@@ -2421,6 +7118,9 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
             )
         )
         return
+    _record_entry_back_stage("policy_sync_and_hard_gates", entry_back_stage_started_at)
+    _set_entry_back_stage("ai_threshold_and_utility")
+    _store_entry_back_profile()
 
     if self.runtime.ai_runtime:
         ai_used = 1
@@ -2508,6 +7208,21 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
                         "blocked_by": "ai_entry_filter_blocked",
                         "effective_entry_threshold": float(entry_threshold),
                         "base_entry_threshold": float(entry_threshold),
+                        **_build_execution_action_diff_flat_fields_v1(
+                            _build_execution_action_diff_v1(
+                                original_action_side=str(original_action_side_v1 or ""),
+                                current_action_side=str(action or ""),
+                                blocked_by="ai_entry_filter_blocked",
+                                observe_reason=str(observe_reason or ""),
+                                action_none_reason=str(action_none_reason or ""),
+                                active_action_conflict_guard_v1=dict(
+                                    active_action_conflict_guard_v1 or {}
+                                ),
+                                directional_continuation_promotion_v1=dict(
+                                    directional_continuation_promotion_v1 or {}
+                                ),
+                            )
+                        ),
                     }
                 )
                 self._append_entry_decision_log(
@@ -2579,6 +7294,29 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
     threshold_relief_pts = int(max(0, _threshold_relief_points()))
     if threshold_relief_pts > 0:
         dynamic_threshold = max(1, int(dynamic_threshold) - int(threshold_relief_pts))
+    state25_candidate_threshold_live_v1 = (
+        resolve_state25_candidate_live_threshold_adjustment_v1(
+            getattr(self.runtime, "state25_candidate_runtime_state", {}),
+            symbol=str(symbol),
+            entry_stage=str(entry_stage),
+            baseline_entry_threshold=float(dynamic_threshold),
+        )
+    )
+    if bool(state25_candidate_threshold_live_v1.get("enabled")):
+        dynamic_threshold = max(
+            1,
+            int(
+                round(
+                    float(
+                        state25_candidate_threshold_live_v1.get(
+                            "candidate_effective_entry_threshold",
+                            dynamic_threshold,
+                        )
+                        or dynamic_threshold
+                    )
+                )
+            ),
+        )
     if semantic_live_guard_v1 is None:
         semantic_live_guard = getattr(self.runtime, "semantic_promotion_guard", None)
         if semantic_live_guard is None:
@@ -2665,6 +7403,37 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
         row["entry_threshold_relief_pts"] = int(threshold_relief_pts)
         row["entry_context_threshold_adjustment"] = int(context_adj)
         row["entry_context_adjustment_detail"] = dict(context_adj_detail)
+        row["state25_candidate_threshold_bounded_live_enabled"] = int(
+            1 if bool(state25_candidate_threshold_live_v1.get("enabled")) else 0
+        )
+        row["state25_candidate_live_threshold_before"] = float(
+            state25_candidate_threshold_live_v1.get(
+                "baseline_entry_threshold",
+                dynamic_threshold,
+            )
+            or 0.0
+        )
+        row["state25_candidate_live_threshold_after"] = float(
+            state25_candidate_threshold_live_v1.get(
+                "candidate_effective_entry_threshold",
+                dynamic_threshold,
+            )
+            or 0.0
+        )
+        row["state25_candidate_live_threshold_delta"] = float(
+            state25_candidate_threshold_live_v1.get(
+                "threshold_delta_points",
+                0.0,
+            )
+            or 0.0
+        )
+        row["state25_candidate_live_threshold_direction"] = str(
+            state25_candidate_threshold_live_v1.get(
+                "threshold_delta_direction",
+                "",
+            )
+            or ""
+        )
         row["semantic_live_rollout_mode"] = str((semantic_live_guard_v1 or {}).get("mode", "") or "")
         row["semantic_live_alert"] = int(1 if bool((semantic_live_guard_v1 or {}).get("alert_active")) else 0)
         row["semantic_live_fallback_reason"] = str(
@@ -2711,6 +7480,160 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
             self.runtime.latest_signal_by_symbol[symbol] = row
     except Exception:
         pass
+
+    if str(action or "").upper() in {"BUY", "SELL"} and str(setup_id or "").strip():
+        current_cycle_runtime_context_row_v1 = _current_entry_runtime_signal_row(
+            refresh_current_cycle=True
+        )
+        active_action_conflict_runtime_context_v1 = (
+            _build_active_action_conflict_runtime_context_v1(
+                runtime_snapshot_row=current_cycle_runtime_context_row_v1,
+                symbol=str(symbol),
+                action=str(action or ""),
+                setup_id=str(setup_id or ""),
+                setup_reason=str(setup_reason or ""),
+                setup_side=str(setup_side or action or ""),
+                entry_session_name=str(entry_session_name or ""),
+                wait_state=wait_state,
+                entry_wait_decision=str(entry_wait_decision or ""),
+                score=float(score),
+                contra_score=float(contra_score),
+                prediction_bundle=prediction_bundle,
+                shadow_transition_forecast_v1=shadow_transition_forecast_v1,
+                shadow_trade_management_forecast_v1=shadow_trade_management_forecast_v1,
+                shadow_observe_confirm=shadow_observe_confirm,
+                entry_stage=str(entry_stage or ""),
+                actual_effective_entry_threshold=float(dynamic_threshold),
+                actual_size_multiplier=1.0,
+                state25_candidate_runtime_state=getattr(
+                    self.runtime, "state25_candidate_runtime_state", {}
+                ),
+            )
+        )
+        semantic_owner_bundle = dict(
+            active_action_conflict_runtime_context_v1.get("semantic_owner_bundle", {}) or {}
+        )
+        forecast_state25_runtime_bridge_v1 = dict(
+            semantic_owner_bundle.get("forecast_state25_runtime_bridge_v1", {}) or {}
+        )
+        forecast_state25_log_only_overlay_trace_v1 = dict(
+            active_action_conflict_runtime_context_v1.get(
+                "forecast_state25_log_only_overlay_trace_v1", {}
+            )
+            or {}
+        )
+        belief_state25_runtime_bridge_v1 = dict(
+            semantic_owner_bundle.get("belief_state25_runtime_bridge_v1", {}) or {}
+        )
+        belief_action_hint_v1 = dict(
+            active_action_conflict_runtime_context_v1.get("belief_action_hint_v1", {})
+            or {}
+        )
+        barrier_state25_runtime_bridge_v1 = dict(
+            semantic_owner_bundle.get("barrier_state25_runtime_bridge_v1", {}) or {}
+        )
+        barrier_action_hint_v1 = dict(
+            active_action_conflict_runtime_context_v1.get("barrier_action_hint_v1", {})
+            or {}
+        )
+        state25_candidate_log_only_trace_v1 = dict(
+            semantic_owner_bundle.get("state25_candidate_log_only_trace_v1", {}) or {}
+        )
+        observe_confirm_runtime_payload = dict(
+            semantic_owner_bundle.get("observe_confirm_runtime_payload", {}) or {}
+        )
+        countertrend_continuation_signal_v1 = dict(
+            active_action_conflict_runtime_context_v1.get(
+                "countertrend_continuation_signal_v1", {}
+            )
+            or {}
+        )
+        active_action_conflict_guard_v1 = dict(
+            active_action_conflict_runtime_context_v1.get(
+                "active_action_conflict_guard_v1", {}
+            )
+            or {}
+        )
+        directional_continuation_promotion_v1 = _build_directional_continuation_promotion_v1(
+            symbol=str(symbol),
+            baseline_action=str(
+                active_action_conflict_guard_v1.get("baseline_action", "")
+                or baseline_action_side_v1
+                or ""
+            ),
+            runtime_signal_row=current_cycle_runtime_context_row_v1,
+            active_action_conflict_guard_v1=active_action_conflict_guard_v1,
+        )
+        promotion_active_v1 = bool(directional_continuation_promotion_v1.get("active", False))
+        if bool(active_action_conflict_guard_v1.get("guard_applied", False)) and not promotion_active_v1:
+            baseline_action_value = str(
+                active_action_conflict_guard_v1.get("baseline_action", "") or action or ""
+            )
+            action = None
+            observe_reason = str(
+                active_action_conflict_guard_v1.get("downgraded_observe_reason", "")
+                or observe_reason
+                or "directional_conflict_watch"
+            )
+            action_none_reason = str(
+                active_action_conflict_guard_v1.get("failure_label", "")
+                or action_none_reason
+                or "wrong_side_conflict_pressure"
+            )
+            blocked_reason = str(
+                active_action_conflict_guard_v1.get("failure_code", "")
+                or "active_action_conflict_guard"
+            )
+            core_blocked_reason = str(blocked_reason)
+            skip_outcome, skip_reason = _apply_wait_routing(
+                blocked_reason,
+                blocked_by_value=str(blocked_reason),
+                observe_reason_value=str(observe_reason),
+                action_none_reason_value=str(action_none_reason),
+                action_value=str(baseline_action_value),
+                raw_score_value=float(score),
+                effective_threshold_value=float(dynamic_threshold),
+            )
+            _mark_skip(
+                skip_reason,
+                action=str(baseline_action_value),
+                setup_id=str(setup_id),
+                setup_side=str(setup_side),
+                setup_status=str(setup_status),
+                setup_trigger_state=str(setup_trigger_state),
+                setup_score=float(setup_score),
+                setup_entry_quality=float(setup_entry_quality),
+                setup_reason=str(setup_reason),
+            )
+            self._append_entry_decision_log(
+                _decision_payload(
+                    action="",
+                    considered=1,
+                    outcome=str(skip_outcome),
+                    blocked_by=str(skip_reason),
+                    raw_score=float(score),
+                    contra_score=float(contra_score),
+                    effective_threshold=float(dynamic_threshold),
+                )
+            )
+            return
+        if promotion_active_v1:
+            promoted_action_v1 = str(directional_continuation_promotion_v1.get("promoted_action", "") or "")
+            if promoted_action_v1 in {"BUY", "SELL"}:
+                action = str(promoted_action_v1)
+                core_pass = max(1, int(core_pass))
+                core_reason = str(
+                    directional_continuation_promotion_v1.get("promotion_reason", "")
+                    or "directional_continuation_overlay_promotion"
+                )
+                core_allowed_action = str(action)
+                action_none_reason = ""
+                blocked_reason = ""
+                core_blocked_reason = ""
+                entry_stage = str(
+                    directional_continuation_promotion_v1.get("recommended_entry_stage", entry_stage)
+                    or entry_stage
+                )
     utility_p = None
     utility_w = None
     utility_l = None
@@ -2957,6 +7880,9 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
                 )
             )
             return
+    _record_entry_back_stage("ai_threshold_and_utility", entry_back_stage_started_at)
+    _set_entry_back_stage("post_threshold_guards")
+    _store_entry_back_profile()
 
     ok_cluster, cluster_reason = self._pass_cluster_guard(
         symbol=symbol,
@@ -2991,6 +7917,7 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
         indicators=entry_indicators,
         setup_id=str(setup_id),
         setup_reason=str(setup_reason),
+        runtime_signal_row=_current_entry_runtime_signal_row(refresh_current_cycle=True),
     )
     if not ok_box_mid:
         _mark_skip(box_mid_reason, entry_stage=str(entry_stage), action=str(action))
@@ -3105,6 +8032,17 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
                     )
                 )
                 return
+    runtime_snapshot_row = _current_entry_runtime_signal_row(refresh_current_cycle=True)
+    probe_promotion_guard_v1 = _build_probe_promotion_guard_v1(
+        symbol=str(symbol),
+        action=str(action),
+        observe_reason=str(observe_reason or ""),
+        blocked_by=str(core_blocked_reason or ""),
+        action_none_reason=str(action_none_reason or ""),
+        entry_probe_plan_v1=entry_probe_plan_v1,
+        consumer_check_state_v1=consumer_check_state_v1,
+        runtime_snapshot_row=runtime_snapshot_row,
+    )
     probe_execution_v1 = _resolve_probe_execution_plan(
         symbol=str(symbol),
         action=str(action),
@@ -3116,6 +8054,32 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
     )
     lot = float(probe_execution_v1.get("order_lot", lot) or lot)
     entry_stage = str(probe_execution_v1.get("effective_entry_stage", entry_stage) or entry_stage)
+    if bool(probe_promotion_guard_v1.get("bounded_probe_promotion_active")) and bool(
+        probe_promotion_guard_v1.get("allows_open")
+    ):
+        bounded_probe_target_lot = _normalize_order_lot(
+            base_lot=float(base_lot),
+            size_multiplier=float(probe_promotion_guard_v1.get("bounded_probe_size_multiplier", 0.35) or 0.35),
+            min_lot=float(Config.LOT_SIZES.get("DEFAULT", 0.01)),
+        )
+        lot = min(float(lot), float(bounded_probe_target_lot))
+        entry_stage = str(
+            probe_promotion_guard_v1.get("bounded_probe_entry_stage", entry_stage) or entry_stage
+        )
+    if bool(directional_continuation_promotion_v1.get("active", False)) and not bool(
+        directional_continuation_promotion_lot_applied_v1
+    ):
+        directional_continuation_target_lot_v1 = _normalize_order_lot(
+            base_lot=float(base_lot),
+            size_multiplier=float(directional_continuation_promotion_v1.get("size_multiplier", 0.30) or 0.30),
+            min_lot=float(Config.LOT_SIZES.get("DEFAULT", 0.01)),
+        )
+        lot = min(float(lot), float(directional_continuation_target_lot_v1))
+        entry_stage = str(
+            directional_continuation_promotion_v1.get("recommended_entry_stage", entry_stage)
+            or entry_stage
+        )
+        directional_continuation_promotion_lot_applied_v1 = True
     p7_guarded_size_overlay_v1 = resolve_p7_guarded_size_overlay_v1(
         symbol=str(symbol),
         action=str(action),
@@ -3126,50 +8090,132 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
     )
     if bool(p7_guarded_size_overlay_v1.get("apply_allowed")):
         lot = float(p7_guarded_size_overlay_v1.get("effective_lot", lot) or lot)
-    probe_promotion_guard_v1 = _build_probe_promotion_guard_v1(
-        symbol=str(symbol),
-        action=str(action),
-        observe_reason=str(observe_reason or ""),
-        blocked_by=str(core_blocked_reason or ""),
-        action_none_reason=str(action_none_reason or ""),
-        entry_probe_plan_v1=entry_probe_plan_v1,
-        consumer_check_state_v1=consumer_check_state_v1,
-        runtime_snapshot_row=_current_runtime_snapshot_row(),
-    )
+    if bool(teacher_label_exploration_entry_v1.get("active")) and not bool(teacher_label_exploration_lot_applied_v1):
+        teacher_label_exploration_target_lot_v1 = _normalize_order_lot(
+            base_lot=float(base_lot),
+            size_multiplier=float(teacher_label_exploration_entry_v1.get("size_multiplier", 1.0) or 1.0),
+            min_lot=float(Config.LOT_SIZES.get("DEFAULT", 0.01)),
+        )
+        lot = min(float(lot), float(teacher_label_exploration_target_lot_v1))
+        teacher_label_exploration_lot_applied_v1 = True
     if bool(probe_promotion_guard_v1.get("guard_active")) and not bool(probe_promotion_guard_v1.get("allows_open")):
         fail_reason = str(probe_promotion_guard_v1.get("failure_code", "") or "probe_promotion_gate")
-        _mark_skip(
-            fail_reason,
-            blocked_by_value=str(fail_reason),
-            observe_reason_value=str(observe_reason or ""),
-            action_none_reason_value=str(action_none_reason or "probe_not_promoted"),
+        teacher_label_exploration_entry_v1 = _build_teacher_label_exploration_entry_v1(
+            symbol=str(symbol),
             action=str(action),
-            probe_promotion_guard_v1=dict(probe_promotion_guard_v1),
-        )
-        skip_row = _decision_payload(
-            action=str(action),
-            considered=1,
-            outcome="skipped",
-            blocked_by=str(fail_reason),
-            raw_score=float(score),
-            contra_score=float(contra_score),
+            observe_reason=str(observe_reason or ""),
+            action_none_reason=str(action_none_reason or "probe_not_promoted"),
+            blocked_by=str(core_blocked_reason or fail_reason),
+            probe_scene_id=str(
+                probe_promotion_guard_v1.get("probe_scene_id", "")
+                or entry_probe_plan_v1.get("symbol_scene_relief", "")
+                or consumer_check_state_v1.get("probe_scene_id", "")
+                or ""
+            ),
+            consumer_check_state_v1=consumer_check_state_v1,
+            guard_failure_code=str(fail_reason),
+            score=float(score),
             effective_threshold=float(dynamic_threshold),
-            entry_stage=str(entry_stage),
-            ai_probability=float(entry_prob) if entry_prob is not None else None,
-            size_multiplier=float(lot / max(1e-9, float(base_lot))),
-            utility_u=utility_u,
-            utility_p=utility_p,
-            utility_w=utility_w,
-            utility_l=utility_l,
-            utility_cost=utility_cost,
-            utility_context_adj=utility_context_adj,
-            u_min=utility_u_min,
-            u_pass=utility_pass,
-            decision_rule_version=decision_rule_version,
+            same_dir_count=len(same_dir_positions),
         )
-        skip_row["probe_promotion_guard_v1"] = dict(probe_promotion_guard_v1)
-        self._append_entry_decision_log(skip_row)
-        return
+        if bool(teacher_label_exploration_entry_v1.get("active")):
+            if not bool(teacher_label_exploration_lot_applied_v1):
+                lot = _normalize_order_lot(
+                    base_lot=float(lot),
+                    size_multiplier=float(teacher_label_exploration_entry_v1.get("size_multiplier", 1.0) or 1.0),
+                    min_lot=float(Config.LOT_SIZES.get("DEFAULT", 0.01)),
+                )
+                teacher_label_exploration_lot_applied_v1 = True
+        else:
+            _mark_skip(
+                fail_reason,
+                blocked_by_value=str(fail_reason),
+                observe_reason_value=str(observe_reason or ""),
+                action_none_reason_value=str(action_none_reason or "probe_not_promoted"),
+                action=str(action),
+                probe_promotion_guard_v1=dict(probe_promotion_guard_v1),
+            )
+            skip_row = _decision_payload(
+                action=str(action),
+                considered=1,
+                outcome="skipped",
+                blocked_by=str(fail_reason),
+                raw_score=float(score),
+                contra_score=float(contra_score),
+                effective_threshold=float(dynamic_threshold),
+                entry_stage=str(entry_stage),
+                ai_probability=float(entry_prob) if entry_prob is not None else None,
+                size_multiplier=float(lot / max(1e-9, float(base_lot))),
+                utility_u=utility_u,
+                utility_p=utility_p,
+                utility_w=utility_w,
+                utility_l=utility_l,
+                utility_cost=utility_cost,
+                utility_context_adj=utility_context_adj,
+                u_min=utility_u_min,
+                u_pass=utility_pass,
+                decision_rule_version=decision_rule_version,
+            )
+            skip_row["probe_promotion_guard_v1"] = dict(probe_promotion_guard_v1)
+            self._append_entry_decision_log(skip_row)
+            return
+    try:
+        rows = getattr(self.runtime, "latest_signal_by_symbol", None)
+        row = {}
+        if isinstance(rows, dict):
+            row = rows.get(symbol, {})
+        if not isinstance(row, dict):
+            row = {}
+        directional_runtime_surface_v1 = _refresh_directional_runtime_execution_surface_v1(
+            runtime_owner=getattr(self, "runtime", None),
+            symbol=str(symbol),
+            runtime_row=row,
+            baseline_action=str(original_action_side_v1 or ""),
+            current_action=str(action or ""),
+            blocked_by=str(blocked_reason or ""),
+            observe_reason=str(observe_reason or ""),
+            action_none_reason=str(action_none_reason or ""),
+            setup_id=str(setup_id or ""),
+            setup_reason=str(setup_reason or observe_reason or ""),
+            forecast_state25_log_only_overlay_trace_v1=dict(
+                forecast_state25_log_only_overlay_trace_v1 or {}
+            ),
+            belief_action_hint_v1=dict(belief_action_hint_v1 or {}),
+            barrier_action_hint_v1=dict(barrier_action_hint_v1 or {}),
+            countertrend_continuation_signal_v1=dict(
+                countertrend_continuation_signal_v1 or {}
+            ),
+            breakout_event_runtime_v1=dict(breakout_event_runtime_v1 or {}),
+            breakout_event_overlay_candidates_v1=dict(
+                breakout_event_overlay_candidates_v1 or {}
+            ),
+        )
+        active_action_conflict_guard_v1 = dict(
+            directional_runtime_surface_v1.get(
+                "active_action_conflict_guard_v1",
+                active_action_conflict_guard_v1,
+            )
+            or {}
+        )
+        directional_continuation_promotion_v1 = dict(
+            directional_runtime_surface_v1.get(
+                "directional_continuation_promotion_v1",
+                directional_continuation_promotion_v1,
+            )
+            or {}
+        )
+        execution_action_diff_v1 = dict(
+            directional_runtime_surface_v1.get("execution_action_diff_v1", {}) or {}
+        )
+        rows = getattr(self.runtime, "latest_signal_by_symbol", None)
+        if isinstance(rows, dict):
+            row = dict(directional_runtime_surface_v1.get("runtime_row", row) or {})
+            rows[symbol] = row
+    except Exception:
+        pass
+    _record_entry_back_stage("post_threshold_guards", entry_back_stage_started_at)
+    _set_entry_back_stage("trace_and_preorder")
+    _store_entry_back_profile()
     stage_probs = entry_stage_detail.get("p", {}) if isinstance(entry_stage_detail, dict) else {}
     stage_conf = 0.0
     try:
@@ -3191,6 +8237,16 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
     prediction_bundle["metadata"]["p7_guarded_size_overlay_contract_v1"] = dict(
         P7_GUARDED_SIZE_OVERLAY_CONTRACT_V1
     )
+    wait_state = self._wait_engine.build_entry_wait_state_from_row(
+        symbol=str(symbol),
+        row=_wait_input_row(
+            action_value=str(action or ""),
+            observe_reason_value=str(observe_reason or ""),
+            blocked_by_value="",
+            action_none_reason_value=str(action_none_reason or ""),
+        ),
+    )
+    _materialize_shadow_runtime_maps()
 
     self.decision_recorder.record_trace(
         {
@@ -3244,8 +8300,116 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
             "preflight_reason": str(preflight_reason),
             "effective_entry_threshold": int(dynamic_threshold),
             "base_entry_threshold": int(entry_threshold),
+            **_build_execution_action_diff_flat_fields_v1(execution_action_diff_v1),
+            "forecast_state25_log_only_overlay_trace_v1": build_forecast_state25_log_only_overlay_trace_v1(
+                build_forecast_state25_runtime_bridge_v1(
+                    {
+                        **dict(runtime_snapshot_row or {}),
+                        "symbol": str(symbol),
+                        "action": str(action or ""),
+                        "direction": str(action or ""),
+                        "setup_id": str(setup_id or ""),
+                        "entry_setup_id": str(setup_id or ""),
+                        "setup_side": str(setup_side or action or ""),
+                        "entry_session_name": str(entry_session_name or ""),
+                        "entry_wait_state": str(wait_state.state or ""),
+                        "entry_wait_reason": str(wait_state.reason or ""),
+                        "entry_wait_decision": str(entry_wait_decision or ""),
+                        "entry_score": float(score),
+                        "contra_score_at_entry": float(contra_score),
+                        "raw_score": float(score),
+                        "contra_score": float(contra_score),
+                        "prediction_bundle": prediction_bundle,
+                        "transition_forecast_v1": dict(shadow_transition_forecast_v1),
+                        "trade_management_forecast_v1": dict(shadow_trade_management_forecast_v1),
+                        "forecast_gap_metrics_v1": {
+                            "transition_side_separation": float(
+                                (((shadow_transition_forecast_v1.get("metadata", {}) or {}).get("side_separation", 0.0)) or 0.0)
+                            ),
+                            "transition_confirm_fake_gap": float(
+                                (((shadow_transition_forecast_v1.get("metadata", {}) or {}).get("confirm_fake_gap", 0.0)) or 0.0)
+                            ),
+                            "transition_reversal_continuation_gap": float(
+                                (((shadow_transition_forecast_v1.get("metadata", {}) or {}).get("reversal_continuation_gap", 0.0)) or 0.0)
+                            ),
+                            "management_continue_fail_gap": float(
+                                (((shadow_trade_management_forecast_v1.get("metadata", {}) or {}).get("continue_fail_gap", 0.0)) or 0.0)
+                            ),
+                            "management_recover_reentry_gap": float(
+                                (((shadow_trade_management_forecast_v1.get("metadata", {}) or {}).get("recover_reentry_gap", 0.0)) or 0.0)
+                            ),
+                            "wait_confirm_gap": float(
+                                runtime_snapshot_row.get("wait_confirm_gap", 0.0)
+                                if runtime_snapshot_row.get("wait_confirm_gap", None) not in ("", None)
+                                else 0.0
+                            ),
+                            "hold_exit_gap": float(
+                                runtime_snapshot_row.get("hold_exit_gap", 0.0)
+                                if runtime_snapshot_row.get("hold_exit_gap", None) not in ("", None)
+                                else 0.0
+                            ),
+                            "same_side_flip_gap": float(
+                                runtime_snapshot_row.get("same_side_flip_gap", 0.0)
+                                if runtime_snapshot_row.get("same_side_flip_gap", None) not in ("", None)
+                                else 0.0
+                            ),
+                            "belief_barrier_tension_gap": float(
+                                runtime_snapshot_row.get("belief_barrier_tension_gap", 0.0)
+                                if runtime_snapshot_row.get("belief_barrier_tension_gap", None) not in ("", None)
+                                else 0.0
+                            ),
+                        },
+                        "observe_confirm_v2": dict(observe_confirm_runtime_metadata.get("observe_confirm_v2", {})),
+                    }
+                ),
+                symbol=str(symbol),
+                entry_stage=str(entry_stage),
+                actual_effective_entry_threshold=float(dynamic_threshold),
+                actual_size_multiplier=float(lot / max(1e-9, float(base_lot))),
+            ),
+            "state25_candidate_context_bridge_v1": build_state25_candidate_context_bridge_v1(
+                {
+                    **dict(runtime_snapshot_row or {}),
+                    "symbol": str(symbol),
+                    "entry_stage": str(entry_stage),
+                    "consumer_check_side": str(action or ""),
+                    "state25_candidate_runtime_v1": dict(
+                        getattr(self.runtime, "state25_candidate_runtime_state", {}) or {}
+                    ),
+                }
+            ),
+            "state25_candidate_log_only_trace_v1": build_state25_candidate_entry_log_only_trace_v1(
+                getattr(self.runtime, "state25_candidate_runtime_state", {}),
+                symbol=str(symbol),
+                entry_stage=str(entry_stage),
+                actual_effective_entry_threshold=float(dynamic_threshold),
+                actual_size_multiplier=float(lot / max(1e-9, float(base_lot))),
+            ),
             "blocked_by": "",
             "p7_guarded_size_overlay_v1": dict(p7_guarded_size_overlay_v1 or {}),
+            "teacher_label_exploration_active": bool(
+                (teacher_label_exploration_entry_v1 or {}).get("active", False)
+            ),
+            "teacher_label_exploration_family": str(
+                (teacher_label_exploration_entry_v1 or {}).get("family", "") or ""
+            ),
+            "teacher_label_exploration_reason": str(
+                (teacher_label_exploration_entry_v1 or {}).get("activation_reason", "") or ""
+            ),
+            "teacher_label_exploration_entry_v1": dict(teacher_label_exploration_entry_v1 or {}),
+            **build_state25_candidate_context_bridge_flat_fields_v1(
+                build_state25_candidate_context_bridge_v1(
+                    {
+                        **dict(runtime_snapshot_row or {}),
+                        "symbol": str(symbol),
+                        "entry_stage": str(entry_stage),
+                        "consumer_check_side": str(action or ""),
+                        "state25_candidate_runtime_v1": dict(
+                            getattr(self.runtime, "state25_candidate_runtime_state", {}) or {}
+                        ),
+                    }
+                )
+            ),
         }
     )
 
@@ -3268,40 +8432,69 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
     )
     if bool(consumer_open_guard_v1.get("guard_active")) and not bool(consumer_open_guard_v1.get("allows_open")):
         fail_reason = str(consumer_open_guard_v1.get("failure_code", "") or "consumer_open_guard_blocked")
-        _mark_skip(
-            fail_reason,
-            blocked_by_value=str(fail_reason),
-            observe_reason_value=str(observe_reason or ""),
-            action_none_reason_value=str(
-                consumer_open_guard_v1.get("entry_block_reason", "") or action_none_reason or ""
-            ),
-            action=str(action),
-            consumer_open_guard_v1=dict(consumer_open_guard_v1),
-        )
-        skip_row = _decision_payload(
-            action=str(action),
-            considered=1,
-            outcome="skipped",
-            blocked_by=str(fail_reason),
-            raw_score=float(score),
-            contra_score=float(contra_score),
-            effective_threshold=float(dynamic_threshold),
-            entry_stage=str(entry_stage),
-            ai_probability=float(entry_prob) if entry_prob is not None else None,
-            size_multiplier=float(lot / max(1e-9, float(base_lot))),
-            utility_u=utility_u,
-            utility_p=utility_p,
-            utility_w=utility_w,
-            utility_l=utility_l,
-            utility_cost=utility_cost,
-            utility_context_adj=utility_context_adj,
-            u_min=utility_u_min,
-            u_pass=utility_pass,
-            decision_rule_version=decision_rule_version,
-        )
-        skip_row["consumer_open_guard_v1"] = dict(consumer_open_guard_v1)
-        self._append_entry_decision_log(skip_row)
-        return
+        if not bool(teacher_label_exploration_entry_v1.get("active")):
+            teacher_label_exploration_entry_v1 = _build_teacher_label_exploration_entry_v1(
+                symbol=str(symbol),
+                action=str(action),
+                observe_reason=str(observe_reason or ""),
+                action_none_reason=str(
+                    consumer_open_guard_v1.get("entry_block_reason", "") or action_none_reason or ""
+                ),
+                blocked_by=str(
+                    consumer_open_guard_v1.get("entry_block_reason", "")
+                    or effective_consumer_check_state_v1.get("blocked_display_reason", "")
+                    or fail_reason
+                ),
+                probe_scene_id=str(effective_consumer_check_state_v1.get("probe_scene_id", "") or ""),
+                consumer_check_state_v1=effective_consumer_check_state_v1,
+                guard_failure_code=str(fail_reason),
+                score=float(score),
+                effective_threshold=float(dynamic_threshold),
+                same_dir_count=len(same_dir_positions),
+            )
+            if bool(teacher_label_exploration_entry_v1.get("active")):
+                if not bool(teacher_label_exploration_lot_applied_v1):
+                    lot = _normalize_order_lot(
+                        base_lot=float(lot),
+                        size_multiplier=float(teacher_label_exploration_entry_v1.get("size_multiplier", 1.0) or 1.0),
+                        min_lot=float(Config.LOT_SIZES.get("DEFAULT", 0.01)),
+                    )
+                    teacher_label_exploration_lot_applied_v1 = True
+        if not bool(teacher_label_exploration_entry_v1.get("active")):
+            _mark_skip(
+                fail_reason,
+                blocked_by_value=str(fail_reason),
+                observe_reason_value=str(observe_reason or ""),
+                action_none_reason_value=str(
+                    consumer_open_guard_v1.get("entry_block_reason", "") or action_none_reason or ""
+                ),
+                action=str(action),
+                consumer_open_guard_v1=dict(consumer_open_guard_v1),
+            )
+            skip_row = _decision_payload(
+                action=str(action),
+                considered=1,
+                outcome="skipped",
+                blocked_by=str(fail_reason),
+                raw_score=float(score),
+                contra_score=float(contra_score),
+                effective_threshold=float(dynamic_threshold),
+                entry_stage=str(entry_stage),
+                ai_probability=float(entry_prob) if entry_prob is not None else None,
+                size_multiplier=float(lot / max(1e-9, float(base_lot))),
+                utility_u=utility_u,
+                utility_p=utility_p,
+                utility_w=utility_w,
+                utility_l=utility_l,
+                utility_cost=utility_cost,
+                utility_context_adj=utility_context_adj,
+                u_min=utility_u_min,
+                u_pass=utility_pass,
+                decision_rule_version=decision_rule_version,
+            )
+            skip_row["consumer_open_guard_v1"] = dict(consumer_open_guard_v1)
+            self._append_entry_decision_log(skip_row)
+            return
 
     order_block_status = {}
     get_order_block_status = getattr(self.runtime, "get_order_block_status", None)
@@ -3348,9 +8541,14 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
         )
         return
 
+    _record_entry_back_stage("trace_and_preorder", entry_back_stage_started_at)
+    _set_entry_back_stage("order_submit_and_log")
+    _store_entry_back_profile()
     order_submit_started_at = time.time()
+    sub_stage_started_at = time.perf_counter()
     ticket = self.runtime.execute_order(symbol, action, lot)
     order_submit_latency_ms = int(max(0.0, round((time.time() - order_submit_started_at) * 1000.0)))
+    _record_entry_back_stage("order_submit_broker", sub_stage_started_at)
     if not ticket:
         last_retcode = getattr(self.runtime, "last_order_retcode", None)
         last_comment = str(getattr(self.runtime, "last_order_comment", "") or "")
@@ -3370,6 +8568,7 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
             last_order_comment=last_comment,
             order_block_remaining_sec=int(post_block_status.get("remaining_sec", 0) or 0),
         )
+        sub_stage_started_at = time.perf_counter()
         self._append_entry_decision_log(
             _decision_payload(
                 action=str(action),
@@ -3397,6 +8596,7 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
                 order_block_remaining_sec=int(post_block_status.get("remaining_sec", 0) or 0),
             )
         )
+        _record_entry_back_stage("entered_decision_log_append", sub_stage_started_at)
         return
 
     _mark_skip(
@@ -3462,6 +8662,7 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
             "open_ts": int(time.time()),
         }
     )
+    sub_stage_started_at = time.perf_counter()
     entered_row = self._append_entry_decision_log(
         _decision_payload(
             action=str(action),
@@ -3487,6 +8688,7 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
             order_submit_latency_ms=int(order_submit_latency_ms),
         )
     )
+    _record_entry_back_stage("entered_decision_log_append", sub_stage_started_at)
     scored_reasons = self.runtime.build_scored_reasons(
         reasons,
         target_total=int(final_entry_score),
@@ -3500,6 +8702,7 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
         entry_setup_id=str(setup_id or ""),
         fallback_profile="neutral",
     )
+    sub_stage_started_at = time.perf_counter()
     self.trade_logger.log_entry(
         ticket,
         symbol,
@@ -3559,7 +8762,11 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
         detail_blob_bytes=int((entered_row or {}).get("detail_blob_bytes", 0) or 0),
         snapshot_payload_bytes=int((entered_row or {}).get("snapshot_payload_bytes", 0) or 0),
         row_payload_bytes=int((entered_row or {}).get("row_payload_bytes", 0) or 0),
+        **_build_trade_logger_micro_payload_from_decision_row(entered_row),
     )
+    _record_entry_back_stage("trade_logger_log_entry", sub_stage_started_at)
+    _record_entry_back_stage("order_submit_and_log", entry_back_stage_started_at)
+    _store_entry_back_profile("entered")
     msg = self.runtime.format_entry_message(
         symbol,
         action,
@@ -3569,9 +8776,10 @@ def try_open_entry(self, symbol, tick, df_all, result, my_positions, pos_count, 
         scored_reasons[:3],
         pos_count + 1,
         Config.MAX_POSITIONS,
+        row=current_runtime_row,
     )
     self.runtime.notify(msg)
-    print(f"\n{msg}")
+    _safe_console_print(msg)
 
 
 
