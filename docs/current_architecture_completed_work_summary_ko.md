@@ -1,268 +1,437 @@
-# 현재까지 무엇을 구축했는가
+# 현재 아키텍처 및 완료 작업 요약
 
-작성일: 2026-03-29 (KST)
+작성일: 2026-04-08 (KST)
 
-## 1. 이 문서의 목적
+## 1. 문서 목적
 
-이 문서는 지금까지 우리가 실제로 무엇을 만들었는지,
-그리고 그것이 어떤 의미에서 “구조 구축 완료”에 가까운 상태인지
-한 장으로 정리하기 위한 문서다.
+이 문서는 지금 이 레포가 실제로 어디까지 와 있는지를 한 번에 읽을 수 있도록 정리한 "현재 기준선 문서"다.
 
-핵심은 단순히 파일이나 함수 이름을 나열하는 것이 아니라,
-시스템이 이전보다 어떻게 달라졌는지를 역할 중심으로 설명하는 데 있다.
+중요한 점은 두 가지다.
 
+1. 이 문서는 "원래 설계 의도"보다 "실제로 존재하는 코드/모델/리포트/활성 상태 파일"을 우선한다.
+2. "완료"는 단순히 설계 문서가 있는 상태가 아니라, 실제 산출물이나 런타임 연결이 확인되는 상태를 뜻한다.
+
+즉, 이 문서는 아이디어 설명서가 아니라 현재 시스템의 실체를 정리한 운영 요약이다.
+
+---
 
 ## 2. 한 줄 요약
 
-지금까지의 작업은
-“진입, 기다림, 청산이 각각 한 덩어리의 로직으로 섞여 있던 상태”를
-“각 phase가 입력 계약, 정책 owner, 결과 surface, runtime summary, handoff 문서까지 이어지는 구조”로 바꾸는 작업이었다.
+이 프로젝트는 더 이상 단순 threshold 기반 진입/청산 봇이 아니다.
 
-즉 이제 시스템은
-결과만 남는 엔진이 아니라
-결과가 왜 그렇게 됐는지의 핵심 의미가 남는 엔진에 훨씬 가까워졌다.
+현재 구조는 다음이 겹쳐 있는 하이브리드 시스템이다.
 
+- 기존 threshold/score 기반 실전 런타임
+- entry/wait/exit를 utility 관점으로 보강한 의사결정 계층
+- semantic_v1 학습/예측 계층
+- shadow auto 및 bounded candidate 승인/활성화 계층
+- state25 후보 자동 승격 및 log-only 결합 계층
+- closed trade 기반 profitability operations 분석 계층
+- breakout event 보조 축의 초기 골격
 
-## 3. 가장 먼저 했던 일
+즉, "기존 실행 엔진 위에 학습/분석/후보 승격/그림자 실행 계층이 얹혀 있는 상태"로 보는 것이 가장 정확하다.
 
-가장 먼저 한 일은 현재 시스템을 설명할 수 있는 문서 축을 세우는 것이었다.
+---
 
-- 새 스레드용 handoff 문서 정리
-- 현재 구조의 문제점과 경계 누수 지점 정리
-- 구조 재정렬 로드맵 문서화
-- phase별 실행 체크리스트 문서화
+## 3. 가장 먼저 구축되어 지금도 유지되는 기반
 
-이 단계는 실제 코드 리팩터링의 기준선을 만들기 위한 작업이었다.
-즉 “무엇을 왜 고쳐야 하는가”를 먼저 고정한 뒤 구현에 들어간 셈이다.
+초기에 가장 먼저 한 일은, 모든 판단을 한 파일 한 규칙으로 밀어넣는 방식에서 벗어나서 기능 축별로 구조를 나누는 것이었다.
 
+그 결과 현재 기준으로 다음 축이 실제 코드 레벨에서 분리되어 있다.
 
-## 4. 진입에서 구축된 것
+- 진입 판단 축
+- 대기 및 관망 판단 축
+- 청산 판단 축
+- 리플레이/라벨/학습 데이터 생성 축
+- 운영 리포트/분석 산출 축
 
-진입 축에서는 아래를 만들었다.
+이 분리는 단순한 파일 분리가 아니라 이후 semantic, shadow, profitability, candidate promotion이 들어올 수 있는 토대를 만든 작업이었다. 지금 시스템이 커졌는데도 무너지지 않은 가장 큰 이유가 이 구조 분해다.
 
-### 4-1. 의미 경계 정리
+---
 
-진입은 이제 단순히 `들어간다 / 못 들어간다`가 아니라,
-아래와 같은 의미 단계로 다뤄진다.
+## 4. 진입(entry) 축에서 완료된 것
 
-- 바로 진입 가능한 상태
-- probe 성격의 후보 상태
-- observe 성격의 대기 상태
-- 실제 차단 상태
+진입 쪽은 이미 "조건 만족하면 들어간다" 수준을 넘어서 있다.
 
-중요한 점은 이 의미가 중간 계산에서만 존재하는 것이 아니라,
-최종 row와 runtime surface까지 최대한 유지되도록 구조를 다시 잡았다는 점이다.
+구축 완료된 핵심은 다음과 같다.
 
-### 4-2. single owner화
+- 후보 신호를 stage/guard/context 기준으로 정리하는 경로가 있다.
+- 점수 기반 threshold 경로가 여전히 실전 기준선으로 남아 있다.
+- 동시에 utility 관점의 진입 통제가 들어가 있다.
+- 즉, 단순 score뿐 아니라 확률, 기대 손익 성격의 조합값으로 진입 허용 여부를 보강한다.
 
-예전에는 진입 가능 여부와 표시 방식이 여러 곳에서 다시 계산되는 구간이 있었다.
-이제는 consumer check state가 공용 계약으로 모이고,
-late block 이후의 재해석도 같은 계약을 따라가도록 정리됐다.
+이 말은 현재 진입 로직이 완전히 semantic-only는 아니지만, 그렇다고 순수 룰셋도 아니라는 뜻이다.
 
-이 덕분에
-새 guard가 들어가도
-서로 다른 두 군데가 다른 의미를 말할 가능성이 크게 줄었다.
+정확히는 다음과 같이 이해하는 편이 맞다.
 
-### 4-3. 잘못된 READY 문제 정리
+- baseline authority는 아직 threshold/score 쪽이 강하다.
+- 하지만 그 위에 utility gate와 부가 해석 계층이 이미 들어와 있다.
+- 따라서 외부에서 흔히 말하는 "이 시스템은 EV가 전혀 없다"는 평가는 현재 코드와 맞지 않는다.
 
-한때 실제 문제였던 것은
-실제로는 blocked인데 표면상 READY처럼 보이는 현상이었다.
+요약하면 진입은 "기존 실전 규칙 + utility 보강" 상태까지는 이미 완료되었다.
 
-이 문제는
-- late block 이후 재해석
-- final row/runtime update
-- recent diagnostics 확인
+---
 
-까지 연결하면서 상당 부분 정리됐다.
+## 5. 기다림(wait/hold) 축에서 완료된 것
 
-즉 지금은 “과거에 있었던 대표적인 truth drift”를 구조적으로 줄인 상태다.
+이 프로젝트가 단순 진입/청산 봇이 아닌 이유 중 하나가 바로 wait 축이다.
 
-### 4-4. energy truth logging
+현재 wait 축에서 완료된 것은 다음과 같다.
 
-진입에서는 energy helper가 실제로 어떤 분기를 썼는지 기록하도록 바뀌었다.
+- 진입 직후 바로 손대지 않고 유지/관망/전환을 구분하는 로직이 있다.
+- hold, wait, reverse, exit의 후보 행동을 비교하는 기반이 있다.
+- 즉, 아무 행동도 하지 않는 선택을 하나의 의사결정으로 다룬다.
 
-이전에는 결과를 보고 사람이 추정하는 비중이 컸지만,
-이제는 branch truth가 row와 recent diagnostics에 남는다.
+이건 매우 중요하다.
 
-이건 이후 wait와 exit를 해석할 때도 중요한 기반이 된다.
+보통 단순 자동매매 코드는 "들어감 / 나감"만 생각한다. 하지만 현재 프로젝트는 "지금 아무것도 하지 않는 것이 최선인가"를 별도 상태로 다룰 수 있게 구조가 열려 있다.
 
-### 4-5. recent runtime observability
+나중에 semantic shadow나 state25 후보가 붙을 수 있었던 것도, 이 중간 상태가 이미 구조적으로 존재했기 때문이다.
 
-진입은 이제 마지막 한 줄만 보는 구조가 아니라,
-최근 구간 전체를 요약해서 읽을 수 있다.
+---
 
-예를 들면 아래가 가능해졌다.
+## 6. 청산(exit) 축에서 완료된 것
 
-- 최근 blocked reason 분포 확인
-- wrong ready count 확인
-- 심볼별 최근 state 패턴 확인
-- wait-energy trace summary 확인
+청산은 초창기보다 훨씬 많이 진화했다.
 
+완료된 핵심은 다음과 같다.
 
-## 5. 기다림에서 구축된 것
+- 청산 판단이 단순 반대 신호 감지에만 묶여 있지 않다.
+- exit now / hold / reverse / wait 성격의 비교 경로가 존재한다.
+- 청산 학습 데이터도 단순 "가격이 올랐냐/내렸냐"가 아니라, 현재 청산과 계속 보유의 차이를 반영하도록 설계되어 있다.
 
-기다림 축은 entry와 거의 같은 밀도로 정리됐다.
+즉, exit는 이미 "조건이 깨졌으니 무조건 나간다"는 1차원 룰셋에서 벗어났다.
 
-### 5-1. bias owner 분리
+다만 아직 완전히 하나의 경제적 목적함수로 통일되어 있다고 보기는 어렵다.
 
-기다림을 만드는 재료였던
-state bias, belief bias, edge-pair bias, probe temperament가
-각각 독립 owner로 분리됐다.
+정확한 평가는 이렇다.
 
-이제 wait 엔진은
-모든 판단을 한 함수 안에서 직접 하지 않고,
-각 bias 결과를 받아 조합하는 형태에 가까워졌다.
+- 청산은 utility/EV-lite 요소를 이미 갖고 있다.
+- 하지만 실전 authority가 완전히 그 한 축으로 일원화된 것은 아니다.
+- 그래서 외부에서 "청산이 전부 조건 변화 기준"이라고 단정하는 것도 맞지 않고,
+- 반대로 "이제 청산이 완전한 경제 최적화 시스템이 되었다"고 말하는 것도 과장이다.
 
-### 5-2. context/input contract freeze
+가장 정확한 표현은 "청산은 이미 다축 의사결정 구조로 바뀌었고, 경제적 판단 축도 들어와 있지만, 최상위 단일 기준으로 100% 수렴한 단계는 아니다"다.
 
-wait는 이제 흩어진 로컬 변수 묶음이 아니라,
-공식적인 입력 계약을 기준으로 움직인다.
+---
 
-이 덕분에
-- helper caller
-- state policy
-- decision policy
-- runtime surface
+## 7. 학습 데이터셋, 라벨, 경제적 타깃 축에서 완료된 것
 
-가 같은 입력면을 보게 됐다.
+외부에서 이 프로젝트를 잘 모르는 사람이 가장 자주 오해하는 부분이 여기다.
 
-### 5-3. semantic surface와 recent summary
+현재 프로젝트는 단순 가격 방향 예측만 하는 구조가 아니다.
 
-기다림은 단순한 yes/no가 아니라,
-최근 어떤 종류의 wait가 많았는지를 summary로 읽을 수 있게 됐다.
+이미 완료된 것은 다음과 같다.
 
-예를 들면 아래가 분리되어 보인다.
+- closed trade 기반 데이터셋 생성 경로가 있다.
+- entry 쪽에는 수익 여부 기반 라벨링이 이미 존재한다.
+- exit 쪽에는 지금 나가는 것과 더 보유하는 것의 차이를 반영한 라벨 설계가 있다.
+- outcome label 계층이 별도로 존재한다.
+- replay 및 contract 기반 라벨 파생 경로가 있다.
+- economic learning target을 계산하는 보조 축이 존재한다.
+- `learning_total_label` 같은 총합형 경제 라벨이 실제 서비스 코드에 연결돼 있다.
 
-- state 요약
-- decision 요약
-- state와 decision의 bridge 요약
-- helper/energy trace 요약
-- threshold shift 요약
-- special scene 요약
+즉, 현재 프로젝트의 문제를 "라벨을 전혀 돈 기준으로 안 만들고 있다"라고 말하는 건 사실과 다르다.
 
-즉 기다림은 이제 “감”이 아니라 “구분된 의미”로 읽는 층이 됐다.
+더 정확한 진단은 다음과 같다.
 
-### 5-4. end-to-end continuity
+- 경제적 라벨은 이미 일부 구현되어 있다.
+- semantic 계층에서는 여전히 해석 가능한 중간 라벨과 관리 라벨이 함께 쓰인다.
+- 따라서 문제의 본질은 "돈 기준 라벨이 전혀 없다"가 아니라,
+- "경제적 목적이 시스템 전체 authority로 완전히 통합되진 않았다"에 가깝다.
 
-대표 wait 장면을 고정한 continuity test가 있다.
+이 차이는 매우 크다.
 
-그래서 특정 wait 장면이
-- 내부 state
-- decision
-- row
-- compact runtime row
-- recent summary
+전자는 설계를 처음부터 다시 해야 하는 상태고, 후자는 이미 깔아둔 축을 어디까지 주도권으로 끌어올릴지의 문제다.
 
-까지 같은 의미로 이어지는지를 테스트로 잠가둘 수 있다.
+---
 
+## 8. semantic_v1 및 forecast/bridge 축에서 완료된 것
 
-## 6. 청산에서 구축된 것
+이제는 semantic 계층도 설계 문서 수준을 넘어 실제 산출물을 가진 상태다.
 
-청산은 처음에는 entry/wait보다 덜 정리된 상태였지만,
-지금은 거의 같은 밀도까지 올라왔다.
+현재 확인되는 완료 항목은 다음과 같다.
 
-### 6-1. canonical exit context
+- semantic bridge proxy 데이터셋이 실제로 생성되어 있다.
+- `timing_dataset.parquet`
+- `entry_quality_dataset.parquet`
+- `exit_management_dataset.parquet`
+- 해당 데이터셋들의 summary JSON도 함께 생성된다.
+- semantic 모델 3종이 실제 파일로 존재한다.
+- `timing_model.joblib`
+- `entry_quality_model.joblib`
+- `exit_management_model.joblib`
+- 각 모델별 summary JSON 및 metrics 파일도 생성된다.
 
-청산은 이제 management profile, invalidation, setup, chosen stage,
-policy stage, lifecycle-adjusted posture를 공통 context로 읽는다.
+즉, semantic은 더 이상 "나중에 붙일 예정인 개념"이 아니다.
 
-즉 exit, wait-exit, manage loop가
-각자 다른 해석을 하는 대신 같은 입력 계약을 보게 됐다.
+이미 다음 단계까지는 완료되었다.
 
-### 6-2. state와 decision 분리
+- bridge proxy row 생성
+- semantic 학습용 데이터셋 생성
+- 모델 학습
+- summary/metrics 산출
 
-청산에서는 아래 층이 분리됐다.
+다만 이 계층의 현재 위치를 정확히 표현하면 다음과 같다.
 
-- exit wait state
-- recovery / reverse / utility candidate
-- final winner / decision policy
-- taxonomy
+- semantic 모델은 존재한다.
+- semantic shadow와 결합되는 운영 산출도 존재한다.
+- 하지만 baseline 실전 authority를 완전히 semantic이 대체한 상태는 아니다.
 
-그 결과 청산도 이제
-state family, decision family, bridge status로 읽을 수 있게 됐다.
+따라서 semantic 계층은 "없다"가 아니라 "구축 완료 + 부분 운영 + 아직 최상위 authority는 아님" 상태다.
 
-### 6-3. manage execution seam 분리
+---
 
-청산 실행 루프 안에 섞여 있던
-- recovery candidate
-- hard guard candidate
-- reverse candidate
-- partial / stop-up / stage candidate
-- execution plan orchestrator
-- result surface
+## 9. shadow auto 및 semantic shadow 축에서 완료된 것
 
-가 밖으로 빠졌다.
+4월 들어 가장 크게 진척된 부분이 바로 이 축이다.
 
-즉 manage loop는 이제 점점
-candidate를 받고 실행하는 조합기 형태에 가까워졌다.
+현재 shadow auto 쪽은 단순 preview를 넘어서 다음 산출물들이 실제로 존재한다.
 
-### 6-4. recent exit observability
+- shadow dataset bias audit
+- shadow divergence audit
+- shadow target mapping
+- shadow threshold sweep
+- shadow correction loop
+- shadow vs baseline 비교
+- shadow evaluation
+- shadow auto decision
+- semantic shadow training corpus
+- semantic shadow training bridge adapter
+- semantic shadow proxy datasets
+- semantic shadow preview bundle
+- bounded candidate stage/approval
+- runtime activation demo
+- active runtime activation
 
-청산도 이제 최근 패턴을 runtime에서 바로 읽을 수 있다.
+특히 중요한 것은 다음 두 상태다.
 
-예를 들면
-- confirm hold가 많았는지
-- recovery wait가 많았는지
-- reverse now가 많았는지
-- bridge mismatch가 있는지
+1. bounded candidate approval 산출물이 실제로 존재한다.
+2. active runtime activation manifest와 보고서도 실제로 존재한다.
 
-를 `runtime_status.json`과 `runtime_status.detail.json`에서 볼 수 있다.
+이건 무슨 뜻이냐면, shadow 계층이 단순 분석 리포트 생산을 넘어서 "후보 승인"과 "활성화 절차"까지 코드와 산출물로 묶였다는 뜻이다.
 
-### 6-5. close-out
+하지만 여기서 과장하면 안 된다.
 
-청산은 마지막으로 continuity test, read guide, lifecycle summary까지 붙였다.
+현재 확인되는 현실은 다음과 같다.
 
-즉 이제 청산도 entry/wait처럼
-구조 + surface + 문서 + 테스트가 함께 있는 상태다.
+- semantic shadow 활성화 메커니즘은 있다.
+- 강제 활성화 데모/manifest도 있다.
+- 하지만 보고서에는 여전히 `semantic_live_mode: disabled`가 보인다.
+- 별도 baseline acceptance 문서에는 `semantic_live_mode: threshold_only`가 남아 있다.
 
+즉, shadow/semantic은 이제 장식이 아니라 운영 후보 계층이 맞다.
 
-## 7. 운영 문서와 읽기 경로에서 구축된 것
+그러나 아직 실전 baseline을 완전히 덮어쓴 지배적 권한층은 아니다.
 
-우리는 엔진만 바꾼 게 아니라,
-새 스레드나 운영자가 실제로 읽을 수 있는 문서 경로도 같이 만들었다.
+가장 정확한 표현은 "활성화 체계까지 구현된 후보 운영 계층"이다.
 
-지금 있는 것은 아래와 같다.
+---
 
-- handoff 문서
-- 첫 점검 체크리스트
-- wait 전용 runtime read guide
-- exit 전용 runtime read guide
-- entry-wait-exit lifecycle summary
+## 10. profitability operations 축에서 완료된 것
 
-이 말은,
-이제 시스템을 이해하는 비용이 사람 기억력에만 의존하지 않는다는 뜻이다.
+3월 말 이후 이 축은 더 이상 roadmap가 아니라 실제 분석 생산 라인으로 봐야 한다.
 
+현재 다음 단계들이 모두 산출물로 존재한다.
 
-## 8. 지금 시점의 객관적 평가
+- P1 lifecycle
+- P2 expectancy
+- P2 zero-pnl gap audit
+- P3 anomaly
+- P4 compare
+- P5 casebook
+- P6 health
+- P7 counterfactual
+- P7 guarded size overlay
+- P7 guarded size overlay dry run
 
-지금까지 한 작업은
-“수익을 자동으로 만드는 전략 발명”이라기보다
-“수익을 검증하고 개선할 수 있는 구조를 세우는 작업”에 가깝다.
+이 축의 의미는 매우 크다.
 
-정확히 말하면 아래가 끝난 상태다.
+이제 프로젝트는 단순히 "모델을 돌린다"에서 끝나지 않는다.
 
-- 코어 구조 공사
-- 의미 경계 분리
-- 로그 truth 보존
-- recent runtime surface 구축
-- continuity close-out
-- handoff/read path 구축
+이미 다음 질문에 답할 수 있는 분석 체계를 갖췄다.
 
-반면 아래는 이제부터의 과제다.
+- 실제 closed trade 기준 expectancy는 어떤가
+- zero pnl이나 attribution gap은 어디서 생기나
+- 어떤 케이스가 반복적으로 나쁜가
+- 사이즈 오버레이를 얹으면 결과가 어떻게 바뀌나
+- 건강도와 이상 징후는 무엇인가
 
-- 실제 expectancy 분석
-- alerting
-- lifecycle correlation view
-- 시계열 비교
-- 비용/슬리피지/실전 체감 성능 최적화
+즉, 운영 실패를 감으로 말하는 단계는 지나갔다.
 
+아직 개선할 부분은 남아 있지만, "분석 프레임이 없다"는 말은 더 이상 맞지 않는다.
 
-## 9. 결론
+---
 
-지금까지 한 일은
-진입, 기다림, 청산을 각각 “움직이는 코드”에서 끝내지 않고,
-운영 가능한 구조로 끌어올리는 작업이었다.
+## 11. state25 candidate 자동 승격 및 live 결합 축에서 완료된 것
 
-그래서 지금 상태는
-“로직을 새로 만드는 단계”보다
-“어떤 구조가 실제로 돈을 벌고 잃는지 개선하는 단계”로 넘어가기 좋은 상태라고 볼 수 있다.
+이 부분도 현재는 실제 상태 파일이 존재한다.
+
+확인되는 완료 항목은 다음과 같다.
+
+- candidate run 보고서
+- gate 보고서
+- execution policy integration 보고서
+- execution policy log-only binding 보고서
+- auto promote live actuator 보고서
+- active candidate state 파일
+- auto promote history 로그
+
+가장 중요한 현재 상태는 이렇다.
+
+- active candidate가 실제로 존재한다.
+- policy source는 `state25_candidate`다.
+- rollout phase는 `log_only`다.
+- binding mode도 `log_only`다.
+
+즉, state25 후보는 이제 "문서상 개념"이 아니라, 실제로 선택되고 바인딩 모드가 기록되는 운영 객체다.
+
+다만 아직 실거래 주 권한으로 승격된 것은 아니고, 현재 확인되는 수준은 log-only 결합이다.
+
+이 표현이 중요하다.
+
+- "아무것도 안 됐다"도 아니고,
+- "실전 authority로 완전히 올라갔다"도 아니다.
+
+정확히는 "후보 선발, 승격 이력, log-only 바인딩까지 운영 루프가 만들어진 상태"다.
+
+---
+
+## 12. product acceptance 및 기준선 동결 축에서 완료된 것
+
+현재 프로젝트에는 product acceptance 기준선 문서도 존재한다.
+
+여기서 확인되는 핵심은 다음이다.
+
+- baseline freeze 문서가 있다.
+- tri-symbol 기준으로 최근 row와 display 상태를 점검한다.
+- must-show missing, must-hide leakage, bad exit candidate, divergence seed 같은 운영 체크 항목이 있다.
+- 해당 기준선 문서에는 `semantic_live_mode: threshold_only`가 명시되어 있다.
+
+이 문서의 의미는 단순 보고가 아니다.
+
+이건 지금 시스템의 "공식 baseline authority가 어디에 있는가"를 보여주는 기준점이다.
+
+즉, semantic/shadow/state25가 많이 진척되었더라도, baseline acceptance 관점에서는 아직 threshold-only가 기본선이라는 뜻이다.
+
+이 사실은 현재 구조를 이해할 때 반드시 함께 봐야 한다.
+
+---
+
+## 13. breakout event 축에서 완료된 것
+
+breakout 계열은 아직 완성된 실전 축은 아니지만, 골격 정리는 상당히 진행되었다.
+
+현재 확인되는 완료 항목은 다음과 같다.
+
+- breakout event runtime contract 정리
+- overlay candidate/trace contract 정리
+- manual alignment contract 정리
+- replay action target contract 정리
+- phase0 interface freeze 보고서
+- manual alignment / overlap recovery / learning bridge / backfill scaffold 계열 산출물
+
+현재 단계 판정은 다음과 같다.
+
+- `P0 interface_freeze`는 ready
+- `P1 detect_only_runtime_injection`은 next
+- `P2 manual_alignment_and_shadow_preview`도 next
+
+따라서 breakout 축은 "초기 골격과 리플레이/보조 분석 준비는 됐지만, 실전 detect-only 런타임 주입은 아직 다음 단계"라고 보는 것이 맞다.
+
+---
+
+## 14. 운영 문서와 읽기 경로에서 완료된 것
+
+현재 이 프로젝트는 기능 자체만 있는 것이 아니라, 읽어야 할 운영 문서 계층도 상당 부분 정리되어 있다.
+
+이미 존재하는 대표 문서 축은 다음과 같다.
+
+- 현재 아키텍처 요약 문서
+- shadow auto 시스템 설계 문서
+- profitability operations 로드맵 및 실제 산출물
+- economic learning target 로드맵
+- state25 auto promote / live actuator 설계 문서
+- forecast-state25 learning bridge 설계 문서
+- breakout event 관련 단계 문서
+
+이 말은 곧, 이제 프로젝트를 이해하는 방식이 단순 코드 grep만이 아니라는 뜻이다.
+
+현재는 다음 세 층을 함께 읽어야 전체가 보인다.
+
+- 서비스 코드
+- 생성된 모델/데이터셋/상태 파일
+- 분석 및 운영 문서
+
+즉, 이 프로젝트는 이미 "코드만 읽어서는 다 안 보이는 단계"에 들어와 있다.
+
+---
+
+## 15. 현재 시스템을 객관적으로 평가하면
+
+현재 상태를 가장 정확하게 표현하면 다음과 같다.
+
+### 이미 확실히 완료된 것
+
+- entry / wait / exit 구조 분해
+- utility 보강 진입/청산 판단
+- closed trade 기반 학습/라벨 파생 축
+- economic target 보조 라벨 축
+- semantic_v1 bridge dataset 생성
+- semantic_v1 모델 학습 및 summary/metrics 산출
+- shadow auto 분석 파이프라인
+- bounded candidate 승인 산출
+- runtime activation manifest/보고서
+- profitability operations P1~P7
+- state25 candidate log-only 바인딩
+- product acceptance baseline freeze
+
+### 부분 완료 또는 운영 후보 상태인 것
+
+- semantic의 실전 authority 승격
+- shadow의 실시간 성과 검증
+- state25 후보의 log-only 이후 단계
+- breakout detect-only 런타임 주입
+
+### 아직 남아 있는 본질 과제
+
+- baseline threshold authority와 semantic/economic authority를 어디까지 통합할지 결정
+- zero-pnl, attribution gap, information gap 정리
+- discriminative edge를 실제 운영 성과로 입증
+- shadow와 bounded candidate를 실전 안전장치와 함께 승격할지 검증
+- 경제적 목적함수를 라이브 의사결정 최상단으로 얼마나 끌어올릴지 정리
+
+즉, 지금 남은 과제는 "아무것도 없는 상태에서 처음 설계하기"가 아니다.
+
+이미 너무 많은 것이 구축되어 있어서, 앞으로의 핵심은 새 기능을 무작정 더하는 것이 아니라 다음을 정리하는 데 있다.
+
+- 어떤 계층이 최종 authority인가
+- 어떤 계층은 log-only/analysis-only인가
+- 무엇을 promotion gate로 삼을 것인가
+- 어떤 경제적 지표를 실전 승격 조건으로 인정할 것인가
+
+---
+
+## 16. 결론
+
+현재 프로젝트는 다음처럼 요약하는 것이 가장 정확하다.
+
+"기존 threshold 기반 실전 엔진 위에, utility/semantic/shadow/profitability/state25 후보 승격 계층이 실제 산출물과 함께 얹혀 있는 하이브리드 트레이딩 시스템"
+
+여기서 중요한 판단은 두 가지다.
+
+1. 이 프로젝트는 생각보다 훨씬 많이 완성되어 있다.
+2. 동시에 아직 하나의 권위 있는 라이브 판단 축으로 완전히 수렴되지는 않았다.
+
+따라서 현재 단계의 핵심은 "새로운 개념을 계속 추가하는 것"보다 다음을 명확히 하는 것이다.
+
+- baseline authority
+- semantic/shadow 후보의 승격 조건
+- economic target의 최상위 의사결정 반영 범위
+- log-only와 live 적용의 경계
+
+한마디로 정리하면,
+
+이 시스템은 미완성 초기 프로토타입이 아니라, 이미 여러 계층이 완성된 중대형 운영 후보 시스템이다.
+
+다만 지금부터의 진짜 난제는 기능 추가보다 "권한 통합과 승격 기준 정리"에 있다.
