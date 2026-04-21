@@ -37,6 +37,7 @@ def test_maybe_refresh_checkpoint_analysis_chain_respects_throttle(tmp_path: Pat
         state_path=state_path,
         report_path=tmp_path / "report.json",
         markdown_path=tmp_path / "report.md",
+        lock_path=tmp_path / "refresh.lock",
         min_interval_seconds=300,
         min_new_rows=25,
         force=False,
