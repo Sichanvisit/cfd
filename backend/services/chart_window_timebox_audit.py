@@ -100,6 +100,8 @@ def _normalize_actual_family(payload: Mapping[str, Any]) -> str:
 
 
 def _iter_window_rows(detail_path: Path, *, symbol: str, start: str, end: str) -> Iterable[dict[str, Any]]:
+    if not detail_path.exists():
+        return
     symbol_upper = _text(symbol).upper()
     with detail_path.open("r", encoding="utf-8") as handle:
         for line in handle:

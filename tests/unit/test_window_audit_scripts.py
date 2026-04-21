@@ -64,6 +64,31 @@ def test_chart_window_timebox_audit_script_writes_outputs(tmp_path):
     assert (tmp_path / "chart_window_script_test.md").exists()
 
 
+def test_chart_window_timebox_audit_script_handles_missing_detail_path(tmp_path):
+    module = _load_script("build_chart_window_timebox_audit.py")
+
+    rc = module.main(
+        [
+            "--detail-path",
+            str(tmp_path / "missing.detail.jsonl"),
+            "--symbol",
+            "NAS100",
+            "--start",
+            "2026-04-14T16:35:00",
+            "--end",
+            "2026-04-14T16:45:00",
+            "--shadow-auto-dir",
+            str(tmp_path),
+            "--output-stem",
+            "chart_window_missing_detail_test",
+        ]
+    )
+
+    assert rc == 0
+    payload = json.loads((tmp_path / "chart_window_missing_detail_test.json").read_text(encoding="utf-8"))
+    assert payload["windows"][0]["row_count"] == 0
+
+
 def test_window_direction_numeric_audit_script_writes_outputs(tmp_path):
     module = _load_script("build_window_direction_numeric_audit.py")
     detail_path = tmp_path / "entry_decisions.detail.jsonl"
@@ -119,3 +144,30 @@ def test_window_direction_numeric_audit_script_writes_outputs(tmp_path):
     assert window["window_id"] == "xau_down"
     assert window["candidate_threshold_hints_v1"]["calibration_state"] == "CONTINUATION_UNDER_VETO"
     assert (tmp_path / "window_direction_script_test.md").exists()
+
+
+def test_window_direction_numeric_audit_script_handles_missing_detail_path(tmp_path):
+    module = _load_script("build_window_direction_numeric_audit.py")
+
+    rc = module.main(
+        [
+            "--detail-path",
+            str(tmp_path / "missing.detail.jsonl"),
+            "--symbol",
+            "XAUUSD",
+            "--start",
+            "2026-04-15T01:59:00",
+            "--end",
+            "2026-04-15T02:05:00",
+            "--expected-direction",
+            "DOWN",
+            "--shadow-auto-dir",
+            str(tmp_path),
+            "--output-stem",
+            "window_direction_missing_detail_test",
+        ]
+    )
+
+    assert rc == 0
+    payload = json.loads((tmp_path / "window_direction_missing_detail_test.json").read_text(encoding="utf-8"))
+    assert payload["windows"][0]["row_count"] == 0

@@ -82,6 +82,8 @@ def _continuation_reason_hint(value: str) -> bool:
 
 
 def _iter_payload_rows(detail_path: Path, *, symbol: str, start: str, end: str) -> Iterable[dict[str, Any]]:
+    if not detail_path.exists():
+        return
     symbol_upper = _text(symbol).upper()
     with detail_path.open("r", encoding="utf-8") as handle:
         for line in handle:
