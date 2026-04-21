@@ -130,7 +130,8 @@ def log_entry(
     try:
         df = self._read_open_df_safe()
         df = self._normalize_dataframe(df)
-        df = pd.concat([df, pd.DataFrame([data])], ignore_index=True, sort=False)
+        entry_df = pd.DataFrame([data])
+        df = entry_df if df.empty else pd.concat([df, entry_df], ignore_index=True, sort=False)
         df = self._normalize_dataframe(df)
         self._write_open_df(df)
     except Exception as exc:

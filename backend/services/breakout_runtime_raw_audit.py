@@ -365,11 +365,12 @@ def build_breakout_runtime_raw_audit(
         summary["recommended_next_action"] = "retain_breakout_observation_window"
         return frame, summary
 
-    primary_axis = frame[["breakout_up_score", "breakout_down_score"]].max(axis=1)
-    direction_gap_normalized = (
-        frame["breakout_direction_gap"]
-        / primary_axis.replace(0.0, pd.NA)
-    ).fillna(0.0)
+    primary_axis = pd.to_numeric(
+        frame[["breakout_up_score", "breakout_down_score"]].max(axis=1),
+        errors="coerce",
+    ).astype(float)
+    direction_gap = pd.to_numeric(frame["breakout_direction_gap"], errors="coerce").astype(float)
+    direction_gap_normalized = (direction_gap / primary_axis.mask(primary_axis == 0.0)).fillna(0.0)
     confirm_or_continuation = frame[["confirm_score", "continuation_score"]].max(axis=1)
     current_ready_like = (primary_axis >= 0.55) & (
         (confirm_or_continuation >= 0.30)

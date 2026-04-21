@@ -13,7 +13,7 @@ from sklearn.compose import ColumnTransformer
 from sklearn.dummy import DummyClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, balanced_accuracy_score, confusion_matrix, f1_score
+from sklearn.metrics import accuracy_score, confusion_matrix, f1_score
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
@@ -213,11 +213,22 @@ def _split_train_val_test(
 
 
 def _evaluate_predictions(y_true: pd.Series, y_pred: np.ndarray) -> dict[str, float]:
+    y_true_series = pd.Series(y_true).astype(str)
+    y_pred_series = pd.Series(y_pred, index=y_true_series.index).astype(str)
+    labels = sorted(y_true_series.unique().tolist())
+    if labels:
+        recalls = [
+            float((y_pred_series[y_true_series == label] == label).mean())
+            for label in labels
+        ]
+        balanced_accuracy = float(np.mean(recalls))
+    else:
+        balanced_accuracy = 0.0
     return {
-        "accuracy": float(accuracy_score(y_true, y_pred)),
-        "macro_f1": float(f1_score(y_true, y_pred, average="macro", zero_division=0)),
-        "weighted_f1": float(f1_score(y_true, y_pred, average="weighted", zero_division=0)),
-        "balanced_accuracy": float(balanced_accuracy_score(y_true, y_pred)),
+        "accuracy": float(accuracy_score(y_true_series, y_pred_series)),
+        "macro_f1": float(f1_score(y_true_series, y_pred_series, average="macro", zero_division=0)),
+        "weighted_f1": float(f1_score(y_true_series, y_pred_series, average="weighted", zero_division=0)),
+        "balanced_accuracy": balanced_accuracy,
     }
 
 

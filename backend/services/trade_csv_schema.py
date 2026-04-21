@@ -435,6 +435,25 @@ TEXT_TRADE_COLUMNS = {
 }
 
 
+def _default_trade_column_value(column: str) -> object:
+    if column == "status":
+        return "OPEN"
+    if column in TEXT_TRADE_COLUMNS:
+        return ""
+    return 0.0
+
+
+def _ensure_trade_columns(out: pd.DataFrame) -> pd.DataFrame:
+    missing = [column for column in TRADE_COLUMNS if column not in out.columns]
+    if not missing:
+        return out
+    defaults = {
+        column: pd.Series(_default_trade_column_value(column), index=out.index)
+        for column in missing
+    }
+    return pd.concat([out, pd.DataFrame(defaults, index=out.index)], axis=1)
+
+
 def _canonical_symbol_key(value: str) -> str:
     text = str(value or "").upper()
     if "BTC" in text:
@@ -545,16 +564,7 @@ def normalize_trade_df(df: pd.DataFrame) -> pd.DataFrame:
     if df is None:
         return pd.DataFrame(columns=TRADE_COLUMNS)
     if df.empty:
-        out = df.copy()
-        for col in TRADE_COLUMNS:
-            if col not in out.columns:
-                if col in TEXT_TRADE_COLUMNS:
-                    out[col] = ""
-                elif col == "status":
-                    out[col] = "OPEN"
-                else:
-                    out[col] = 0.0
-        return out
+        return _ensure_trade_columns(df.copy())
 
     out = df.copy()
 
@@ -569,14 +579,7 @@ def normalize_trade_df(df: pd.DataFrame) -> pd.DataFrame:
         if old in out.columns and new not in out.columns:
             out = out.rename(columns={old: new})
 
-    for col in TRADE_COLUMNS:
-        if col not in out.columns:
-            if col in TEXT_TRADE_COLUMNS:
-                out[col] = ""
-            elif col == "status":
-                out[col] = "OPEN"
-            else:
-                out[col] = 0.0
+    out = _ensure_trade_columns(out)
 
     # Legacy shifted row recovery.
     symbol_raw = out["symbol"].fillna("").astype(str).str.upper().str.strip()

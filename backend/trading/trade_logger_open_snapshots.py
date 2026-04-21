@@ -511,7 +511,8 @@ def upsert_open_snapshots(trade_logger, snapshots, logger: logging.Logger | None
             indicators = snap.get("indicators", {}) or {}
             for col in trade_logger._indicator_columns():
                 row[col] = pd.to_numeric(indicators.get(col, float("nan")), errors="coerce")
-            df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+            row_df = pd.DataFrame([row])
+            df = row_df if df.empty else pd.concat([df, row_df], ignore_index=True)
             trade_logger.active_tickets.add(ticket)
             signature_cache[ticket] = signature_by_ticket.get(ticket, "")
             updated += 1
