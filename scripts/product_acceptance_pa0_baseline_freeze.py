@@ -16,7 +16,9 @@ DEFAULT_OUTPUT_DIR = ROOT / "data" / "analysis" / "product_acceptance"
 DEFAULT_ENTRY_DECISIONS_PATH = ROOT / "data" / "trades" / "entry_decisions.csv"
 DEFAULT_RUNTIME_STATUS_PATH = ROOT / "data" / "runtime_status.json"
 DEFAULT_CHART_FLOW_DISTRIBUTION_PATH = ROOT / "data" / "analysis" / "chart_flow_distribution_latest.json"
-DEFAULT_CLOSED_HISTORY_PATH = ROOT / "trade_closed_history.csv"
+DEFAULT_CLOSED_HISTORY_PATH = ROOT / "data" / "trades" / "trade_closed_history.csv"
+LEGACY_CLOSED_HISTORY_PATH = ROOT / "trade_closed_history.csv"
+MIN_MEANINGFUL_RELEASE_PEAK_USD = 0.25
 STRUCTURAL_GUARDS_V1 = {
     "outer_band_guard",
     "middle_sr_anchor_guard",
@@ -25,30 +27,72 @@ STRUCTURAL_GUARDS_V1 = {
     "energy_soft_block",
 }
 ACCEPTABLE_WAIT_CHECK_DISPLAY_REASONS_V1 = {
+    "btc_lower_probe_guard_wait_as_wait_checks",
     "btc_lower_probe_promotion_wait_as_wait_checks",
     "btc_lower_rebound_probe_energy_soft_block_as_wait_checks",
+    "btc_upper_break_fail_confirm_entry_gate_wait_as_wait_checks",
+    "btc_upper_break_fail_confirm_energy_soft_block_as_wait_checks",
+    "btc_upper_break_fail_confirm_forecast_wait_as_wait_checks",
+    "btc_upper_reject_confirm_forecast_wait_as_wait_checks",
+    "btc_upper_reject_confirm_energy_soft_block_as_wait_checks",
+    "btc_upper_reject_mixed_confirm_energy_soft_block_as_wait_checks",
+    "btc_upper_reject_confirm_preflight_wait_as_wait_checks",
+    "btc_upper_reject_probe_energy_soft_block_as_wait_checks",
+    "btc_upper_reject_probe_forecast_wait_as_wait_checks",
+    "btc_upper_reject_probe_preflight_wait_as_wait_checks",
+    "btc_upper_reject_probe_promotion_wait_as_wait_checks",
     "btc_structural_probe_energy_soft_block_as_wait_checks",
     "nas_upper_reject_probe_promotion_wait_as_wait_checks",
     "nas_upper_reject_probe_forecast_wait_as_wait_checks",
+    "nas_upper_break_fail_confirm_energy_soft_block_as_wait_checks",
+    "nas_upper_break_fail_confirm_entry_gate_wait_as_wait_checks",
+    "nas_upper_reject_mixed_confirm_energy_soft_block_as_wait_checks",
     "probe_guard_wait_as_wait_checks",
     "xau_middle_anchor_guard_wait_as_wait_checks",
+    "xau_lower_probe_guard_wait_as_wait_checks",
     "xau_middle_anchor_probe_energy_soft_block_as_wait_checks",
+    "xau_outer_band_probe_entry_gate_wait_as_wait_checks",
     "xau_outer_band_probe_energy_soft_block_as_wait_checks",
+    "xau_upper_break_fail_confirm_energy_soft_block_as_wait_checks",
+    "xau_upper_reject_confirm_energy_soft_block_as_wait_checks",
+    "xau_upper_reject_confirm_forecast_wait_as_wait_checks",
+    "xau_upper_reject_mixed_confirm_entry_gate_wait_as_wait_checks",
+    "xau_upper_reject_mixed_confirm_energy_soft_block_as_wait_checks",
     "xau_upper_reject_mixed_guard_wait_as_wait_checks",
+    "xau_upper_reject_probe_forecast_wait_as_wait_checks",
+    "xau_upper_reject_probe_promotion_wait_as_wait_checks",
     "xau_upper_reject_probe_energy_soft_block_as_wait_checks",
 }
 ACCEPTABLE_HIDDEN_SUPPRESSION_REASONS_V1 = {
+    "balanced_conflict_wait_hide_without_probe",
+    "btc_sell_middle_anchor_wait_hide_without_probe",
     "btc_lower_rebound_forecast_wait_hide_without_probe",
     "nas_upper_break_fail_wait_hide_without_probe",
     "nas_upper_reject_wait_hide_without_probe",
     "nas_sell_middle_anchor_wait_hide_without_probe",
     "nas_upper_reclaim_wait_hide_without_probe",
+    "xau_upper_reclaim_wait_hide_without_probe",
     "sell_outer_band_wait_hide_without_probe",
+    "structural_wait_hide_without_probe",
 }
 
 
 def _resolve_now(now: datetime | None = None) -> datetime:
     return now or datetime.now()
+
+
+def _resolve_closed_history_path(
+    preferred_path: Path | None = None,
+    *,
+    legacy_fallback_path: Path | None = None,
+) -> Path:
+    preferred = Path(preferred_path or DEFAULT_CLOSED_HISTORY_PATH)
+    legacy = Path(legacy_fallback_path or LEGACY_CLOSED_HISTORY_PATH)
+    if preferred.exists():
+        return preferred
+    if legacy.exists():
+        return legacy
+    return preferred
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -227,6 +271,12 @@ def _normalize_closed_trade_row(row: dict[str, Any]) -> dict[str, Any]:
         "wait_quality_label": _coerce_text(row.get("wait_quality_label")).lower(),
         "loss_quality_label": _coerce_text(row.get("loss_quality_label")).lower(),
         "exit_policy_profile": _coerce_text(row.get("exit_policy_profile")),
+        "exit_wait_state": _coerce_text(row.get("exit_wait_state")).upper(),
+        "exit_wait_decision": _coerce_text(row.get("exit_wait_decision")).lower(),
+        "decision_reason": _coerce_text(row.get("decision_reason")).lower(),
+        "utility_exit_now": _coerce_float(row.get("utility_exit_now")),
+        "u_wait_be": _coerce_float(row.get("u_wait_be")),
+        "u_wait_tp1": _coerce_float(row.get("u_wait_tp1")),
         "status": _coerce_text(row.get("status")),
     }
 
@@ -407,7 +457,20 @@ def _is_acceptable_hidden_suppression(row: dict[str, Any]) -> bool:
     if bool(row.get("display_ready")):
         return False
     modifier_primary_reason = _coerce_text(row.get("modifier_primary_reason")).lower()
-    return bool(modifier_primary_reason in ACCEPTABLE_HIDDEN_SUPPRESSION_REASONS_V1)
+    if modifier_primary_reason in ACCEPTABLE_HIDDEN_SUPPRESSION_REASONS_V1:
+        return True
+    observe_reason = _coerce_text(row.get("observe_reason")).lower()
+    action_none_reason = _coerce_text(row.get("action_none_reason")).lower()
+    probe_scene_id = _coerce_text(row.get("probe_scene_id"))
+    check_side = _coerce_text(row.get("check_side")).upper()
+    check_stage = _coerce_text(row.get("check_stage")).upper()
+    return bool(
+        observe_reason.startswith("conflict_box_")
+        and action_none_reason == "observe_state_wait"
+        and not probe_scene_id
+        and not check_side
+        and check_stage in {"", "NONE"}
+    )
 
 
 def _build_must_show_missing_candidates(entry_rows_by_symbol: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
@@ -503,6 +566,10 @@ def _build_must_enter_candidates(entry_rows_by_symbol: dict[str, list[dict[str, 
     seeds: list[dict[str, Any]] = []
     for symbol in TARGET_SYMBOLS_V1:
         for row in list(entry_rows_by_symbol.get(symbol, []) or []):
+            if _is_acceptable_wait_check_relief(row):
+                continue
+            if _is_acceptable_hidden_suppression(row):
+                continue
             action = _coerce_text(row.get("action"))
             if action not in {"BUY", "SELL"} and not bool(row.get("entry_ready")):
                 continue
@@ -639,6 +706,67 @@ def _build_closed_trade_baseline_summary(closed_rows_by_symbol: dict[str, list[d
     return rows
 
 
+def _effective_release_giveback(row: dict[str, Any]) -> float:
+    peak_profit = _coerce_float(row.get("peak_profit_at_exit"))
+    giveback = _coerce_float(row.get("giveback_usd"))
+    if peak_profit < MIN_MEANINGFUL_RELEASE_PEAK_USD:
+        return 0.0
+    return giveback
+
+
+def _supports_must_release_bad_loss_seed(row: dict[str, Any]) -> bool:
+    peak_profit = _coerce_float(row.get("peak_profit_at_exit"))
+    giveback = _effective_release_giveback(row)
+    post_exit_mfe = _coerce_float(row.get("post_exit_mfe"))
+    wait_quality = _coerce_text(row.get("wait_quality_label")).lower()
+
+    if peak_profit < MIN_MEANINGFUL_RELEASE_PEAK_USD:
+        return False
+    if giveback > 0.0 or post_exit_mfe > 0.5:
+        return True
+    return wait_quality == "bad_wait"
+
+
+def _supports_bad_exit_bad_loss_seed(row: dict[str, Any]) -> bool:
+    peak_profit = _coerce_float(row.get("peak_profit_at_exit"))
+    giveback = _effective_release_giveback(row)
+    post_exit_mfe = _coerce_float(row.get("post_exit_mfe"))
+    wait_quality = _coerce_text(row.get("wait_quality_label")).lower()
+    exit_reason = _coerce_text(row.get("exit_reason")).lower()
+
+    if post_exit_mfe > 0.5 or giveback > 0.5:
+        return True
+    if wait_quality == "bad_wait":
+        return True
+    if "hard_guard=adverse" in exit_reason and (
+        "protect exit" in exit_reason or "adverse stop" in exit_reason
+    ):
+        return False
+    return peak_profit >= MIN_MEANINGFUL_RELEASE_PEAK_USD
+
+
+def _supports_bad_exit_non_loss_seed(row: dict[str, Any]) -> bool:
+    giveback = _effective_release_giveback(row)
+    post_exit_mfe = _coerce_float(row.get("post_exit_mfe"))
+    wait_quality = _coerce_text(row.get("wait_quality_label")).lower()
+    decision_reason = _coerce_text(row.get("decision_reason")).lower()
+    exit_reason = _coerce_text(row.get("exit_reason")).lower()
+
+    if post_exit_mfe > 0.5:
+        return True
+    if giveback <= 0.5:
+        return False
+    if wait_quality in {"bad_wait", "unnecessary_wait"}:
+        return True
+    if (
+        wait_quality == "no_wait"
+        and decision_reason == "exit_now_best"
+        and exit_reason.startswith("exit context")
+    ):
+        return False
+    return True
+
+
 def _closed_seed_payload(row: dict[str, Any], *, seed_type: str, ranking_score: float, seed_reason: str) -> dict[str, Any]:
     return {
         "seed_type": seed_type,
@@ -659,6 +787,12 @@ def _closed_seed_payload(row: dict[str, Any], *, seed_type: str, ranking_score: 
         "wait_quality_label": _coerce_text(row.get("wait_quality_label")),
         "loss_quality_label": _coerce_text(row.get("loss_quality_label")),
         "exit_policy_profile": _coerce_text(row.get("exit_policy_profile")),
+        "exit_wait_state": _coerce_text(row.get("exit_wait_state")),
+        "exit_wait_decision": _coerce_text(row.get("exit_wait_decision")),
+        "decision_reason": _coerce_text(row.get("decision_reason")),
+        "utility_exit_now": _coerce_float(row.get("utility_exit_now")),
+        "u_wait_be": _coerce_float(row.get("u_wait_be")),
+        "u_wait_tp1": _coerce_float(row.get("u_wait_tp1")),
     }
 
 
@@ -688,10 +822,13 @@ def _build_bad_exit_candidates(closed_rows_by_symbol: dict[str, list[dict[str, A
     for symbol in TARGET_SYMBOLS_V1:
         for row in list(closed_rows_by_symbol.get(symbol, []) or []):
             net_pnl = _coerce_float(row.get("net_pnl_after_cost"))
-            giveback = _coerce_float(row.get("giveback_usd"))
+            giveback = _effective_release_giveback(row)
             post_exit_mfe = _coerce_float(row.get("post_exit_mfe"))
-            loss_quality = _coerce_text(row.get("loss_quality_label"))
-            if net_pnl >= 0 and loss_quality != "bad_loss" and post_exit_mfe <= 0.5 and giveback <= 0.5:
+            loss_quality = _coerce_text(row.get("loss_quality_label")).lower()
+            if loss_quality == "bad_loss":
+                if not _supports_bad_exit_bad_loss_seed(row):
+                    continue
+            elif not _supports_bad_exit_non_loss_seed(row):
                 continue
             score = max(0.0, -net_pnl) + giveback + post_exit_mfe
             if loss_quality == "bad_loss":
@@ -732,9 +869,12 @@ def _build_must_release_candidates(closed_rows_by_symbol: dict[str, list[dict[st
     for symbol in TARGET_SYMBOLS_V1:
         for row in list(closed_rows_by_symbol.get(symbol, []) or []):
             net_pnl = _coerce_float(row.get("net_pnl_after_cost"))
-            giveback = _coerce_float(row.get("giveback_usd"))
-            loss_quality = _coerce_text(row.get("loss_quality_label"))
-            if net_pnl >= 0 and giveback <= 0.5 and loss_quality != "bad_loss":
+            giveback = _effective_release_giveback(row)
+            loss_quality = _coerce_text(row.get("loss_quality_label")).lower()
+            if loss_quality == "bad_loss":
+                if not _supports_must_release_bad_loss_seed(row):
+                    continue
+            elif giveback <= 0.5:
                 continue
             score = max(0.0, -net_pnl) + giveback + (1.0 if loss_quality == "bad_loss" else 0.0)
             seeds.append(
@@ -786,13 +926,14 @@ def build_product_acceptance_pa0_baseline_report(
     now: datetime | None = None,
 ) -> dict[str, Any]:
     report_now = _resolve_now(now)
+    resolved_closed_history_path = _resolve_closed_history_path(closed_history_path)
     entry_rows_by_symbol = _collect_recent_rows_by_symbol(
         path=entry_decisions_path,
         row_normalizer=_normalize_entry_row,
         max_per_symbol=recent_rows_per_symbol,
     )
     closed_rows_by_symbol = _collect_recent_rows_by_symbol(
-        path=closed_history_path,
+        path=resolved_closed_history_path,
         row_normalizer=_normalize_closed_trade_row,
         max_per_symbol=recent_closed_trades_per_symbol,
     )
@@ -844,7 +985,7 @@ def build_product_acceptance_pa0_baseline_report(
             "entry_decisions_path": str(entry_decisions_path),
             "runtime_status_path": str(runtime_status_path),
             "chart_flow_distribution_path": str(chart_flow_distribution_path),
-            "closed_history_path": str(closed_history_path),
+            "closed_history_path": str(resolved_closed_history_path),
             "recent_rows_per_symbol": int(recent_rows_per_symbol),
             "recent_closed_trades_per_symbol": int(recent_closed_trades_per_symbol),
             "target_symbols": list(TARGET_SYMBOLS_V1),
@@ -1017,12 +1158,14 @@ def write_product_acceptance_pa0_baseline_report(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Freeze PA0 product acceptance baseline and capture casebook seeds.")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--closed-history-path", type=Path, default=DEFAULT_CLOSED_HISTORY_PATH)
     parser.add_argument("--recent-rows-per-symbol", type=int, default=120)
     parser.add_argument("--recent-closed-trades-per-symbol", type=int, default=40)
     args = parser.parse_args()
 
     result = write_product_acceptance_pa0_baseline_report(
         output_dir=args.output_dir,
+        closed_history_path=args.closed_history_path,
         recent_rows_per_symbol=args.recent_rows_per_symbol,
         recent_closed_trades_per_symbol=args.recent_closed_trades_per_symbol,
     )

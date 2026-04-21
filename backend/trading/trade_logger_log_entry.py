@@ -52,6 +52,16 @@ def log_entry(
     exit_fill_price=0.0,
     exit_slippage_points=0.0,
 ):
+    parsed_entry_atr_ratio = pd.to_numeric(entry_atr_ratio, errors="coerce")
+    effective_entry_atr_ratio = 1.0 if pd.isna(parsed_entry_atr_ratio) else float(parsed_entry_atr_ratio)
+    regime_volatility_ratio = pd.to_numeric((regime or {}).get("volatility_ratio", float("nan")), errors="coerce")
+    if (
+        abs(effective_entry_atr_ratio) <= 1e-12
+        or abs(effective_entry_atr_ratio - 1.0) <= 1e-12
+    ) and (not pd.isna(regime_volatility_ratio)):
+        regime_volatility_ratio = float(regime_volatility_ratio)
+        if regime_volatility_ratio > 0.0 and abs(regime_volatility_ratio - 1.0) > 1e-6:
+            effective_entry_atr_ratio = regime_volatility_ratio
     self.active_tickets.add(ticket)
     indicators = indicators or {}
     regime = regime or {}
@@ -90,7 +100,7 @@ def log_entry(
         "entry_session_name": str(entry_session_name or "").strip().upper(),
         "entry_weekday": float(pd.to_numeric(entry_weekday, errors="coerce") or 0.0),
         "entry_session_threshold_mult": float(pd.to_numeric(entry_session_threshold_mult, errors="coerce") or 1.0),
-        "entry_atr_ratio": float(pd.to_numeric(entry_atr_ratio, errors="coerce") or 1.0),
+        "entry_atr_ratio": float(effective_entry_atr_ratio),
         "entry_atr_threshold_mult": float(pd.to_numeric(entry_atr_threshold_mult, errors="coerce") or 1.0),
         "entry_request_price": float(pd.to_numeric(entry_request_price, errors="coerce") or 0.0),
         "entry_fill_price": float(pd.to_numeric(entry_fill_price, errors="coerce") or 0.0),

@@ -65,6 +65,14 @@ class AnchorWindow:
     rows: int = 0
 
 
+@dataclass
+class FutureBarWindow:
+    symbol: str
+    min_bar_ts: int
+    max_bar_ts: int
+    rows: int = 0
+
+
 def _resolve_path(value: str | Path | None, default: Path) -> Path:
     path = Path(value) if value is not None else default
     if not path.is_absolute():
@@ -127,6 +135,35 @@ def _load_anchor_windows(entry_decisions_path: Path, *, symbols: set[str] | None
     return windows
 
 
+def _load_existing_future_windows(
+    future_bar_path: Path,
+    *,
+    symbols: set[str] | None = None,
+) -> dict[str, FutureBarWindow]:
+    if not future_bar_path.exists():
+        return {}
+    windows: dict[str, FutureBarWindow] = {}
+    with future_bar_path.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            symbol = _normalize_symbol(row.get("symbol"))
+            if not symbol:
+                continue
+            if symbols and symbol not in symbols:
+                continue
+            bar_ts = _coerce_epoch(row.get("time"))
+            if bar_ts is None or bar_ts <= 0:
+                continue
+            current = windows.get(symbol)
+            if current is None:
+                windows[symbol] = FutureBarWindow(symbol=symbol, min_bar_ts=bar_ts, max_bar_ts=bar_ts, rows=1)
+                continue
+            current.min_bar_ts = min(current.min_bar_ts, bar_ts)
+            current.max_bar_ts = max(current.max_bar_ts, bar_ts)
+            current.rows += 1
+    return windows
+
+
 def _resolve_timeframe_spec(name: str) -> tuple[int, int]:
     key = str(name or DEFAULT_TIMEFRAME).strip().upper()
     if key not in TIMEFRAME_SPECS:
@@ -145,6 +182,90 @@ def _compute_fetch_bounds(
     start_ts = int(min_anchor_ts) - max(0, int(lookback_bars)) * int(timeframe_seconds)
     end_ts = int(max_anchor_ts) + max(0, int(lookahead_bars)) * int(timeframe_seconds)
     return start_ts, end_ts
+
+
+def inspect_future_bar_freshness(
+    *,
+    entry_decisions: str | Path | None = None,
+    output_path: str | Path | None = None,
+    timeframe: str = DEFAULT_TIMEFRAME,
+    symbols: list[str] | None = None,
+) -> dict[str, Any]:
+    entry_decisions_path = _resolve_path(entry_decisions, DEFAULT_ENTRY_DECISIONS)
+    if not entry_decisions_path.exists():
+        raise FileNotFoundError(f"entry_decisions source not found: {entry_decisions_path}")
+
+    symbol_filter = {_normalize_symbol(item) for item in list(symbols or []) if _normalize_symbol(item)}
+    anchor_windows = _load_anchor_windows(entry_decisions_path, symbols=(symbol_filter or None))
+    if not anchor_windows:
+        raise ValueError(f"no anchor rows with usable timestamps found under {entry_decisions_path}")
+
+    output_file = _resolve_path(
+        output_path,
+        DEFAULT_OUTPUT_DIR / f"future_bars_{entry_decisions_path.stem}_{str(timeframe).lower()}.csv",
+    )
+    future_windows = _load_existing_future_windows(output_file, symbols=(symbol_filter or None))
+
+    per_symbol: dict[str, Any] = {}
+    stale_symbols: list[str] = []
+    missing_symbols: list[str] = []
+    fresh_symbols: list[str] = []
+    max_anchor_ts = 0
+    max_future_ts = 0
+    for symbol, anchor in sorted(anchor_windows.items()):
+        future = future_windows.get(symbol)
+        symbol_anchor_ts = int(anchor.max_anchor_ts)
+        max_anchor_ts = max(max_anchor_ts, symbol_anchor_ts)
+        if future is None:
+            per_symbol[symbol] = {
+                "status": "missing",
+                "anchor_rows": int(anchor.rows),
+                "max_anchor_ts": symbol_anchor_ts,
+                "future_rows": 0,
+                "max_future_ts": 0,
+                "lag_seconds": None,
+            }
+            missing_symbols.append(symbol)
+            continue
+        symbol_future_ts = int(future.max_bar_ts)
+        max_future_ts = max(max_future_ts, symbol_future_ts)
+        lag_seconds = int(symbol_anchor_ts - symbol_future_ts)
+        if symbol_future_ts < symbol_anchor_ts:
+            status = "stale"
+            stale_symbols.append(symbol)
+        else:
+            status = "fresh"
+            fresh_symbols.append(symbol)
+        per_symbol[symbol] = {
+            "status": status,
+            "anchor_rows": int(anchor.rows),
+            "max_anchor_ts": symbol_anchor_ts,
+            "future_rows": int(future.rows),
+            "max_future_ts": symbol_future_ts,
+            "lag_seconds": int(lag_seconds),
+        }
+
+    overall_status = "fresh"
+    if missing_symbols:
+        overall_status = "missing"
+    elif stale_symbols:
+        overall_status = "stale"
+
+    return {
+        "checked_at": datetime.now().astimezone().isoformat(),
+        "entry_decisions_path": str(entry_decisions_path),
+        "output_path": str(output_file),
+        "timeframe": str(timeframe).upper(),
+        "status": overall_status,
+        "symbols_checked": sorted(anchor_windows.keys()),
+        "missing_symbols": missing_symbols,
+        "stale_symbols": stale_symbols,
+        "fresh_symbols": fresh_symbols,
+        "max_anchor_ts": int(max_anchor_ts),
+        "max_future_ts": int(max_future_ts),
+        "global_lag_seconds": int(max_anchor_ts - max_future_ts) if max_future_ts > 0 else None,
+        "per_symbol": per_symbol,
+    }
 
 
 def _rate_field(rate: Any, field: str, default: Any = 0) -> Any:
@@ -197,6 +318,7 @@ def fetch_mt5_future_bars(
     lookback_bars: int = DEFAULT_LOOKBACK_BARS,
     lookahead_bars: int = DEFAULT_LOOKAHEAD_BARS,
     symbols: list[str] | None = None,
+    only_if_stale: bool = False,
 ) -> dict[str, Any]:
     entry_decisions_path = _resolve_path(entry_decisions, DEFAULT_ENTRY_DECISIONS)
     if not entry_decisions_path.exists():
@@ -213,6 +335,33 @@ def fetch_mt5_future_bars(
         DEFAULT_OUTPUT_DIR / f"future_bars_{entry_decisions_path.stem}_{str(timeframe).lower()}.csv",
     )
     output_file.parent.mkdir(parents=True, exist_ok=True)
+
+    freshness_before = inspect_future_bar_freshness(
+        entry_decisions=entry_decisions_path,
+        output_path=output_file,
+        timeframe=timeframe,
+        symbols=list(symbol_filter),
+    )
+    if bool(only_if_stale) and str(freshness_before.get("status", "")).lower() == "fresh":
+        return {
+            "created_at": datetime.now().astimezone().isoformat(),
+            "entry_decisions_path": str(entry_decisions_path),
+            "output_path": str(output_file),
+            "timeframe": str(timeframe).upper(),
+            "timeframe_seconds": int(timeframe_seconds),
+            "lookback_bars": int(lookback_bars),
+            "lookahead_bars": int(lookahead_bars),
+            "symbols_requested": sorted(symbol_filter) if symbol_filter else sorted(windows.keys()),
+            "symbols_fetched": [],
+            "rows_written": int(
+                sum(int((info or {}).get("future_rows", 0) or 0) for info in dict(freshness_before.get("per_symbol", {})).values())
+            ),
+            "per_symbol": dict(freshness_before.get("per_symbol", {})),
+            "skipped": True,
+            "skip_reason": "future_bars_already_fresh",
+            "freshness_before": freshness_before,
+            "freshness_after": freshness_before,
+        }
 
     if not connect_to_mt5():
         raise RuntimeError(f"failed to connect to MT5: {mt5.last_error()}")
@@ -259,6 +408,13 @@ def fetch_mt5_future_bars(
         writer.writeheader()
         writer.writerows(ordered_rows)
 
+    freshness_after = inspect_future_bar_freshness(
+        entry_decisions=entry_decisions_path,
+        output_path=output_file,
+        timeframe=timeframe,
+        symbols=list(symbol_filter),
+    )
+
     return {
         "created_at": datetime.now().astimezone().isoformat(),
         "entry_decisions_path": str(entry_decisions_path),
@@ -271,6 +427,9 @@ def fetch_mt5_future_bars(
         "symbols_fetched": sorted(per_symbol.keys()),
         "rows_written": int(len(ordered_rows)),
         "per_symbol": per_symbol,
+        "skipped": False,
+        "freshness_before": freshness_before,
+        "freshness_after": freshness_after,
     }
 
 
@@ -282,6 +441,7 @@ def main() -> int:
     parser.add_argument("--lookback-bars", type=int, default=DEFAULT_LOOKBACK_BARS, help="Bars to include before the earliest anchor.")
     parser.add_argument("--lookahead-bars", type=int, default=DEFAULT_LOOKAHEAD_BARS, help="Bars to include after the latest anchor.")
     parser.add_argument("--symbol", action="append", default=[], help="Optional symbol filter. Repeat for multiple symbols.")
+    parser.add_argument("--only-if-stale", action="store_true", help="Skip MT5 fetch when the current future-bar companion already covers the latest anchors.")
     args = parser.parse_args()
 
     summary = fetch_mt5_future_bars(
@@ -291,6 +451,7 @@ def main() -> int:
         lookback_bars=int(args.lookback_bars),
         lookahead_bars=int(args.lookahead_bars),
         symbols=list(args.symbol or []),
+        only_if_stale=bool(args.only_if_stale),
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0
