@@ -82,3 +82,47 @@ def test_storage_retention_trims_checkpoint_detail_tail_when_cap_still_exceeded(
     assert summary["under_cap"] is True
     assert len(after_lines) < len(before_lines)
     assert after_last["row"] == before_last["row"]
+
+
+def test_storage_retention_cleans_stale_retention_temp_files(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    stale_tmp = data_root / "runtime" / "checkpoint_rows.detail.jsonl.retention_tmp"
+    _write_blob(stale_tmp, 4 * 1024)
+    _write_blob(data_root / "runtime" / "checkpoint_rows.detail.jsonl", 128)
+
+    payload = run_cfd_storage_retention(
+        root=tmp_path,
+        cap_bytes=10 * 1024,
+        mode="manual",
+        allow_checkpoint_trim=True,
+    )
+
+    assert stale_tmp.exists() is False
+    assert payload["summary"]["housekeeping_deleted_count"] == 1
+    assert payload["summary"]["housekeeping_deleted_bytes"] == 4 * 1024
+
+
+def test_storage_retention_streams_checkpoint_trim_without_full_read(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    data_root = tmp_path / "data"
+    checkpoint_detail = data_root / "runtime" / "checkpoint_rows.detail.jsonl"
+    _write_jsonl(checkpoint_detail, 200)
+    _write_blob(data_root / "runtime" / "checkpoint_rows.csv", 128)
+
+    def fail_read_bytes(self: Path) -> bytes:
+        raise AssertionError(f"read_bytes should not be used for retention trim: {self}")
+
+    monkeypatch.setattr(Path, "read_bytes", fail_read_bytes)
+
+    payload = run_cfd_storage_retention(
+        root=tmp_path,
+        cap_bytes=3 * 1024,
+        mode="manual",
+        allow_checkpoint_trim=True,
+        checkpoint_detail_min_bytes=1024,
+    )
+
+    assert payload["checkpoint_detail_trim"]["trimmed"] is True
+    assert payload["summary"]["under_cap"] is True

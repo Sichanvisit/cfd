@@ -30,6 +30,7 @@ set "STORAGE_RETENTION_WATCH_LOG=%ROOT%\logs\storage_retention_watch.log"
 set "STORAGE_RETENTION_WATCH_INTERVAL_MIN=60"
 set "STORAGE_RETENTION_CAP_GB=20"
 set "STORAGE_RETENTION_CHECKPOINT_DETAIL_MIN_GB=2"
+if not defined CFD_ENABLE_CHECKPOINT_ORCHESTRATOR_WATCH set "CFD_ENABLE_CHECKPOINT_ORCHESTRATOR_WATCH=0"
 
 if /I "%~1"=="stop" goto :stop
 if /I "%~1"=="restart" goto :restart
@@ -86,7 +87,7 @@ call :run_storage_retention_preflight
 
 start "%TITLE_MAIN%" /min /d "%ROOT%" "%PYTHON_EXE%" main.py 2>nul
 call :start_api_if_needed
-start "%TITLE_UI%" cmd /k ""%~f0" start_ui"
+start "%TITLE_UI%" cmd /c ""%~f0" start_ui"
 
 echo [OK] started clean: main/api/ui ^(legacy ML disabled^)
 call :wait_api_boot
@@ -434,6 +435,7 @@ call :start_manual_truth_calibration_watch_if_needed
 exit /b 0
 
 :orchestrator_watch
+set "CFD_ENABLE_CHECKPOINT_ORCHESTRATOR_WATCH=1"
 call :start_checkpoint_improvement_orchestrator_watch_if_needed
 exit /b 0
 
@@ -613,7 +615,7 @@ for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":3010 .*LISTENING"') d
   taskkill /PID %%P /T /F >nul 2>&1
 )
 timeout /t 1 /nobreak >nul
-start "%TITLE_UI%" cmd /k ""%~f0" start_ui optional"
+start "%TITLE_UI%" cmd /c ""%~f0" start_ui optional"
 call :wait_ui_boot
 exit /b 0
 
@@ -689,6 +691,10 @@ start "%TITLE_CALIBRATION_WATCH%" /min /d "%ROOT%" "%PYTHON_EXE%" scripts\manual
 exit /b 0
 
 :start_checkpoint_improvement_orchestrator_watch_if_needed
+if not "%CFD_ENABLE_CHECKPOINT_ORCHESTRATOR_WATCH%"=="1" (
+  echo [INFO] checkpoint improvement orchestrator watch disabled by default. set CFD_ENABLE_CHECKPOINT_ORCHESTRATOR_WATCH=1 or run manage_cfd.bat orchestrator_watch.
+  exit /b 0
+)
 if not exist "%ROOT%\logs" mkdir "%ROOT%\logs" >nul 2>&1
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$watch=@(Get-CimInstance Win32_Process | Where-Object { ($_.Name -ieq 'python.exe') -and ($_.CommandLine -match 'checkpoint_improvement_orchestrator_watch.py') }); if($watch.Count -gt 0){ exit 0 } else { exit 1 }" >nul 2>&1
@@ -729,10 +735,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$root='%ROOT%';" ^
   "$mainScript='main\.py';" ^
   "$targets=Get-CimInstance Win32_Process | Where-Object {" ^
-  "  ($_.Name -ieq 'python.exe') -and (" ^
+  "  (($_.Name -ieq 'python.exe') -and (" ^
   "    ($_.CommandLine -match $mainScript -or $_.CommandLine -match 'ml[/\\\\]retrain_and_deploy.py' -or $_.CommandLine -match 'uvicorn backend.fastapi.app:app' -or $_.CommandLine -match 'state25_candidate_watch.py' -or $_.CommandLine -match 'manual_truth_calibration_watch.py' -or $_.CommandLine -match 'checkpoint_improvement_orchestrator_watch.py' -or $_.CommandLine -match 'storage_retention_watch.py') -or" ^
   "    ($_.CommandLine -match 'CFD_MAIN_ENGINE' -or $_.CommandLine -match 'CFD_ML_RETRAIN' -or $_.CommandLine -match 'CFD_FASTAPI_8010' -or $_.CommandLine -match 'CFD_NEXT_UI' -or $_.CommandLine -match 'CFD_STATE25_CANDIDATE_WATCH' -or $_.CommandLine -match 'CFD_MANUAL_TRUTH_CALIBRATION_WATCH' -or $_.CommandLine -match 'CFD_CHECKPOINT_IMPROVEMENT_WATCH' -or $_.CommandLine -match 'CFD_STORAGE_RETENTION_WATCH')" ^
-  "  )" ^
+  "  )) -or" ^
+  "  (($_.Name -ieq 'cmd.exe') -and ($_.CommandLine -match 'manage_cfd\.bat' -and $_.CommandLine -match 'start_ui')) -or" ^
+  "  (($_.Name -ieq 'node.exe') -and ($_.CommandLine -match 'node_modules[\\\\/]next' -or $_.CommandLine -match 'next.*dev.*-p 3010' -or $_.CommandLine -match 'start-server\.js'))" ^
   "};" ^
   "foreach($p in $targets){" ^
   "  try { Stop-Process -Id ([int]$p.ProcessId) -Force -ErrorAction Stop } catch {}" ^

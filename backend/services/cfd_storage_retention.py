@@ -10,6 +10,7 @@ from typing import Any, Iterable, Mapping
 
 CFD_STORAGE_RETENTION_CONTRACT_VERSION = "cfd_storage_retention_v1"
 _GIB = 1024 * 1024 * 1024
+_COPY_CHUNK_BYTES = 8 * 1024 * 1024
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -87,6 +88,7 @@ def _is_retention_housekeeping_file(path: Path) -> bool:
         or normalized.endswith("/data/analysis/shadow_auto/cfd_storage_retention_latest.json")
         or normalized.endswith("/data/analysis/shadow_auto/cfd_storage_retention_latest.md")
         or normalized.endswith("/data/analysis/shadow_auto/cfd_storage_retention_watch_history_latest.json")
+        or normalized.endswith(".retention_tmp")
     )
 
 
@@ -173,18 +175,55 @@ def _prune_empty_dirs(root: Path) -> None:
             continue
 
 
-def _tail_bytes_aligned(path: Path, *, target_bytes: int) -> bytes:
-    if target_bytes <= 0:
-        return b""
-    size = _path_size(path)
-    if size <= target_bytes:
-        return path.read_bytes()
-    with path.open("rb") as handle:
-        start = max(0, size - int(target_bytes))
-        handle.seek(start)
-        if start > 0:
-            handle.readline()
-        return handle.read()
+def _cleanup_stale_retention_temps(root: Path, data_root: Path, *, dry_run: bool) -> list[dict[str, Any]]:
+    if not data_root.exists():
+        return []
+    entries: list[dict[str, Any]] = []
+    for path in data_root.rglob("*.retention_tmp"):
+        if not path.is_file():
+            continue
+        resolved = _ensure_within_root(root, path)
+        size_bytes = _path_size(resolved)
+        entry = {
+            "path": str(resolved),
+            "category": "stale_retention_tmp",
+            "size_bytes": int(size_bytes),
+            "deleted": False,
+            "error": "",
+        }
+        if dry_run:
+            entry["deleted"] = True
+            entry["dry_run"] = True
+            entries.append(entry)
+            continue
+        try:
+            resolved.unlink(missing_ok=True)
+            entry["deleted"] = True
+        except Exception as exc:
+            entry["error"] = str(exc)
+        entries.append(entry)
+    return entries
+
+
+def _copy_tail_bytes_aligned(source_path: Path, target_path: Path, *, target_bytes: int) -> int:
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    written = 0
+    size = _path_size(source_path)
+    with source_path.open("rb") as source, target_path.open("wb") as target:
+        if target_bytes <= 0:
+            return 0
+        if size > target_bytes:
+            start = max(0, size - int(target_bytes))
+            source.seek(start)
+            if start > 0:
+                source.readline()
+        while True:
+            chunk = source.read(_COPY_CHUNK_BYTES)
+            if not chunk:
+                break
+            target.write(chunk)
+            written += len(chunk)
+    return int(written)
 
 
 def _trim_checkpoint_detail(
@@ -211,19 +250,18 @@ def _trim_checkpoint_detail(
     if before_bytes <= desired_bytes:
         return result
 
-    trimmed_bytes = _tail_bytes_aligned(path, target_bytes=desired_bytes)
     if dry_run:
         result["trimmed"] = True
-        result["after_bytes"] = len(trimmed_bytes)
+        result["after_bytes"] = min(before_bytes, desired_bytes)
         result["dry_run"] = True
         return result
 
     temp_path = path.with_name(f"{path.name}.retention_tmp")
     try:
-        temp_path.write_bytes(trimmed_bytes)
+        copied_bytes = _copy_tail_bytes_aligned(path, temp_path, target_bytes=desired_bytes)
         os.replace(temp_path, path)
         result["trimmed"] = True
-        result["after_bytes"] = _path_size(path)
+        result["after_bytes"] = _path_size(path) or int(copied_bytes)
     except Exception as exc:
         result["error"] = str(exc)
         try:
@@ -309,6 +347,7 @@ def run_cfd_storage_retention(
         data_root / "runtime" / "checkpoint_rows.detail.jsonl",
     )
 
+    housekeeping_entries = _cleanup_stale_retention_temps(repo_root, data_root, dry_run=dry_run)
     before_bytes = _sum_tree_bytes(data_root)
     remaining_bytes = int(before_bytes)
     deleted_entries: list[dict[str, Any]] = []
@@ -335,14 +374,9 @@ def run_cfd_storage_retention(
         "error": "",
     }
     if remaining_bytes > current_cap_bytes and current_allow_checkpoint_trim:
-        bytes_to_free = remaining_bytes - current_cap_bytes
-        desired_target = max(
-            current_checkpoint_min_bytes,
-            _path_size(checkpoint_detail_path) - int(bytes_to_free),
-        )
         trim_result = _trim_checkpoint_detail(
             checkpoint_detail_path,
-            target_bytes=desired_target,
+            target_bytes=current_checkpoint_min_bytes,
             min_bytes=current_checkpoint_min_bytes,
             dry_run=dry_run,
         )
@@ -372,6 +406,13 @@ def run_cfd_storage_retention(
             "deleted_count": len([item for item in deleted_entries if item.get("deleted")]),
             "deleted_bytes": int(deleted_bytes),
             "deleted_gb": _human_gb(deleted_bytes),
+            "housekeeping_deleted_count": len([item for item in housekeeping_entries if item.get("deleted")]),
+            "housekeeping_deleted_bytes": int(
+                sum(int(item.get("size_bytes", 0) or 0) for item in housekeeping_entries if item.get("deleted"))
+            ),
+            "housekeeping_deleted_gb": _human_gb(
+                sum(int(item.get("size_bytes", 0) or 0) for item in housekeeping_entries if item.get("deleted"))
+            ),
             "checkpoint_detail_trimmed": bool(trim_result.get("trimmed")),
             "allow_checkpoint_trim": bool(current_allow_checkpoint_trim),
             "under_cap": int(after_bytes) <= int(current_cap_bytes),
@@ -386,6 +427,7 @@ def run_cfd_storage_retention(
             "latest_markdown_path": str(latest_markdown),
         },
         "deleted_entries": deleted_entries,
+        "housekeeping_entries": housekeeping_entries,
         "checkpoint_detail_trim": trim_result,
     }
 
