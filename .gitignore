@@ -79,6 +79,7 @@ draw_data.csv
 trade_history.csv
 trade_closed_history.csv
 trade_shock_events.csv
+tmp_entry_decisions_probe.csv
 
 # Personal or binary files not meant for the repo
 *.exe
