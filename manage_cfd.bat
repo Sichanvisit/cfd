@@ -13,9 +13,23 @@ set "TITLE_MAIN=CFD_MAIN_ENGINE"
 set "TITLE_ML=CFD_ML_RETRAIN"
 set "TITLE_API=CFD_FASTAPI_8010"
 set "TITLE_UI=CFD_NEXT_UI"
+set "TITLE_CANDIDATE_WATCH=CFD_STATE25_CANDIDATE_WATCH"
+set "TITLE_CALIBRATION_WATCH=CFD_MANUAL_TRUTH_CALIBRATION_WATCH"
+set "TITLE_ORCHESTRATOR_WATCH=CFD_CHECKPOINT_IMPROVEMENT_WATCH"
+set "TITLE_STORAGE_RETENTION_WATCH=CFD_STORAGE_RETENTION_WATCH"
 set "PYTHON_EXE=%LocalAppData%\Programs\Python\Python312\python.exe"
 if not exist "%PYTHON_EXE%" set "PYTHON_EXE=python"
 set "API_CMD=%PYTHON_EXE% -m uvicorn backend.fastapi.app:app --host 127.0.0.1 --port 8010 --workers 1"
+set "RUNTIME_STATUS_PATH=%ROOT%\data\runtime_status.json"
+set "FLAT_CHECK_MAX_STATUS_AGE_SEC=180"
+set "RUNTIME_FLAT_GUARD_SCRIPT=%ROOT%\scripts\runtime_flat_guard.py"
+set "CANDIDATE_WATCH_LOG=%ROOT%\logs\state25_candidate_watch.log"
+set "CALIBRATION_WATCH_LOG=%ROOT%\logs\manual_truth_calibration_watch.log"
+set "ORCHESTRATOR_WATCH_LOG=%ROOT%\logs\checkpoint_improvement_orchestrator_watch.log"
+set "STORAGE_RETENTION_WATCH_LOG=%ROOT%\logs\storage_retention_watch.log"
+set "STORAGE_RETENTION_WATCH_INTERVAL_MIN=60"
+set "STORAGE_RETENTION_CAP_GB=20"
+set "STORAGE_RETENTION_CHECKPOINT_DETAIL_MIN_GB=2"
 
 if /I "%~1"=="stop" goto :stop
 if /I "%~1"=="restart" goto :restart
@@ -26,12 +40,17 @@ if /I "%~1"=="status" goto :status
 if /I "%~1"=="verify" goto :verify
 if /I "%~1"=="smoke" goto :smoke
 if /I "%~1"=="smoke_watch" goto :smoke_watch
+if /I "%~1"=="candidate_watch" goto :candidate_watch
+if /I "%~1"=="calibration_watch" goto :calibration_watch
+if /I "%~1"=="orchestrator_watch" goto :orchestrator_watch
+if /I "%~1"=="storage_retention" goto :storage_retention
+if /I "%~1"=="storage_retention_watch" goto :storage_retention_watch
 if /I "%~1"=="precheck" goto :precheck
 if /I "%~1"=="deploy" goto :deploy
 if /I "%~1"=="start" goto :start
 if "%~1"=="" goto :start
 
-echo Usage: manage_cfd.bat [start^|start_ui^|start_core^|stop^|restart^|restart_core^|status^|verify^|smoke^|smoke_watch^|precheck^|deploy]
+echo Usage: manage_cfd.bat [start^|start_ui^|start_core [no_ui]^|candidate_watch^|calibration_watch^|orchestrator_watch^|storage_retention^|storage_retention_watch^|stop^|restart^|restart_core [no_ui] [force]^|status^|verify^|smoke^|smoke_watch^|precheck^|deploy]
 exit /b 1
 
 :start
@@ -52,7 +71,7 @@ echo [INFO] UI log: %UI_LOG%
 
 echo [INFO] pre-clean existing CFD processes/ports...
 call :kill_cfd_processes
-for %%T in ("%TITLE_MAIN%" "%TITLE_ML%" "%TITLE_API%" "%TITLE_UI%") do (
+for %%T in ("%TITLE_MAIN%" "%TITLE_ML%" "%TITLE_API%" "%TITLE_UI%" "%TITLE_CANDIDATE_WATCH%" "%TITLE_CALIBRATION_WATCH%" "%TITLE_ORCHESTRATOR_WATCH%" "%TITLE_STORAGE_RETENTION_WATCH%") do (
   taskkill /FI "WINDOWTITLE eq %%~T" /T /F >nul 2>&1
 )
 for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":8010 .*LISTENING"') do (
@@ -63,13 +82,13 @@ for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":3010 .*LISTENING"') d
 )
 timeout /t 1 /nobreak >nul
 call :wait_process_cleanup
+call :run_storage_retention_preflight
 
 start "%TITLE_MAIN%" /min /d "%ROOT%" "%PYTHON_EXE%" main.py 2>nul
-start "%TITLE_ML%" /min /d "%ROOT%" "%PYTHON_EXE%" ml/retrain_and_deploy.py --interval-minutes 10 2>nul
 call :start_api_if_needed
 start "%TITLE_UI%" cmd /k ""%~f0" start_ui"
 
-echo [OK] started clean: main/ml/api/ui
+echo [OK] started clean: main/api/ui ^(legacy ML disabled^)
 call :wait_api_boot
 call :wait_core_boot
 if errorlevel 1 (
@@ -78,7 +97,6 @@ if errorlevel 1 (
   timeout /t 1 /nobreak >nul
   call :wait_process_cleanup
   start "%TITLE_MAIN%" /min /d "%ROOT%" "%PYTHON_EXE%" main.py 2>nul
-  start "%TITLE_ML%" /min /d "%ROOT%" "%PYTHON_EXE%" ml/retrain_and_deploy.py --interval-minutes 10 2>nul
   call :start_api_if_needed
   call :wait_core_boot
 )
@@ -89,12 +107,17 @@ if errorlevel 1 (
   timeout /t 1 /nobreak >nul
   call :wait_process_cleanup
   start "%TITLE_MAIN%" /min /d "%ROOT%" "%PYTHON_EXE%" main.py 2>nul
-  start "%TITLE_ML%" /min /d "%ROOT%" "%PYTHON_EXE%" ml/retrain_and_deploy.py --interval-minutes 10 2>nul
   call :start_api_if_needed
   call :wait_api_boot
   call :wait_core_boot
 )
+call :dedupe_main_workers
+call :ensure_single_cfd_workers
 call :wait_ui_boot
+call :start_candidate_watch_if_needed
+call :start_manual_truth_calibration_watch_if_needed
+call :start_checkpoint_improvement_orchestrator_watch_if_needed
+call :start_storage_retention_watch_if_needed
 echo [INFO] bootstrap verify deferred. use: manage_cfd.bat verify
 exit /b 0
 
@@ -187,13 +210,13 @@ echo [INFO] ROOT: %ROOT%
 set "CORE_WITH_UI=1"
 if /I "%~2"=="no_ui" set "CORE_WITH_UI=0"
 if "%CORE_WITH_UI%"=="1" (
-  echo [INFO] CORE mode: main/ml/api + UI ensure
+  echo [INFO] CORE mode: main/api + UI ensure ^(legacy ML disabled^)
 ) else (
-  echo [INFO] CORE-ONLY mode: main/ml/api (UI skipped by no_ui)
+  echo [INFO] CORE-ONLY mode: main/api ^(UI skipped by no_ui, legacy ML disabled^)
 )
 echo [INFO] pre-clean existing CFD processes/ports...
 call :kill_cfd_processes
-for %%T in ("%TITLE_MAIN%" "%TITLE_ML%" "%TITLE_API%" "%TITLE_UI%") do (
+for %%T in ("%TITLE_MAIN%" "%TITLE_ML%" "%TITLE_API%" "%TITLE_UI%" "%TITLE_CANDIDATE_WATCH%" "%TITLE_CALIBRATION_WATCH%" "%TITLE_ORCHESTRATOR_WATCH%" "%TITLE_STORAGE_RETENTION_WATCH%") do (
   taskkill /FI "WINDOWTITLE eq %%~T" /T /F >nul 2>&1
 )
 for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":8010 .*LISTENING"') do (
@@ -204,12 +227,12 @@ for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":3010 .*LISTENING"') d
 )
 timeout /t 1 /nobreak >nul
 call :wait_process_cleanup
+call :run_storage_retention_preflight
 
 start "%TITLE_MAIN%" /min /d "%ROOT%" "%PYTHON_EXE%" main.py 2>nul
-start "%TITLE_ML%" /min /d "%ROOT%" "%PYTHON_EXE%" ml/retrain_and_deploy.py --interval-minutes 10 2>nul
 call :start_api_if_needed
 
-echo [OK] started core-only: main/ml/api
+echo [OK] started core-only: main/api ^(legacy ML disabled^)
 call :wait_api_boot
 call :wait_core_boot
 if errorlevel 1 (
@@ -218,7 +241,6 @@ if errorlevel 1 (
   timeout /t 1 /nobreak >nul
   call :wait_process_cleanup
   start "%TITLE_MAIN%" /min /d "%ROOT%" "%PYTHON_EXE%" main.py 2>nul
-  start "%TITLE_ML%" /min /d "%ROOT%" "%PYTHON_EXE%" ml/retrain_and_deploy.py --interval-minutes 10 2>nul
   call :start_api_if_needed
   call :wait_core_boot
 )
@@ -229,20 +251,26 @@ if errorlevel 1 (
   timeout /t 1 /nobreak >nul
   call :wait_process_cleanup
   start "%TITLE_MAIN%" /min /d "%ROOT%" "%PYTHON_EXE%" main.py 2>nul
-  start "%TITLE_ML%" /min /d "%ROOT%" "%PYTHON_EXE%" ml/retrain_and_deploy.py --interval-minutes 10 2>nul
   call :start_api_if_needed
   call :wait_api_boot
   call :wait_core_boot
 )
+call :dedupe_main_workers
+call :ensure_single_cfd_workers
 echo [INFO] core verify deferred. use: manage_cfd.bat verify
+echo [INFO] manual guarded restart: manage_cfd.bat restart_core [no_ui]
 if "%CORE_WITH_UI%"=="1" (
   call :ensure_ui_if_needed
 )
+call :start_candidate_watch_if_needed
+call :start_manual_truth_calibration_watch_if_needed
+call :start_checkpoint_improvement_orchestrator_watch_if_needed
+call :start_storage_retention_watch_if_needed
 exit /b 0
 
 :stop
 call :kill_cfd_processes
-for %%T in ("%TITLE_MAIN%" "%TITLE_ML%" "%TITLE_API%" "%TITLE_UI%") do (
+for %%T in ("%TITLE_MAIN%" "%TITLE_ML%" "%TITLE_API%" "%TITLE_UI%" "%TITLE_CANDIDATE_WATCH%" "%TITLE_CALIBRATION_WATCH%" "%TITLE_ORCHESTRATOR_WATCH%" "%TITLE_STORAGE_RETENTION_WATCH%") do (
   taskkill /FI "WINDOWTITLE eq %%~T" /T /F >nul 2>&1
 )
 for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":8010 .*LISTENING"') do (
@@ -267,13 +295,25 @@ call :post_restart_health
 exit /b 0
 
 :restart_core
+set "RESTART_CORE_FORCE=0"
+set "RESTART_CORE_ARG="
+if /I "%~2"=="force" set "RESTART_CORE_FORCE=1"
+if /I "%~2"=="no_ui" set "RESTART_CORE_ARG=no_ui"
+if /I "%~3"=="force" set "RESTART_CORE_FORCE=1"
+if /I "%~3"=="no_ui" set "RESTART_CORE_ARG=no_ui"
+if "%RESTART_CORE_FORCE%"=="1" (
+  echo [WARN] restart_core force requested. skipping flat-position guard.
+) else (
+  call :guard_flat_before_restart
+  if errorlevel 1 exit /b 1
+)
 call "%~f0" stop
 for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":8010 .*LISTENING"') do (
   echo [INFO] force-kill stale API PID %%P on 8010
   taskkill /PID %%P /T /F >nul 2>&1
 )
 timeout /t 2 /nobreak >nul
-call "%~f0" start_core %~2
+call "%~f0" start_core %RESTART_CORE_ARG%
 exit /b 0
 
 :status
@@ -298,6 +338,26 @@ for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":3010 .*LISTENING"') d
     tasklist /FI "PID eq %%P" 2>nul
   )
 )
+echo.
+echo ==== STATE25 CANDIDATE WATCH ====
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$watch=@(Get-CimInstance Win32_Process | Where-Object { ($_.Name -ieq 'python.exe') -and ($_.CommandLine -match 'state25_candidate_watch.py') });" ^
+  "if($watch.Count -gt 0){ foreach($p in $watch){ Write-Host ('[WATCH][RUNNING] pid={0} cmd={1}' -f $p.ProcessId,$p.CommandLine) } } else { Write-Host '[WATCH][IDLE] state25 candidate watch not running' }"
+echo.
+echo ==== MANUAL TRUTH CALIBRATION WATCH ====
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$watch=@(Get-CimInstance Win32_Process | Where-Object { ($_.Name -ieq 'python.exe') -and ($_.CommandLine -match 'manual_truth_calibration_watch.py') });" ^
+  "if($watch.Count -gt 0){ foreach($p in $watch){ Write-Host ('[CALIBRATION][RUNNING] pid={0} cmd={1}' -f $p.ProcessId,$p.CommandLine) } } else { Write-Host '[CALIBRATION][IDLE] manual truth calibration watch not running' }"
+echo.
+echo ==== CHECKPOINT IMPROVEMENT ORCHESTRATOR WATCH ====
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$watch=@(Get-CimInstance Win32_Process | Where-Object { ($_.Name -ieq 'python.exe') -and ($_.CommandLine -match 'checkpoint_improvement_orchestrator_watch.py') });" ^
+  "if($watch.Count -gt 0){ foreach($p in $watch){ Write-Host ('[ORCHESTRATOR][RUNNING] pid={0} cmd={1}' -f $p.ProcessId,$p.CommandLine) } } else { Write-Host '[ORCHESTRATOR][IDLE] checkpoint improvement orchestrator watch not running' }"
+echo.
+echo ==== STORAGE RETENTION WATCH ====
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$watch=@(Get-CimInstance Win32_Process | Where-Object { ($_.Name -ieq 'python.exe') -and ($_.CommandLine -match 'storage_retention_watch.py') });" ^
+  "if($watch.Count -gt 0){ foreach($p in $watch){ Write-Host ('[RETENTION][RUNNING] pid={0} cmd={1}' -f $p.ProcessId,$p.CommandLine) } } else { Write-Host '[RETENTION][IDLE] storage retention watch not running' }"
 exit /b 0
 
 :verify
@@ -365,6 +425,26 @@ if not "%SMOKE_WATCH_EXIT%"=="0" (
 echo [OK] smoke auto-recheck passed
 exit /b 0
 
+:candidate_watch
+call :start_candidate_watch_if_needed
+exit /b 0
+
+:calibration_watch
+call :start_manual_truth_calibration_watch_if_needed
+exit /b 0
+
+:orchestrator_watch
+call :start_checkpoint_improvement_orchestrator_watch_if_needed
+exit /b 0
+
+:storage_retention
+call :run_storage_retention_preflight
+exit /b 0
+
+:storage_retention_watch
+call :start_storage_retention_watch_if_needed
+exit /b 0
+
 :wait_api_boot
 echo [INFO] waiting for API bootstrap (/health)...
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
@@ -390,6 +470,7 @@ echo [INFO] waiting for core heartbeat (main.py + runtime_status)...
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$ErrorActionPreference='SilentlyContinue';" ^
   "$root='%ROOT%';" ^
+  "$mainScript='main\.py';" ^
   "$statusPath=Join-Path $root 'data\runtime_status.json';" ^
   "$maxWaitSec=90;" ^
   "$intervalSec=3;" ^
@@ -397,7 +478,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$started=Get-Date;" ^
   "$ok=$false;" ^
   "while(((Get-Date)-$started).TotalSeconds -lt $maxWaitSec){" ^
-  "  $main = Get-CimInstance Win32_Process | Where-Object { ($_.Name -ieq 'python.exe') -and ($_.CommandLine -match 'main.py') -and ($_.CommandLine -notmatch 'uvicorn') };" ^
+  "  $main = Get-CimInstance Win32_Process | Where-Object { ($_.Name -ieq 'python.exe') -and ($_.CommandLine -match $mainScript) -and ($_.CommandLine -notmatch 'uvicorn') };" ^
   "  $fresh=$false;" ^
   "  if(Test-Path $statusPath){" ^
   "    $age=((Get-Date)-(Get-Item $statusPath).LastWriteTime).TotalSeconds;" ^
@@ -410,18 +491,29 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
 if errorlevel 1 exit /b 1
 exit /b 0
 
+:guard_flat_before_restart
+echo [INFO] guarded restart check: verifying no open positions...
+"%PYTHON_EXE%" "%RUNTIME_FLAT_GUARD_SCRIPT%" --runtime-status-path "%RUNTIME_STATUS_PATH%" --max-status-age-sec %FLAT_CHECK_MAX_STATUS_AGE_SEC%
+if errorlevel 1 (
+  echo [WARN] guarded restart aborted. use manage_cfd.bat restart_core force only if you have confirmed flat manually.
+  exit /b 1
+)
+exit /b 0
+
 :wait_process_cleanup
 echo [INFO] waiting for stale CFD workers to exit...
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$ErrorActionPreference='SilentlyContinue';" ^
+  "$root='%ROOT%';" ^
+  "$mainScript='main\.py';" ^
   "$maxWaitSec=20;" ^
   "$started=Get-Date;" ^
   "$cleared=$false;" ^
   "while(((Get-Date)-$started).TotalSeconds -lt $maxWaitSec){" ^
   "  $workers=@(Get-CimInstance Win32_Process | Where-Object {" ^
   "    ($_.Name -ieq 'python.exe') -and (" ^
-  "      ($_.CommandLine -match 'main.py' -or $_.CommandLine -match 'ml[/\\\\]retrain_and_deploy.py' -or $_.CommandLine -match 'uvicorn backend.fastapi.app:app') -or" ^
-  "      ($_.CommandLine -match 'CFD_MAIN_ENGINE' -or $_.CommandLine -match 'CFD_ML_RETRAIN' -or $_.CommandLine -match 'CFD_FASTAPI_8010')" ^
+  "      ($_.CommandLine -match $mainScript -or $_.CommandLine -match 'ml[/\\\\]retrain_and_deploy.py' -or $_.CommandLine -match 'uvicorn backend.fastapi.app:app' -or $_.CommandLine -match 'state25_candidate_watch.py' -or $_.CommandLine -match 'manual_truth_calibration_watch.py' -or $_.CommandLine -match 'checkpoint_improvement_orchestrator_watch.py' -or $_.CommandLine -match 'storage_retention_watch.py') -or" ^
+  "      ($_.CommandLine -match 'CFD_MAIN_ENGINE' -or $_.CommandLine -match 'CFD_ML_RETRAIN' -or $_.CommandLine -match 'CFD_FASTAPI_8010' -or $_.CommandLine -match 'CFD_STATE25_CANDIDATE_WATCH' -or $_.CommandLine -match 'CFD_MANUAL_TRUTH_CALIBRATION_WATCH' -or $_.CommandLine -match 'CFD_CHECKPOINT_IMPROVEMENT_WATCH' -or $_.CommandLine -match 'CFD_STORAGE_RETENTION_WATCH')" ^
   "    )" ^
   "  });" ^
   "  if($workers.Count -eq 0){ $cleared=$true; break }" ^
@@ -434,11 +526,32 @@ exit /b 0
 echo [INFO] verifying single CFD worker set...
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$ErrorActionPreference='SilentlyContinue';" ^
-  "$main=@(Get-CimInstance Win32_Process | Where-Object { ($_.Name -ieq 'python.exe') -and ($_.CommandLine -match 'main.py') -and ($_.CommandLine -notmatch 'uvicorn') });" ^
+  "$root='%ROOT%';" ^
+  "$mainScript='main\.py';" ^
+  "$main=@(Get-CimInstance Win32_Process | Where-Object { ($_.Name -ieq 'python.exe') -and ($_.CommandLine -match $mainScript) -and ($_.CommandLine -notmatch 'uvicorn') });" ^
   "$ml=@(Get-CimInstance Win32_Process | Where-Object { ($_.Name -ieq 'python.exe') -and ($_.CommandLine -match 'ml[/\\\\]retrain_and_deploy.py') });" ^
   "$api=@(Get-CimInstance Win32_Process | Where-Object { ($_.Name -ieq 'python.exe') -and ($_.CommandLine -match 'uvicorn backend.fastapi.app:app') -and ($_.CommandLine -match '--port 8010') });" ^
-  "if($main.Count -le 1 -and $ml.Count -le 1 -and $api.Count -le 1){ Write-Host '[BOOT][OK] single CFD worker set verified'; exit 0 } else { Write-Host ('[BOOT][WARN] duplicate workers main={0} ml={1} api={2}' -f $main.Count,$ml.Count,$api.Count); exit 1 }"
+  "$watch=@(Get-CimInstance Win32_Process | Where-Object { ($_.Name -ieq 'python.exe') -and ($_.CommandLine -match 'state25_candidate_watch.py') });" ^
+  "$cal=@(Get-CimInstance Win32_Process | Where-Object { ($_.Name -ieq 'python.exe') -and ($_.CommandLine -match 'manual_truth_calibration_watch.py') });" ^
+  "$orch=@(Get-CimInstance Win32_Process | Where-Object { ($_.Name -ieq 'python.exe') -and ($_.CommandLine -match 'checkpoint_improvement_orchestrator_watch.py') });" ^
+  "$ret=@(Get-CimInstance Win32_Process | Where-Object { ($_.Name -ieq 'python.exe') -and ($_.CommandLine -match 'storage_retention_watch.py') });" ^
+  "if($main.Count -le 1 -and $ml.Count -eq 0 -and $api.Count -le 1 -and $watch.Count -le 1 -and $cal.Count -le 1 -and $orch.Count -le 1 -and $ret.Count -le 1){ Write-Host '[BOOT][OK] single CFD worker set verified'; exit 0 } else { Write-Host ('[BOOT][WARN] duplicate/stale workers main={0} legacy_ml={1} api={2} candidate_watch={3} calibration_watch={4} orchestrator_watch={5} retention_watch={6}' -f $main.Count,$ml.Count,$api.Count,$watch.Count,$cal.Count,$orch.Count,$ret.Count); exit 1 }"
 if errorlevel 1 exit /b 1
+exit /b 0
+
+:dedupe_main_workers
+echo [INFO] de-duping duplicate main.py workers if needed...
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$ErrorActionPreference='SilentlyContinue';" ^
+  "$root='%ROOT%';" ^
+  "$mainScript='main\.py';" ^
+  "$main=@(Get-CimInstance Win32_Process | Where-Object { ($_.Name -ieq 'python.exe') -and ($_.CommandLine -match $mainScript) -and ($_.CommandLine -notmatch 'uvicorn') } | Sort-Object CreationDate);" ^
+  "if($main.Count -le 1){ Write-Host '[BOOT][OK] main worker already singular'; exit 0 }" ^
+  "$keep=$main[-1];" ^
+  "foreach($p in $main){ if([int]$p.ProcessId -ne [int]$keep.ProcessId){ try { Stop-Process -Id ([int]$p.ProcessId) -Force -ErrorAction Stop; Write-Host ('[BOOT][FIX] stopped duplicate main pid={0}' -f $p.ProcessId) } catch {} } }" ^
+  "Start-Sleep -Seconds 2;" ^
+  "$remaining=@(Get-CimInstance Win32_Process | Where-Object { ($_.Name -ieq 'python.exe') -and ($_.CommandLine -match $mainScript) -and ($_.CommandLine -notmatch 'uvicorn') });" ^
+  "if($remaining.Count -le 1){ Write-Host ('[BOOT][OK] main dedupe complete keep_pid={0}' -f $keep.ProcessId); exit 0 } else { Write-Host ('[BOOT][WARN] main dedupe incomplete count={0}' -f $remaining.Count); exit 1 }"
 exit /b 0
 
 :wait_ui_boot
@@ -549,12 +662,76 @@ echo [INFO] starting API on 8010...
 start "%TITLE_API%" /min /d "%ROOT%" "%PYTHON_EXE%" -m uvicorn backend.fastapi.app:app --host 127.0.0.1 --port 8010 --workers 1 2>nul
 exit /b 0
 
+:start_candidate_watch_if_needed
+if not exist "%ROOT%\logs" mkdir "%ROOT%\logs" >nul 2>&1
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$watch=@(Get-CimInstance Win32_Process | Where-Object { ($_.Name -ieq 'python.exe') -and ($_.CommandLine -match 'state25_candidate_watch.py') }); if($watch.Count -gt 0){ exit 0 } else { exit 1 }" >nul 2>&1
+if not errorlevel 1 (
+  echo [INFO] state25 candidate watch already running. skip duplicate start.
+  exit /b 0
+)
+echo [INFO] starting state25 candidate watch ^(15m offline retrain/gate/integration loop^)...
+echo ==== manage_cfd candidate_watch %date% %time% ====>> "%CANDIDATE_WATCH_LOG%"
+start "%TITLE_CANDIDATE_WATCH%" /min /d "%ROOT%" "%PYTHON_EXE%" scripts\state25_candidate_watch.py --interval-min 15 --max-cycles 0 --require-runtime-fresh --runtime-max-age-sec 180 2>nul
+exit /b 0
+
+:start_manual_truth_calibration_watch_if_needed
+if not exist "%ROOT%\logs" mkdir "%ROOT%\logs" >nul 2>&1
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$watch=@(Get-CimInstance Win32_Process | Where-Object { ($_.Name -ieq 'python.exe') -and ($_.CommandLine -match 'manual_truth_calibration_watch.py') }); if($watch.Count -gt 0){ exit 0 } else { exit 1 }" >nul 2>&1
+if not errorlevel 1 (
+  echo [INFO] manual truth calibration watch already running. skip duplicate start.
+  exit /b 0
+)
+echo [INFO] starting manual truth calibration watch ^(15m comparison/bias/current-rich refresh loop^)...
+echo ==== manage_cfd manual_truth_calibration_watch %date% %time% ====>> "%CALIBRATION_WATCH_LOG%"
+start "%TITLE_CALIBRATION_WATCH%" /min /d "%ROOT%" "%PYTHON_EXE%" scripts\manual_truth_calibration_watch.py --interval-min 15 --max-cycles 0 --require-runtime-fresh --runtime-max-age-sec 180 --step-timeout-sec 600 2>nul
+exit /b 0
+
+:start_checkpoint_improvement_orchestrator_watch_if_needed
+if not exist "%ROOT%\logs" mkdir "%ROOT%\logs" >nul 2>&1
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$watch=@(Get-CimInstance Win32_Process | Where-Object { ($_.Name -ieq 'python.exe') -and ($_.CommandLine -match 'checkpoint_improvement_orchestrator_watch.py') }); if($watch.Count -gt 0){ exit 0 } else { exit 1 }" >nul 2>&1
+if not errorlevel 1 (
+  echo [INFO] checkpoint improvement orchestrator watch already running. skip duplicate start.
+  exit /b 0
+)
+echo [INFO] starting checkpoint improvement orchestrator watch ^(60s orchestrator cadence^)...
+echo ==== manage_cfd checkpoint_improvement_orchestrator_watch %date% %time% ====>> "%ORCHESTRATOR_WATCH_LOG%"
+start "%TITLE_ORCHESTRATOR_WATCH%" /min /d "%ROOT%" "%PYTHON_EXE%" scripts\checkpoint_improvement_orchestrator_watch.py --interval-sec 60 --max-cycles 0 --require-runtime-fresh --runtime-max-age-sec 180 2>nul
+exit /b 0
+
+:run_storage_retention_preflight
+echo [INFO] running storage retention preflight ^(cap %STORAGE_RETENTION_CAP_GB%GB^)...
+cd /d "%ROOT%"
+"%PYTHON_EXE%" scripts\storage_retention_watch.py --mode preflight --cap-gb %STORAGE_RETENTION_CAP_GB% --checkpoint-detail-min-gb %STORAGE_RETENTION_CHECKPOINT_DETAIL_MIN_GB% --max-cycles 1
+if errorlevel 1 (
+  echo [WARN] storage retention preflight failed. continuing boot.
+  exit /b 0
+)
+exit /b 0
+
+:start_storage_retention_watch_if_needed
+if not exist "%ROOT%\logs" mkdir "%ROOT%\logs" >nul 2>&1
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$watch=@(Get-CimInstance Win32_Process | Where-Object { ($_.Name -ieq 'python.exe') -and ($_.CommandLine -match 'storage_retention_watch.py') }); if($watch.Count -gt 0){ exit 0 } else { exit 1 }" >nul 2>&1
+if not errorlevel 1 (
+  echo [INFO] storage retention watch already running. skip duplicate start.
+  exit /b 0
+)
+echo [INFO] starting storage retention watch ^(%STORAGE_RETENTION_WATCH_INTERVAL_MIN%m cap=%STORAGE_RETENTION_CAP_GB%GB^)...
+echo ==== manage_cfd storage_retention_watch %date% %time% ====>> "%STORAGE_RETENTION_WATCH_LOG%"
+start "%TITLE_STORAGE_RETENTION_WATCH%" /min /d "%ROOT%" "%PYTHON_EXE%" scripts\storage_retention_watch.py --mode background --cap-gb %STORAGE_RETENTION_CAP_GB% --checkpoint-detail-min-gb %STORAGE_RETENTION_CHECKPOINT_DETAIL_MIN_GB% --interval-min %STORAGE_RETENTION_WATCH_INTERVAL_MIN% --max-cycles 0 2>nul
+exit /b 0
+
 :kill_cfd_processes
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$root='%ROOT%';" ^
+  "$mainScript='main\.py';" ^
   "$targets=Get-CimInstance Win32_Process | Where-Object {" ^
   "  ($_.Name -ieq 'python.exe') -and (" ^
-  "    ($_.CommandLine -match 'main.py' -or $_.CommandLine -match 'ml[/\\\\]retrain_and_deploy.py' -or $_.CommandLine -match 'uvicorn backend.fastapi.app:app') -or" ^
-  "    ($_.CommandLine -match 'CFD_MAIN_ENGINE' -or $_.CommandLine -match 'CFD_ML_RETRAIN' -or $_.CommandLine -match 'CFD_FASTAPI_8010' -or $_.CommandLine -match 'CFD_NEXT_UI')" ^
+  "    ($_.CommandLine -match $mainScript -or $_.CommandLine -match 'ml[/\\\\]retrain_and_deploy.py' -or $_.CommandLine -match 'uvicorn backend.fastapi.app:app' -or $_.CommandLine -match 'state25_candidate_watch.py' -or $_.CommandLine -match 'manual_truth_calibration_watch.py' -or $_.CommandLine -match 'checkpoint_improvement_orchestrator_watch.py' -or $_.CommandLine -match 'storage_retention_watch.py') -or" ^
+  "    ($_.CommandLine -match 'CFD_MAIN_ENGINE' -or $_.CommandLine -match 'CFD_ML_RETRAIN' -or $_.CommandLine -match 'CFD_FASTAPI_8010' -or $_.CommandLine -match 'CFD_NEXT_UI' -or $_.CommandLine -match 'CFD_STATE25_CANDIDATE_WATCH' -or $_.CommandLine -match 'CFD_MANUAL_TRUTH_CALIBRATION_WATCH' -or $_.CommandLine -match 'CFD_CHECKPOINT_IMPROVEMENT_WATCH' -or $_.CommandLine -match 'CFD_STORAGE_RETENTION_WATCH')" ^
   "  )" ^
   "};" ^
   "foreach($p in $targets){" ^
